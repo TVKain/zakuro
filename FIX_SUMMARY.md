@@ -108,3 +108,16 @@ The architectural reasons include:
   * Releases touch on `Ended` / `Cancelled`.
   * Allows seamless in-game touch input on Windows handhelds and tablets.
 
+---
+
+## 6. xBRZ GPU Shader Scaling Filter
+
+* **Algorithm:** Ported SOTA single-pass **xBRZ-freescale** (Zenju / Hyllian) to Zakuro's presentation pipeline.
+* **Architecture:**
+  * **Vulkan:** Implemented in [`crates/zakuro-gpu/shaders/present.frag`](crates/zakuro-gpu/shaders/present.frag) under mode index `3`. Compiled to SPIR-V bytecode (`present.frag.spv` and `present_stereo.frag.spv`).
+  * **OpenGL:** Implemented in [`crates/zakuro-gpu/src/backend/gl.rs`](crates/zakuro-gpu/src/backend/gl.rs) inside the GLSL 330 presenter shader.
+  * **Resolution Scaling:** Runs on the GPU during presentation without CPU readbacks or intermediate render textures. Supports non-integer arbitrary resolutions (e.g., 720p, 1080p, 1200p) with sub-pixel edge detection and YCbCr perceptual color distance weighting.
+  * **Screen Bounds Clamping:** Accurately bounds-clamps neighborhood pixel taps to prevent color bleeding across top/bottom screens and stereo 3D eye views.
+  * **UI Integration:** Added `Filter::Xbrz` in [`crates/zakuro/src/settings.rs`](crates/zakuro/src/settings.rs) and exposed `"xBRZ"` in **Settings -> Graphics -> Filter**.
+
+
