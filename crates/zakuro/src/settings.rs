@@ -431,6 +431,7 @@ pub struct PadButtons {
     pub right: Button,
     pub zl: Button,
     pub zr: Button,
+    pub menu: Button,
 }
 
 impl Default for PadButtons {
@@ -450,13 +451,14 @@ impl Default for PadButtons {
             right: Button::DPadRight,
             zl: Button::LeftTrigger2,
             zr: Button::RightTrigger2,
+            menu: Button::Select,
         }
     }
 }
 
 impl PadButtons {
     /// every binding with the name it goes by, to show and change them.
-    pub fn all_mut(&mut self) -> [(&'static str, &mut Button); 14] {
+    pub fn all_mut(&mut self) -> [(&'static str, &mut Button); 15] {
         [
             ("A", &mut self.a),
             ("B", &mut self.b),
@@ -472,6 +474,7 @@ impl PadButtons {
             ("D-pad right", &mut self.right),
             ("ZL", &mut self.zl),
             ("ZR", &mut self.zr),
+            ("Menu / Pause", &mut self.menu),
         ]
     }
 

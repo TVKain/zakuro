@@ -888,7 +888,7 @@ impl App {
                     *bound = button;
                 }
                 self.apply_settings();
-            } else if button == gilrs::Button::Mode && self.game.is_some() {
+            } else if (button == self.settings.pad.menu || button == gilrs::Button::Mode || button == gilrs::Button::Select) && self.game.is_some() {
                 self.menus.menu_open = !self.menus.menu_open;
                 self.keyboard.release();
             }

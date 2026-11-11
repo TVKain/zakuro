@@ -854,7 +854,7 @@ impl Menus {
                         }
                     }
                 });
-                ui.label(RichText::new("The circle pad is the left stick, and Home opens the menu over the game.").weak());
+                ui.label(RichText::new("The circle pad is the left stick, and View or Home opens the menu over the game.").weak());
                 if ui.button("Default controller").clicked() {
                     settings.pad = PadButtons::default();
                     self.rebinding_pad = None;
