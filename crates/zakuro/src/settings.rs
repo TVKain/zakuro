@@ -108,16 +108,18 @@ pub enum Filter {
     Smooth,
     Sharp,
     Pixels,
+    Xbrz,
 }
 
 impl Filter {
-    pub const ALL: [Filter; 3] = [Filter::Smooth, Filter::Sharp, Filter::Pixels];
+    pub const ALL: [Filter; 4] = [Filter::Smooth, Filter::Sharp, Filter::Pixels, Filter::Xbrz];
 
     pub fn name(self) -> &'static str {
         match self {
             Filter::Smooth => "Smooth",
             Filter::Sharp => "Sharp",
             Filter::Pixels => "Pixels",
+            Filter::Xbrz => "xBRZ",
         }
     }
 
@@ -126,6 +128,7 @@ impl Filter {
             Filter::Smooth => zakuro_gpu::ScreenFilter::Smooth,
             Filter::Sharp => zakuro_gpu::ScreenFilter::Sharp,
             Filter::Pixels => zakuro_gpu::ScreenFilter::Pixels,
+            Filter::Xbrz => zakuro_gpu::ScreenFilter::Xbrz,
         }
     }
 }

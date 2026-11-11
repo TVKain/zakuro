@@ -33,8 +33,184 @@ in vec2 uv;
 out vec4 color;
 uniform sampler2D screen;
 // how a screen drawn bigger than its pixels is filtered: 0 smooth, 1
-// pixels, 2 sharp, as in the Vulkan presenter's shader.
+// pixels, 2 sharp, 3 xbrz, as in the Vulkan presenter's shader.
 uniform int mode;
+
+#define BLEND_NONE 0
+#define BLEND_NORMAL 1
+#define BLEND_DOMINANT 2
+#define LUMINANCE_WEIGHT 1.0
+#define EQUAL_COLOR_TOLERANCE (30.0 / 255.0)
+#define STEEP_DIRECTION_THRESHOLD 2.2
+#define DOMINANT_DIRECTION_THRESHOLD 3.6
+
+float dist_ycbcr(vec3 a, vec3 b) {
+    const vec3 w = vec3(0.2627, 0.6780, 0.0593);
+    const float scale_b = 0.5 / (1.0 - w.b);
+    const float scale_r = 0.5 / (1.0 - w.r);
+    vec3 diff = a - b;
+    float y = dot(diff, w);
+    float cb = scale_b * (diff.b - y);
+    float cr = scale_r * (diff.r - y);
+    return sqrt(((LUMINANCE_WEIGHT * y) * (LUMINANCE_WEIGHT * y)) + (cb * cb) + (cr * cr));
+}
+
+bool is_pix_equal(vec3 a, vec3 b) {
+    return dist_ycbcr(a, b) < EQUAL_COLOR_TOLERANCE;
+}
+
+float get_left_ratio(vec2 center, vec2 origin, vec2 direction, vec2 scale) {
+    vec2 p0 = center - origin;
+    vec2 proj = direction * (dot(p0, direction) / dot(direction, direction));
+    vec2 distv = p0 - proj;
+    vec2 orth = vec2(-direction.y, direction.x);
+    float side = sign(dot(p0, orth));
+    float v = side * length(distv * scale);
+    return smoothstep(-0.70710678, 0.70710678, v);
+}
+
+bool eq(vec3 a, vec3 b) { return all(equal(a, b)); }
+bool neq(vec3 a, vec3 b) { return any(notEqual(a, b)); }
+
+vec3 tap(sampler2D img, vec2 base, vec2 offset, vec2 size) {
+    return texture(img, clamp(base + offset / size, vec2(0.0), vec2(1.0))).rgb;
+}
+
+vec3 xbrz_sample(sampler2D img, vec2 at, vec2 size, vec2 covered) {
+    vec2 scale = 1.0 / max(covered, vec2(1e-6));
+    vec2 texel = at * size;
+    vec2 pos = fract(texel) - vec2(0.5, 0.5);
+    vec2 coord = (floor(texel) + 0.5) / size;
+
+    vec3 A = tap(img, coord, vec2(-1.0, -1.0), size);
+    vec3 B = tap(img, coord, vec2( 0.0, -1.0), size);
+    vec3 C = tap(img, coord, vec2( 1.0, -1.0), size);
+    vec3 D = tap(img, coord, vec2(-1.0,  0.0), size);
+    vec3 E = tap(img, coord, vec2( 0.0,  0.0), size);
+    vec3 F = tap(img, coord, vec2( 1.0,  0.0), size);
+    vec3 G = tap(img, coord, vec2(-1.0,  1.0), size);
+    vec3 H = tap(img, coord, vec2( 0.0,  1.0), size);
+    vec3 I = tap(img, coord, vec2( 1.0,  1.0), size);
+
+    ivec4 blend = ivec4(BLEND_NONE);
+
+    // Corner bottom-right
+    if (!((eq(E, F) && eq(H, I)) || (eq(E, H) && eq(F, I)))) {
+        float dist_H_F = dist_ycbcr(G, E) + dist_ycbcr(E, C) + dist_ycbcr(tap(img, coord, vec2(0.0, 2.0), size), I) + dist_ycbcr(I, tap(img, coord, vec2(2.0, 0.0), size)) + 4.0 * dist_ycbcr(H, F);
+        float dist_E_I = dist_ycbcr(D, H) + dist_ycbcr(H, tap(img, coord, vec2(1.0, 2.0), size)) + dist_ycbcr(B, F) + dist_ycbcr(F, tap(img, coord, vec2(2.0, 1.0), size)) + 4.0 * dist_ycbcr(E, I);
+        bool dominant = (DOMINANT_DIRECTION_THRESHOLD * dist_H_F) < dist_E_I;
+        blend.z = ((dist_H_F < dist_E_I) && neq(E, F) && neq(E, H)) ? ((dominant) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+    }
+
+    // Corner bottom-left
+    if (!((eq(D, E) && eq(G, H)) || (eq(D, G) && eq(E, H)))) {
+        float dist_G_E = dist_ycbcr(tap(img, coord, vec2(-2.0, 1.0), size), D) + dist_ycbcr(D, B) + dist_ycbcr(tap(img, coord, vec2(-1.0, 2.0), size), H) + dist_ycbcr(H, F) + 4.0 * dist_ycbcr(G, E);
+        float dist_D_H = dist_ycbcr(tap(img, coord, vec2(-2.0, 0.0), size), G) + dist_ycbcr(G, tap(img, coord, vec2(0.0, 2.0), size)) + dist_ycbcr(A, E) + dist_ycbcr(E, I) + 4.0 * dist_ycbcr(D, H);
+        bool dominant = (DOMINANT_DIRECTION_THRESHOLD * dist_D_H) < dist_G_E;
+        blend.w = ((dist_G_E > dist_D_H) && neq(E, D) && neq(E, H)) ? ((dominant) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+    }
+
+    // Corner top-right
+    if (!((eq(B, C) && eq(E, F)) || (eq(B, E) && eq(C, F)))) {
+        float dist_E_C = dist_ycbcr(D, B) + dist_ycbcr(B, tap(img, coord, vec2(1.0, -2.0), size)) + dist_ycbcr(H, F) + dist_ycbcr(F, tap(img, coord, vec2(2.0, -1.0), size)) + 4.0 * dist_ycbcr(E, C);
+        float dist_B_F = dist_ycbcr(A, E) + dist_ycbcr(E, I) + dist_ycbcr(tap(img, coord, vec2(0.0, -2.0), size), C) + dist_ycbcr(C, tap(img, coord, vec2(2.0, 0.0), size)) + 4.0 * dist_ycbcr(B, F);
+        bool dominant = (DOMINANT_DIRECTION_THRESHOLD * dist_B_F) < dist_E_C;
+        blend.y = ((dist_E_C > dist_B_F) && neq(E, B) && neq(E, F)) ? ((dominant) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+    }
+
+    // Corner top-left
+    if (!((eq(A, B) && eq(D, E)) || (eq(A, D) && eq(B, E)))) {
+        float dist_D_B = dist_ycbcr(tap(img, coord, vec2(-2.0, 0.0), size), A) + dist_ycbcr(A, tap(img, coord, vec2(0.0, -2.0), size)) + dist_ycbcr(G, E) + dist_ycbcr(E, C) + 4.0 * dist_ycbcr(D, B);
+        float dist_A_E = dist_ycbcr(tap(img, coord, vec2(-2.0, -1.0), size), D) + dist_ycbcr(D, H) + dist_ycbcr(tap(img, coord, vec2(-1.0, -2.0), size), B) + dist_ycbcr(B, F) + 4.0 * dist_ycbcr(A, E);
+        bool dominant = (DOMINANT_DIRECTION_THRESHOLD * dist_D_B) < dist_A_E;
+        blend.x = ((dist_D_B < dist_A_E) && neq(E, D) && neq(E, B)) ? ((dominant) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+    }
+
+    vec3 res = E;
+
+    // Blend bottom-right
+    if (blend.z != BLEND_NONE) {
+        float dist_F_G = dist_ycbcr(F, G);
+        float dist_H_C = dist_ycbcr(H, C);
+        bool doLineBlend = (blend.z == BLEND_DOMINANT ||
+            !((blend.y != BLEND_NONE && !is_pix_equal(E, G)) || (blend.w != BLEND_NONE && !is_pix_equal(E, C)) ||
+              (is_pix_equal(G, H) && is_pix_equal(H, I) && is_pix_equal(I, F) && is_pix_equal(F, C) && !is_pix_equal(E, I))));
+        vec2 origin = vec2(0.0, 0.70710678);
+        vec2 direction = vec2(1.0, -1.0);
+        if (doLineBlend) {
+            bool haveShallow = (STEEP_DIRECTION_THRESHOLD * dist_F_G <= dist_H_C) && neq(E, G) && neq(D, G);
+            bool haveSteep = (STEEP_DIRECTION_THRESHOLD * dist_H_C <= dist_F_G) && neq(E, C) && neq(B, C);
+            origin = haveShallow ? vec2(0.0, 0.25) : vec2(0.0, 0.5);
+            direction.x += haveShallow ? 1.0 : 0.0;
+            direction.y -= haveSteep ? 1.0 : 0.0;
+        }
+        vec3 blendPix = mix(H, F, step(dist_ycbcr(E, F), dist_ycbcr(E, H)));
+        res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
+    }
+
+    // Blend bottom-left
+    if (blend.w != BLEND_NONE) {
+        float dist_H_A = dist_ycbcr(H, A);
+        float dist_D_I = dist_ycbcr(D, I);
+        bool doLineBlend = (blend.w == BLEND_DOMINANT ||
+            !((blend.z != BLEND_NONE && !is_pix_equal(E, A)) || (blend.x != BLEND_NONE && !is_pix_equal(E, I)) ||
+              (is_pix_equal(A, D) && is_pix_equal(D, G) && is_pix_equal(G, H) && is_pix_equal(H, I) && !is_pix_equal(E, G))));
+        vec2 origin = vec2(-0.70710678, 0.0);
+        vec2 direction = vec2(1.0, 1.0);
+        if (doLineBlend) {
+            bool haveShallow = (STEEP_DIRECTION_THRESHOLD * dist_H_A <= dist_D_I) && neq(E, A) && neq(B, A);
+            bool haveSteep = (STEEP_DIRECTION_THRESHOLD * dist_D_I <= dist_H_A) && neq(E, I) && neq(F, I);
+            origin = haveShallow ? vec2(-0.25, 0.0) : vec2(-0.5, 0.0);
+            direction.y += haveShallow ? 1.0 : 0.0;
+            direction.x += haveSteep ? 1.0 : 0.0;
+        }
+        vec3 blendPix = mix(H, D, step(dist_ycbcr(E, D), dist_ycbcr(E, H)));
+        res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
+    }
+
+    // Blend top-right
+    if (blend.y != BLEND_NONE) {
+        float dist_B_I = dist_ycbcr(B, I);
+        float dist_F_A = dist_ycbcr(F, A);
+        bool doLineBlend = (blend.y == BLEND_DOMINANT ||
+            !((blend.x != BLEND_NONE && !is_pix_equal(E, I)) || (blend.z != BLEND_NONE && !is_pix_equal(E, A)) ||
+              (is_pix_equal(I, F) && is_pix_equal(F, C) && is_pix_equal(C, B) && is_pix_equal(B, A) && !is_pix_equal(E, C))));
+        vec2 origin = vec2(0.70710678, 0.0);
+        vec2 direction = vec2(-1.0, -1.0);
+        if (doLineBlend) {
+            bool haveShallow = (STEEP_DIRECTION_THRESHOLD * dist_B_I <= dist_F_A) && neq(E, I) && neq(H, I);
+            bool haveSteep = (STEEP_DIRECTION_THRESHOLD * dist_F_A <= dist_B_I) && neq(E, A) && neq(D, A);
+            origin = haveShallow ? vec2(0.25, 0.0) : vec2(0.5, 0.0);
+            direction.y -= haveShallow ? 1.0 : 0.0;
+            direction.x += haveSteep ? 1.0 : 0.0;
+        }
+        vec3 blendPix = mix(F, B, step(dist_ycbcr(E, B), dist_ycbcr(E, F)));
+        res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
+    }
+
+    // Blend top-left
+    if (blend.x != BLEND_NONE) {
+        float dist_D_C = dist_ycbcr(D, C);
+        float dist_B_G = dist_ycbcr(B, G);
+        bool doLineBlend = (blend.x == BLEND_DOMINANT ||
+            !((blend.w != BLEND_NONE && !is_pix_equal(E, C)) || (blend.y != BLEND_NONE && !is_pix_equal(E, G)) ||
+              (is_pix_equal(C, B) && is_pix_equal(B, A) && is_pix_equal(A, D) && is_pix_equal(D, G) && !is_pix_equal(E, A))));
+        vec2 origin = vec2(0.0, -0.70710678);
+        vec2 direction = vec2(-1.0, 1.0);
+        if (doLineBlend) {
+            bool haveShallow = (STEEP_DIRECTION_THRESHOLD * dist_D_C <= dist_B_G) && neq(E, C) && neq(F, C);
+            bool haveSteep = (STEEP_DIRECTION_THRESHOLD * dist_B_G <= dist_D_C) && neq(E, G) && neq(H, G);
+            origin = haveShallow ? vec2(0.0, -0.25) : vec2(0.0, -0.5);
+            direction.y -= haveShallow ? 1.0 : 0.0;
+            direction.x += haveSteep ? 1.0 : 0.0;
+        }
+        vec3 blendPix = mix(D, B, step(dist_ycbcr(E, B), dist_ycbcr(E, D)));
+        res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
+    }
+
+    return res;
+}
+
 vec3 shown(sampler2D image) {
     vec2 size = vec2(textureSize(image, 0));
     vec2 covered = fwidth(uv) * size;
@@ -48,6 +224,8 @@ vec3 shown(sampler2D image) {
             vec2 centred = texel - 0.5;
             vec2 blend = clamp((fract(centred) - 0.5) * scale + 0.5, 0.0, 1.0);
             at = (floor(centred) + 0.5 + blend) / size;
+        } else if (mode == 3) {
+            return xbrz_sample(image, uv, size, covered);
         }
         return texture(image, at).rgb;
     }

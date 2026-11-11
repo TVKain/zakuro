@@ -142,6 +142,8 @@ pub enum ScreenFilter {
     Sharp,
     /// every pixel a square of the nearest one.
     Pixels,
+    /// xBRZ edge-directed scaling with smooth diagonal interpolation.
+    Xbrz,
 }
 
 impl ScreenFilter {
@@ -151,6 +153,7 @@ impl ScreenFilter {
             ScreenFilter::Smooth => 0,
             ScreenFilter::Pixels => 1,
             ScreenFilter::Sharp => 2,
+            ScreenFilter::Xbrz => 3,
         }
     }
 }
