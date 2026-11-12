@@ -17,6 +17,17 @@ pub enum Renderer {
     OpenGl,
 }
 
+impl Renderer {
+    pub const ALL: [Renderer; 2] = [Renderer::Vulkan, Renderer::OpenGl];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Renderer::Vulkan => "Vulkan",
+            Renderer::OpenGl => "OpenGL",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowMode {

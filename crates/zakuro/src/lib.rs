@@ -905,6 +905,28 @@ impl App {
     /// modal closing, game launching, and pause menu actions.
     fn poll_gamepads(&mut self, event_loop: &ActiveEventLoop) {
         for button in self.gamepads.poll() {
+            // 0. Active Option Select Popup (Dropdown Picker)
+            if let Some(popup) = &mut self.menus.select_popup {
+                match button {
+                    gilrs::Button::DPadUp => {
+                        popup.selected = popup.selected.saturating_sub(1);
+                    }
+                    gilrs::Button::DPadDown => {
+                        if !popup.options.is_empty() {
+                            popup.selected = (popup.selected + 1).min(popup.options.len() - 1);
+                        }
+                    }
+                    gilrs::Button::South => {
+                        self.menus.confirm_select_popup(&mut self.settings);
+                    }
+                    gilrs::Button::East => {
+                        self.menus.select_popup = None;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             // 1. Controller button rebinding in settings
             if let Some(index) = self.menus.rebinding_pad.take() {
                 if let Some((_, bound)) = self.settings.pad.all_mut().into_iter().nth(index) {
@@ -938,9 +960,11 @@ impl App {
                 } else if (button == gilrs::Button::LeftTrigger || button == gilrs::Button::LeftTrigger2) && self.menus.settings_open {
                     self.menus.settings_tab = self.menus.settings_tab.prev();
                     self.menus.settings_selected = 0;
+                    self.menus.settings_scroll_to_selected = true;
                 } else if (button == gilrs::Button::RightTrigger || button == gilrs::Button::RightTrigger2) && self.menus.settings_open {
                     self.menus.settings_tab = self.menus.settings_tab.next();
                     self.menus.settings_selected = 0;
+                    self.menus.settings_scroll_to_selected = true;
                 } else if self.menus.settings_open {
                     match button {
                         gilrs::Button::DPadUp => self.menus.settings_up(),
@@ -1929,6 +1953,7 @@ impl App {
             let own = program_id.is_some_and(|id| settings.has_own(id));
             actions.extend(menus.settings(ui.ctx(), settings, own));
             actions.extend(menus.game_settings(ui.ctx(), settings));
+            actions.extend(menus.show_select_popup(ui.ctx(), settings));
             if menus.multiplayer_open {
                 actions.extend(menus.multiplayer(ui.ctx(), settings, room.as_ref()));
             }

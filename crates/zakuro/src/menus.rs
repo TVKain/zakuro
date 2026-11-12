@@ -109,6 +109,28 @@ impl SettingsTab {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SelectTarget {
+    Renderer,
+    Layout,
+    Orientation,
+    Filter,
+    TopShape,
+    Stereo,
+    Microphone,
+    WindowMode,
+    Language,
+    Camera,
+}
+
+#[derive(Clone, Debug)]
+pub struct SelectPopup {
+    pub target: SelectTarget,
+    pub title: &'static str,
+    pub options: Vec<String>,
+    pub selected: usize,
+}
+
 #[derive(Default)]
 pub struct Menus {
     /// the menu over a running game.
@@ -157,6 +179,10 @@ pub struct Menus {
     pub settings_tab: SettingsTab,
     /// the setting row currently selected by controller in settings.
     pub settings_selected: usize,
+    /// whether the settings scroll area should scroll to reveal settings_selected.
+    pub settings_scroll_to_selected: bool,
+    /// active selection popup dialog when choosing options via controller/UI.
+    pub select_popup: Option<SelectPopup>,
     /// whether a modal dialog was just opened and needs initial widget focus.
     pub modal_just_opened: bool,
 }
@@ -295,7 +321,7 @@ fn nav_button(ui: &mut egui::Ui, focused: bool, text: &str) -> (bool, bool) {
     (resp.clicked(), resp.hovered())
 }
 
-fn setting_row(ui: &mut egui::Ui, selected: bool, content: impl FnOnce(&mut egui::Ui)) -> bool {
+fn setting_row(ui: &mut egui::Ui, selected: bool, should_scroll: bool, content: impl FnOnce(&mut egui::Ui)) -> bool {
     let mut frame = egui::Frame::new()
         .corner_radius(egui::CornerRadius::same(6))
         .inner_margin(egui::Margin::symmetric(8, 5));
@@ -307,7 +333,7 @@ fn setting_row(ui: &mut egui::Ui, selected: bool, content: impl FnOnce(&mut egui
         frame = frame.fill(Color32::from_rgb(20, 23, 30));
     }
     let res = frame.show(ui, content);
-    if selected {
+    if selected && should_scroll {
         res.response.scroll_to_me(Some(egui::Align::Center));
     }
     ui.add_space(3.0);
@@ -324,11 +350,15 @@ fn cycle<T: Copy + PartialEq>(list: &[T], current: T, delta: i32) -> T {
 impl Menus {
     /// whether any modal window is open (settings, cheats, multiplayer, game settings, message).
     pub fn modal_open(&self) -> bool {
-        self.settings_open || self.cheats_open || self.multiplayer_open || self.game_settings.is_some() || self.message.is_some()
+        self.settings_open || self.cheats_open || self.multiplayer_open || self.game_settings.is_some() || self.message.is_some() || self.select_popup.is_some()
     }
 
     /// closes any open modal window.
     pub fn close_modals(&mut self) {
+        if self.select_popup.is_some() {
+            self.select_popup = None;
+            return;
+        }
         self.settings_open = false;
         self.cheats_open = false;
         self.multiplayer_open = false;
@@ -341,6 +371,7 @@ impl Menus {
     pub fn open_settings(&mut self) {
         self.settings_open = true;
         self.settings_selected = 0;
+        self.settings_scroll_to_selected = true;
         self.modal_just_opened = true;
     }
 
@@ -355,24 +386,21 @@ impl Menus {
 
     pub fn settings_up(&mut self) {
         self.settings_selected = self.settings_selected.saturating_sub(1);
+        self.settings_scroll_to_selected = true;
     }
 
     pub fn settings_down(&mut self) {
         let max = self.settings_max_rows();
         if max > 0 {
             self.settings_selected = (self.settings_selected + 1).min(max - 1);
+            self.settings_scroll_to_selected = true;
         }
     }
 
     pub fn settings_adjust(&mut self, settings: &mut Settings, delta: i32) -> Option<Action> {
         match self.settings_tab {
             SettingsTab::Graphics => match self.settings_selected {
-                0 => {
-                    settings.renderer = match settings.renderer {
-                        Renderer::Vulkan => Renderer::OpenGl,
-                        Renderer::OpenGl => Renderer::Vulkan,
-                    };
-                }
+                0 => settings.renderer = cycle(&Renderer::ALL, settings.renderer, delta),
                 1 => settings.hardware_rasterizer = !settings.hardware_rasterizer,
                 2 => settings.resolution = (settings.resolution as i32 + delta).clamp(1, 8) as u32,
                 3 => settings.texture_packs = !settings.texture_packs,
@@ -413,7 +441,85 @@ impl Menus {
 
     pub fn settings_activate(&mut self, settings: &mut Settings) -> Option<Action> {
         match self.settings_tab {
-            SettingsTab::Graphics => self.settings_adjust(settings, 1),
+            SettingsTab::Graphics => match self.settings_selected {
+                0 => {
+                    self.select_popup = Some(SelectPopup {
+                        target: SelectTarget::Renderer,
+                        title: "Presenter / Backend",
+                        options: Renderer::ALL.iter().map(|r| r.name().to_string()).collect(),
+                        selected: Renderer::ALL.iter().position(|&r| r == settings.renderer).unwrap_or(0),
+                    });
+                    None
+                }
+                1 => {
+                    settings.hardware_rasterizer = !settings.hardware_rasterizer;
+                    None
+                }
+                2 => None,
+                3 => {
+                    settings.texture_packs = !settings.texture_packs;
+                    None
+                }
+                4 => {
+                    settings.frame_interpolation = !settings.frame_interpolation;
+                    None
+                }
+                5 => {
+                    self.select_popup = Some(SelectPopup {
+                        target: SelectTarget::Layout,
+                        title: "Screen Layout",
+                        options: Screens::ALL.iter().map(|s| s.name().to_string()).collect(),
+                        selected: Screens::ALL.iter().position(|&s| s == settings.layout).unwrap_or(0),
+                    });
+                    None
+                }
+                6 => {
+                    self.select_popup = Some(SelectPopup {
+                        target: SelectTarget::Orientation,
+                        title: "Screen Orientation",
+                        options: Orientation::ALL.iter().map(|o| o.name().to_string()).collect(),
+                        selected: Orientation::ALL.iter().position(|&o| o == settings.orientation).unwrap_or(0),
+                    });
+                    None
+                }
+                7 => {
+                    self.select_popup = Some(SelectPopup {
+                        target: SelectTarget::Filter,
+                        title: "Filter",
+                        options: Filter::ALL.iter().map(|f| f.name().to_string()).collect(),
+                        selected: Filter::ALL.iter().position(|&f| f == settings.filter).unwrap_or(0),
+                    });
+                    None
+                }
+                8 => {
+                    settings.integer_scale = !settings.integer_scale;
+                    None
+                }
+                9 => {
+                    self.select_popup = Some(SelectPopup {
+                        target: SelectTarget::TopShape,
+                        title: "Top Screen Aspect",
+                        options: TopShape::ALL.iter().map(|s| s.name().to_string()).collect(),
+                        selected: TopShape::ALL.iter().position(|&s| s == settings.top_shape).unwrap_or(0),
+                    });
+                    None
+                }
+                10 => {
+                    self.select_popup = Some(SelectPopup {
+                        target: SelectTarget::Stereo,
+                        title: "3D Stereoscopy",
+                        options: Stereo3d::ALL.iter().map(|s| s.name().to_string()).collect(),
+                        selected: Stereo3d::ALL.iter().position(|&s| s == settings.stereo).unwrap_or(0),
+                    });
+                    None
+                }
+                11 => None,
+                12 => {
+                    settings.swap_eyes = !settings.swap_eyes;
+                    None
+                }
+                _ => None,
+            },
             SettingsTab::Controller => match self.settings_selected {
                 i if i < 15 => {
                     self.rebinding_pad = Some(i);
@@ -433,19 +539,205 @@ impl Menus {
                 _ => None,
             },
             SettingsTab::Audio => match self.settings_selected {
+                0 => None,
                 1 => {
                     settings.mute = !settings.mute;
                     None
                 }
-                _ => self.settings_adjust(settings, 1),
+                2 => {
+                    self.select_popup = Some(SelectPopup {
+                        target: SelectTarget::Microphone,
+                        title: "Microphone Source",
+                        options: MicrophoneSource::ALL.iter().map(|m| m.name().to_string()).collect(),
+                        selected: MicrophoneSource::ALL.iter().position(|&m| m == settings.microphone).unwrap_or(0),
+                    });
+                    None
+                }
+                _ => None,
             },
             SettingsTab::System => match self.settings_selected {
+                0 => {
+                    self.select_popup = Some(SelectPopup {
+                        target: SelectTarget::WindowMode,
+                        title: "Window Mode",
+                        options: WindowMode::ALL.iter().map(|w| w.name().to_string()).collect(),
+                        selected: WindowMode::ALL.iter().position(|&w| w == settings.window_mode).unwrap_or(0),
+                    });
+                    None
+                }
+                1 => None,
+                2 => {
+                    settings.show_fps = !settings.show_fps;
+                    None
+                }
                 3 => Some(Action::Fullscreen),
+                4 => {
+                    self.select_popup = Some(SelectPopup {
+                        target: SelectTarget::Language,
+                        title: "System Language",
+                        options: Language::ALL.iter().map(|l| l.name().to_string()).collect(),
+                        selected: Language::ALL.iter().position(|&l| l == settings.language).unwrap_or(0),
+                    });
+                    None
+                }
+                5 => {
+                    settings.recompiled = !settings.recompiled;
+                    None
+                }
+                6 => {
+                    self.select_popup = Some(SelectPopup {
+                        target: SelectTarget::Camera,
+                        title: "Camera Source",
+                        options: CameraSource::ALL.iter().map(|c| c.name().to_string()).collect(),
+                        selected: CameraSource::ALL.iter().position(|&c| c == settings.camera).unwrap_or(0),
+                    });
+                    None
+                }
                 7 => Some(Action::ChooseCameraPicture),
                 8 => Some(Action::CopyReport),
-                _ => self.settings_adjust(settings, 1),
+                9 => None,
+                _ => None,
             },
         }
+    }
+
+    pub fn confirm_select_popup(&mut self, settings: &mut Settings) -> Option<Action> {
+        let popup = self.select_popup.take()?;
+        let idx = popup.selected;
+        match popup.target {
+            SelectTarget::Renderer => {
+                if let Some(&r) = Renderer::ALL.get(idx) {
+                    settings.renderer = r;
+                }
+            }
+            SelectTarget::Layout => {
+                if let Some(&l) = Screens::ALL.get(idx) {
+                    settings.layout = l;
+                }
+            }
+            SelectTarget::Orientation => {
+                if let Some(&o) = Orientation::ALL.get(idx) {
+                    settings.orientation = o;
+                }
+            }
+            SelectTarget::Filter => {
+                if let Some(&f) = Filter::ALL.get(idx) {
+                    settings.filter = f;
+                }
+            }
+            SelectTarget::TopShape => {
+                if let Some(&s) = TopShape::ALL.get(idx) {
+                    settings.top_shape = s;
+                }
+            }
+            SelectTarget::Stereo => {
+                if let Some(&s) = Stereo3d::ALL.get(idx) {
+                    settings.stereo = s;
+                }
+            }
+            SelectTarget::Microphone => {
+                if let Some(&m) = MicrophoneSource::ALL.get(idx) {
+                    settings.microphone = m;
+                }
+            }
+            SelectTarget::WindowMode => {
+                if let Some(&w) = WindowMode::ALL.get(idx) {
+                    settings.window_mode = w;
+                }
+            }
+            SelectTarget::Language => {
+                if let Some(&l) = Language::ALL.get(idx) {
+                    settings.language = l;
+                }
+            }
+            SelectTarget::Camera => {
+                if let Some(&c) = CameraSource::ALL.get(idx) {
+                    settings.camera = c;
+                }
+            }
+        }
+        None
+    }
+
+    pub fn show_select_popup(&mut self, ctx: &egui::Context, settings: &mut Settings) -> Vec<Action> {
+        let actions = Vec::new();
+        let Some(popup) = self.select_popup.clone() else { return actions };
+        let mut confirmed_idx = None;
+
+        egui::Area::new(egui::Id::new("select_popup_overlay"))
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Tooltip)
+            .show(ctx, |ui| {
+                let screen_rect = ctx.content_rect();
+                ui.painter().rect_filled(screen_rect, 0.0, Color32::from_black_alpha(180));
+
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(20, 24, 33))
+                    .stroke(egui::Stroke::new(1.5, Color32::from_rgb(56, 189, 248)))
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::symmetric(20, 16))
+                    .show(ui, |ui| {
+                        ui.set_width(300.0);
+                        ui.vertical_centered(|ui| {
+                            ui.heading(RichText::new(popup.title).strong().size(17.0).color(Color32::WHITE));
+                            ui.add_space(3.0);
+                            ui.label(RichText::new("Choose an option").weak().size(12.0));
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.add_space(6.0);
+
+                            for (i, opt) in popup.options.iter().enumerate() {
+                                let is_highlighted = popup.selected == i;
+                                let mut frame = egui::Frame::new()
+                                    .corner_radius(egui::CornerRadius::same(8))
+                                    .inner_margin(egui::Margin::symmetric(12, 7));
+                                if is_highlighted {
+                                    frame = frame
+                                        .fill(Color32::from_rgb(37, 99, 235))
+                                        .stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253)));
+                                } else {
+                                    frame = frame.fill(Color32::from_rgb(28, 33, 44));
+                                }
+                                let resp = frame.show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        if is_highlighted {
+                                            ui.label(RichText::new("▶").color(Color32::from_rgb(147, 197, 253)).strong());
+                                        } else {
+                                            ui.add_space(14.0);
+                                        }
+                                        ui.label(RichText::new(opt).size(13.5).strong().color(Color32::WHITE));
+                                    });
+                                });
+                                ui.add_space(3.0);
+                                if resp.response.clicked() {
+                                    confirmed_idx = Some(i);
+                                }
+                            }
+
+                            ui.add_space(6.0);
+                            ui.separator();
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                let total_w = ui.available_width();
+                                let hint_w = 210.0;
+                                if total_w > hint_w {
+                                    ui.add_space((total_w - hint_w) / 2.0);
+                                }
+                                button_hint(ui, "A", "Confirm", Color32::from_rgb(22, 163, 74));
+                                ui.add_space(10.0);
+                                button_hint(ui, "B", "Cancel", Color32::from_rgb(220, 38, 38));
+                            });
+                        });
+                    });
+            });
+
+        if let Some(idx) = confirmed_idx {
+            if let Some(p) = &mut self.select_popup {
+                p.selected = idx;
+            }
+            self.confirm_select_popup(settings);
+        }
+        actions
     }
 
     /// triggers the pause menu action at pause_selected index.
@@ -786,7 +1078,8 @@ impl Menus {
                     .corner_radius(egui::CornerRadius::same(12))
                     .inner_margin(egui::Margin::symmetric(16, 16))
                     .show(ui, |ui| {
-                        ui.set_width(260.0);
+                        let pause_w = 260.0;
+                        ui.set_width(pause_w);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(name).strong().size(18.0));
                     ui.add_space(2.0);
@@ -810,21 +1103,22 @@ impl Menus {
 
                     // Slot selector & Save/Load
                     ui.horizontal(|ui| {
-                        let total_w = ui.available_width();
-                        let btn_arrow_w = 26.0;
-                        let text_w = total_w - (btn_arrow_w * 2.0) - (ui.spacing().item_spacing.x * 2.0);
-                        if ui.add_sized([btn_arrow_w, 24.0], egui::Button::new("◀")).clicked() {
+                        let arrow_w = 30.0;
+                        let spacing = ui.spacing().item_spacing.x;
+                        let text_w = pause_w - (arrow_w * 2.0) - (spacing * 2.0);
+                        if ui.add_sized([arrow_w, 26.0], egui::Button::new("◀")).clicked() {
                             self.slot = if self.slot <= 1 { 9 } else { self.slot - 1 };
                         }
                         let slot_label = format!("Slot {} ({})", self.slot, saved.unwrap_or("empty"));
-                        ui.add_sized([text_w, 24.0], egui::Label::new(RichText::new(slot_label).strong()));
-                        if ui.add_sized([btn_arrow_w, 24.0], egui::Button::new("▶")).clicked() {
+                        ui.add_sized([text_w, 26.0], egui::Label::new(RichText::new(slot_label).strong()).selectable(false));
+                        if ui.add_sized([arrow_w, 26.0], egui::Button::new("▶")).clicked() {
                             self.slot = if self.slot >= 9 { 1 } else { self.slot + 1 };
                         }
                     });
 
                     ui.horizontal(|ui| {
-                        let slot_w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+                        let spacing = ui.spacing().item_spacing.x;
+                        let slot_w = (pause_w - spacing) / 2.0;
                         let focused_save = pause_sel == 1;
                         let btn_save = egui::Button::new("Save state");
                         let resp_save = if focused_save {
@@ -839,11 +1133,13 @@ impl Menus {
 
                         let focused_load = pause_sel == 2;
                         let btn_load = egui::Button::new("Load state");
-                        let resp_load = if focused_load {
-                            ui.add_enabled(saved.is_some(), btn_load.min_size(Vec2::new(slot_w, 32.0)).fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
-                        } else {
-                            ui.add_enabled(saved.is_some(), btn_load.min_size(Vec2::new(slot_w, 32.0)))
-                        };
+                        let resp_load = ui.add_enabled_ui(saved.is_some(), |ui| {
+                            if focused_load {
+                                ui.add_sized([slot_w, 32.0], btn_load.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
+                            } else {
+                                ui.add_sized([slot_w, 32.0], btn_load)
+                            }
+                        }).inner;
                         if resp_load.hovered() { new_pause_sel = 2; }
                         if resp_load.on_hover_text("F8 loads this slot while playing.").clicked() {
                             actions.push(Action::LoadState);
@@ -906,15 +1202,14 @@ impl Menus {
                     ui.add_space(8.0);
                     ui.separator();
                     ui.horizontal(|ui| {
-                        let total_w = ui.available_width();
-                        let hint_w = 216.0;
-                        let pad = ((total_w - hint_w) / 2.0).max(0.0);
+                        let hint_w = 230.0;
+                        let pad = ((pause_w - hint_w) / 2.0).max(0.0);
                         ui.add_space(pad);
                         button_hint(ui, "A", "Select", Color32::from_rgb(22, 163, 74));
-                        ui.add_space(8.0);
+                        ui.add_space(6.0);
                         button_hint(ui, "B", "Resume", Color32::from_rgb(220, 38, 38));
-                        ui.add_space(8.0);
-                        button_hint(ui, "D-Pad", "Move", Color32::from_rgb(75, 85, 99));
+                        ui.add_space(6.0);
+                        button_hint(ui, "◀/▶", "Slot", Color32::from_rgb(50, 60, 75));
                     });
                     self.pause_selected = new_pause_sel;
                 });
@@ -1139,6 +1434,7 @@ impl Menus {
                         if resp.clicked() {
                             self.settings_tab = tab;
                             self.settings_selected = 0;
+                            self.settings_scroll_to_selected = true;
                         }
                     }
                     button_hint(ui, "RB", "", Color32::from_rgb(50, 60, 75));
@@ -1146,12 +1442,14 @@ impl Menus {
                 ui.add_space(4.0);
                 ui.separator();
 
+                let scroll = self.settings_scroll_to_selected;
+
                 egui::ScrollArea::vertical().max_height(scroll_h).show(ui, |ui| {
                     match self.settings_tab {
                         SettingsTab::Graphics => {
                             let sel = self.settings_selected;
                             let mut new_sel = sel;
-                            if setting_row(ui, sel == 0, |ui| {
+                            if setting_row(ui, sel == 0, scroll, |ui| {
                                 egui::ComboBox::from_label("Presented with")
                                     .selected_text(match settings.renderer {
                                         Renderer::Vulkan => "Vulkan",
@@ -1162,29 +1460,29 @@ impl Menus {
                                         ui.selectable_value(&mut settings.renderer, Renderer::OpenGl, "OpenGL");
                                     });
                             }) { new_sel = 0; }
-                            if setting_row(ui, sel == 1, |ui| rasterizer(ui, &mut settings.hardware_rasterizer)) { new_sel = 1; }
+                            if setting_row(ui, sel == 1, scroll, |ui| rasterizer(ui, &mut settings.hardware_rasterizer)) { new_sel = 1; }
                             let hw = settings.hardware_rasterizer;
-                            if setting_row(ui, sel == 2, |ui| {
+                            if setting_row(ui, sel == 2, scroll, |ui| {
                                 ui.add_enabled_ui(hw, |ui| resolution(ui, &mut settings.resolution));
                             }) { new_sel = 2; }
-                            if setting_row(ui, sel == 3, |ui| {
+                            if setting_row(ui, sel == 3, scroll, |ui| {
                                 ui.add_enabled_ui(hw, |ui| texture_packs(ui, &mut settings.texture_packs));
                             }) { new_sel = 3; }
                             let interpolates = hw && settings.renderer == Renderer::Vulkan;
-                            if setting_row(ui, sel == 4, |ui| {
+                            if setting_row(ui, sel == 4, scroll, |ui| {
                                 ui.add_enabled_ui(interpolates, |ui| interpolation(ui, &mut settings.frame_interpolation));
                             }) { new_sel = 4; }
-                            if setting_row(ui, sel == 5, |ui| screens(ui, &mut settings.layout)) { new_sel = 5; }
-                            if setting_row(ui, sel == 6, |ui| rotation(ui, &mut settings.orientation)) { new_sel = 6; }
-                            if setting_row(ui, sel == 7, |ui| filter(ui, &mut settings.filter)) { new_sel = 7; }
-                            if setting_row(ui, sel == 8, |ui| integer_scale(ui, &mut settings.integer_scale)) { new_sel = 8; }
-                            if setting_row(ui, sel == 9, |ui| top_shape(ui, &mut settings.top_shape)) { new_sel = 9; }
-                            if setting_row(ui, sel == 10, |ui| stereo_3d(ui, &mut settings.stereo)) { new_sel = 10; }
+                            if setting_row(ui, sel == 5, scroll, |ui| screens(ui, &mut settings.layout)) { new_sel = 5; }
+                            if setting_row(ui, sel == 6, scroll, |ui| rotation(ui, &mut settings.orientation)) { new_sel = 6; }
+                            if setting_row(ui, sel == 7, scroll, |ui| filter(ui, &mut settings.filter)) { new_sel = 7; }
+                            if setting_row(ui, sel == 8, scroll, |ui| integer_scale(ui, &mut settings.integer_scale)) { new_sel = 8; }
+                            if setting_row(ui, sel == 9, scroll, |ui| top_shape(ui, &mut settings.top_shape)) { new_sel = 9; }
+                            if setting_row(ui, sel == 10, scroll, |ui| stereo_3d(ui, &mut settings.stereo)) { new_sel = 10; }
                             let stereo = settings.stereo != Stereo3d::Off;
-                            if setting_row(ui, sel == 11, |ui| {
+                            if setting_row(ui, sel == 11, scroll, |ui| {
                                 ui.add_enabled_ui(stereo, |ui| depth_3d(ui, &mut settings.depth_3d));
                             }) { new_sel = 11; }
-                            if setting_row(ui, sel == 12, |ui| {
+                            if setting_row(ui, sel == 12, scroll, |ui| {
                                 ui.checkbox(&mut settings.swap_eyes, "Swap eyes")
                                     .on_hover_text("Each eye gets the other's picture, for viewing cross-eyed, glasses worn the other way round, or a monitor whose rows start with the other eye.");
                             }) { new_sel = 12; }
@@ -1197,27 +1495,31 @@ impl Menus {
                             let mut new_sel = sel;
                             ui.heading("Gamepad / Handheld Controls");
                             ui.label(RichText::new("Press (A) to rebind a button, (B) to cancel rebinding.").size(12.0).weak());
-                            ui.add_space(4.0);
+                            ui.add_space(6.0);
 
                             for (i, (name, button)) in settings.pad.all_mut().into_iter().enumerate() {
                                 let is_sel = sel == i;
                                 let is_rebinding = self.rebinding_pad == Some(i);
-                                if setting_row(ui, is_sel, |ui| {
+                                if setting_row(ui, is_sel, scroll, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.add_sized([120.0, 22.0], egui::Label::new(RichText::new(name).strong()));
-                                        let text = if is_rebinding {
-                                            "press button… (B cancels)".to_owned()
-                                        } else {
-                                            button_name(*button).to_owned()
-                                        };
-                                        let mut btn = egui::Button::new(RichText::new(text).size(12.0));
-                                        if is_rebinding {
-                                            btn = btn.fill(Color32::from_rgb(180, 83, 9)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(251, 191, 36)));
-                                        }
-                                        if ui.add_sized([160.0, 22.0], btn).clicked() {
-                                            self.rebinding_pad = Some(i);
-                                            self.rebinding = None;
-                                        }
+                                        ui.label(RichText::new(name).strong().size(13.0));
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            let text = if is_rebinding {
+                                                "press button… (B cancels)".to_owned()
+                                            } else {
+                                                button_name(*button).to_owned()
+                                            };
+                                            let mut btn = egui::Button::new(RichText::new(text).size(12.5));
+                                            if is_rebinding {
+                                                btn = btn.fill(Color32::from_rgb(180, 83, 9)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(251, 191, 36)));
+                                            } else {
+                                                btn = btn.fill(Color32::from_rgb(28, 38, 54));
+                                            }
+                                            if ui.add_sized([180.0, 26.0], btn).clicked() {
+                                                self.rebinding_pad = Some(i);
+                                                self.rebinding = None;
+                                            }
+                                        });
                                     });
                                 }) {
                                     new_sel = i;
@@ -1225,17 +1527,22 @@ impl Menus {
                             }
                             ui.add_space(4.0);
                             ui.label(RichText::new("The circle pad is the left stick, and Home opens the menu over the game.").weak());
-                            if setting_row(ui, sel == 15, |ui| {
-                                if ui.button("Default controller").clicked() {
-                                    settings.pad = PadButtons::default();
-                                    self.rebinding_pad = None;
-                                }
+                            if setting_row(ui, sel == 15, scroll, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("Reset Gamepad Bindings").strong().size(13.0));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.add_sized([180.0, 26.0], egui::Button::new("Default controller")).clicked() {
+                                            settings.pad = PadButtons::default();
+                                            self.rebinding_pad = None;
+                                        }
+                                    });
+                                });
                             }) { new_sel = 15; }
 
                             ui.add_space(8.0);
                             ui.separator();
                             ui.heading("Keyboard Controls");
-                            egui::Grid::new("controls").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
+                            egui::Grid::new("controls").num_columns(4).spacing([16.0, 6.0]).show(ui, |ui| {
                                 for (i, (name, key)) in settings.keys.all_mut().into_iter().enumerate() {
                                     ui.label(name);
                                     let text = if self.rebinding == Some(i) { "press a key…".to_owned() } else { key_name(*key) };
@@ -1248,11 +1555,16 @@ impl Menus {
                                     }
                                 }
                             });
-                            if setting_row(ui, sel == 16, |ui| {
-                                if ui.button("Default keyboard").clicked() {
-                                    settings.keys = Keys::default();
-                                    self.rebinding = None;
-                                }
+                            if setting_row(ui, sel == 16, scroll, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("Reset Keyboard Bindings").strong().size(13.0));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.add_sized([180.0, 26.0], egui::Button::new("Default keyboard")).clicked() {
+                                            settings.keys = Keys::default();
+                                            self.rebinding = None;
+                                        }
+                                    });
+                                });
                             }) { new_sel = 16; }
                             ui.label(RichText::new("Drag with the right mouse button to tilt the console, for games that use the motion sensors.").weak());
                             self.settings_selected = new_sel;
@@ -1261,17 +1573,17 @@ impl Menus {
                             let sel = self.settings_selected;
                             let mut new_sel = sel;
                             ui.heading("Volume");
-                            if setting_row(ui, sel == 0, |ui| {
+                            if setting_row(ui, sel == 0, scroll, |ui| {
                                 ui.add(egui::Slider::new(&mut settings.volume, 0.0..=1.0).text("Volume").show_value(false));
                             }) { new_sel = 0; }
-                            if setting_row(ui, sel == 1, |ui| {
+                            if setting_row(ui, sel == 1, scroll, |ui| {
                                 ui.checkbox(&mut settings.mute, "Mute");
                             }) { new_sel = 1; }
 
                             ui.add_space(8.0);
                             ui.separator();
                             ui.heading("Microphone");
-                            if setting_row(ui, sel == 2, |ui| {
+                            if setting_row(ui, sel == 2, scroll, |ui| {
                                 egui::ComboBox::from_label("Microphone").selected_text(settings.microphone.name()).show_ui(ui, |ui| {
                                     for source in MicrophoneSource::ALL {
                                         ui.selectable_value(&mut settings.microphone, source, source.name());
@@ -1286,7 +1598,7 @@ impl Menus {
                             let sel = self.settings_selected;
                             let mut new_sel = sel;
                             ui.heading("Display & Window");
-                            if setting_row(ui, sel == 0, |ui| {
+                            if setting_row(ui, sel == 0, scroll, |ui| {
                                 egui::ComboBox::from_label("Window mode")
                                     .selected_text(settings.window_mode.name())
                                     .show_ui(ui, |ui| {
@@ -1295,11 +1607,11 @@ impl Menus {
                                         }
                                     });
                             }) { new_sel = 0; }
-                            if setting_row(ui, sel == 1, |ui| window_scale(ui, &mut settings.scale)) { new_sel = 1; }
-                            if setting_row(ui, sel == 2, |ui| {
+                            if setting_row(ui, sel == 1, scroll, |ui| window_scale(ui, &mut settings.scale)) { new_sel = 1; }
+                            if setting_row(ui, sel == 2, scroll, |ui| {
                                 ui.checkbox(&mut settings.show_fps, "Show the frame rate");
                             }) { new_sel = 2; }
-                            if setting_row(ui, sel == 3, |ui| {
+                            if setting_row(ui, sel == 3, scroll, |ui| {
                                 if ui.button("Toggle Fullscreen (F11)").clicked() {
                                     actions.push(Action::Fullscreen);
                                 }
@@ -1308,12 +1620,12 @@ impl Menus {
                             ui.add_space(8.0);
                             ui.separator();
                             ui.heading("Emulation");
-                            if setting_row(ui, sel == 4, |ui| language(ui, &mut settings.language)) { new_sel = 4; }
-                            if setting_row(ui, sel == 5, |ui| {
+                            if setting_row(ui, sel == 4, scroll, |ui| language(ui, &mut settings.language)) { new_sel = 4; }
+                            if setting_row(ui, sel == 5, scroll, |ui| {
                                 code(ui, &mut settings.recompiled);
                                 ui.label(RichText::new("Recompiled code changes with the next game started, or Reset.").weak());
                             }) { new_sel = 5; }
-                            if setting_row(ui, sel == 6, |ui| {
+                            if setting_row(ui, sel == 6, scroll, |ui| {
                                 egui::ComboBox::from_label("Cameras").selected_text(settings.camera.name()).show_ui(ui, |ui| {
                                     for source in CameraSource::ALL {
                                         ui.selectable_value(&mut settings.camera, source, source.name());
@@ -1322,7 +1634,7 @@ impl Menus {
                                 .response
                                 .on_hover_text("What the console's cameras see. The computer's camera turns on only while a game takes pictures.");
                             }) { new_sel = 6; }
-                            if setting_row(ui, sel == 7, |ui| {
+                            if setting_row(ui, sel == 7, scroll, |ui| {
                                 ui.horizontal(|ui| {
                                     if ui.button("Show camera picture…").on_hover_text("Pick a picture for the console's cameras to see, a QR code's say, in place of the computer's camera.").clicked() {
                                         actions.push(Action::ChooseCameraPicture);
@@ -1338,7 +1650,7 @@ impl Menus {
                                     }
                                 });
                             }) { new_sel = 7; }
-                            if setting_row(ui, sel == 8, |ui| {
+                            if setting_row(ui, sel == 8, scroll, |ui| {
                                 if ui.button("Copy report info").clicked() {
                                     actions.push(Action::CopyReport);
                                 }
@@ -1369,7 +1681,7 @@ impl Menus {
                                     settings.background = None;
                                 }
                             });
-                            if setting_row(ui, sel == 9, |ui| {
+                            if setting_row(ui, sel == 9, scroll, |ui| {
                                 ui.add_enabled(
                                     settings.background.is_some(),
                                     egui::Slider::new(&mut settings.background_opacity, 0.0..=1.0)
@@ -1381,6 +1693,7 @@ impl Menus {
                         }
                     }
                 });
+                self.settings_scroll_to_selected = false;
 
                 ui.add_space(6.0);
                 ui.separator();
