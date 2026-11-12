@@ -559,6 +559,9 @@ pub struct GameSettings {
     #[serde(deserialize_with = "or_default")]
     pub language: Option<Language>,
     pub recompiled: Option<bool>,
+    pub show_fps: Option<bool>,
+    #[serde(deserialize_with = "or_default")]
+    pub window_mode: Option<WindowMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -710,6 +713,8 @@ impl GameSettings {
         settings.depth_3d = self.depth_3d.unwrap_or(settings.depth_3d);
         settings.language = self.language.unwrap_or(settings.language);
         settings.recompiled = self.recompiled.unwrap_or(settings.recompiled);
+        settings.show_fps = self.show_fps.unwrap_or(settings.show_fps);
+        settings.window_mode = self.window_mode.unwrap_or(settings.window_mode);
     }
 }
 

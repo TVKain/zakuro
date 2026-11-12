@@ -722,6 +722,7 @@ impl App {
             self.active = self.settings.clone();
         }
         self.apply_layout();
+        self.apply_window_mode();
         started
     }
 
@@ -1177,20 +1178,48 @@ impl App {
                 self.resize_after_full_screen = false;
                 window.set_fullscreen(Some(Fullscreen::Borderless(None)));
                 self.settings.window_mode = WindowMode::Fullscreen;
+                self.active.window_mode = WindowMode::Fullscreen;
             } else {
                 window.set_fullscreen(None);
                 if self.maximized_before_full_screen {
                     window.set_maximized(true);
                     self.settings.window_mode = WindowMode::Maximized;
+                    self.active.window_mode = WindowMode::Maximized;
                 } else {
                     window.set_maximized(false);
                     self.settings.window_mode = WindowMode::Windowed;
+                    self.active.window_mode = WindowMode::Windowed;
                     if self.resize_after_full_screen {
                         let _ = window.request_inner_size(self.window_size());
                     }
                 }
             }
             self.settings.save();
+        }
+    }
+
+    fn apply_window_mode(&mut self) {
+        if let Some(window) = &self.window {
+            match self.active.window_mode {
+                WindowMode::Fullscreen => {
+                    if window.fullscreen().is_none() {
+                        window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    }
+                }
+                WindowMode::Maximized => {
+                    if window.fullscreen().is_some() {
+                        window.set_fullscreen(None);
+                    }
+                    window.set_maximized(true);
+                }
+                WindowMode::Windowed => {
+                    if window.fullscreen().is_some() {
+                        window.set_fullscreen(None);
+                    }
+                    window.set_maximized(false);
+                    let _ = window.request_inner_size(self.window_size());
+                }
+            }
         }
     }
 
@@ -1221,28 +1250,7 @@ impl App {
         self.gamepads.set_buttons(self.settings.pad.clone());
         self.apply_volume();
         self.apply_layout();
-        if let Some(window) = &self.window {
-            match self.settings.window_mode {
-                WindowMode::Fullscreen => {
-                    if window.fullscreen().is_none() {
-                        window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-                    }
-                }
-                WindowMode::Maximized => {
-                    if window.fullscreen().is_some() {
-                        window.set_fullscreen(None);
-                    }
-                    window.set_maximized(true);
-                }
-                WindowMode::Windowed => {
-                    if window.fullscreen().is_some() {
-                        window.set_fullscreen(None);
-                    }
-                    window.set_maximized(false);
-                    let _ = window.request_inner_size(self.window_size());
-                }
-            }
-        }
+        self.apply_window_mode();
     }
 
     /// gives the running game's cameras what the settings say they see,
@@ -1951,7 +1959,7 @@ impl App {
             .map(ago);
         let program_id = self.program_id();
         let (Some(gui), Some(window)) = (&mut self.gui, &self.window) else { return Overlay::default() };
-        let show_fps = self.settings.show_fps;
+        let show_fps = self.active.show_fps;
         let game = self.game.as_ref().map(|game| (game.name.clone(), game.fps, game.system.recompiled.is_some()));
         let fast = self.fast_forwarding;
         let keyboard = self.game.as_ref().and_then(|game| game.system.keyboard_request().cloned());

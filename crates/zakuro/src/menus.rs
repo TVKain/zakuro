@@ -506,7 +506,7 @@ impl Menus {
     pub fn game_settings_down(&mut self) {
         let max = match self.game_settings_tab {
             GameSettingsTab::Graphics => 12,
-            GameSettingsTab::System => 3,
+            GameSettingsTab::System => 6,
         };
         self.game_settings_selected = (self.game_settings_selected + 1).min(max - 1);
         self.game_settings_scroll_to_selected = true;
@@ -531,7 +531,29 @@ impl Menus {
                 }
                 _ => None,
             },
-            GameSettingsTab::System => None,
+            GameSettingsTab::System => match self.game_settings_selected {
+                0 => {
+                    let cur = entry.show_fps.unwrap_or(settings.show_fps);
+                    entry.show_fps = Some(!cur);
+                    Some(Action::Settings)
+                }
+                2 => {
+                    let cur = entry.window_mode.unwrap_or(settings.window_mode);
+                    entry.window_mode = Some(cycle(&WindowMode::ALL, cur, delta));
+                    Some(Action::Settings)
+                }
+                3 => {
+                    let cur = entry.language.unwrap_or(settings.language);
+                    entry.language = Some(cycle(&Language::ALL, cur, delta));
+                    Some(Action::Settings)
+                }
+                4 => {
+                    let cur = entry.recompiled.unwrap_or(settings.recompiled);
+                    entry.recompiled = Some(!cur);
+                    Some(Action::Settings)
+                }
+                _ => None,
+            },
         }
     }
 
@@ -556,9 +578,12 @@ impl Menus {
                     _ => {}
                 },
                 GameSettingsTab::System => match self.game_settings_selected {
-                    0 => entry.language = None,
-                    1 => entry.recompiled = None,
-                    2 => remove_all = true,
+                    0 => entry.show_fps = None,
+                    1 => {}
+                    2 => entry.window_mode = None,
+                    3 => entry.language = None,
+                    4 => entry.recompiled = None,
+                    5 => remove_all = true,
                     _ => {}
                 },
             }
@@ -675,6 +700,24 @@ impl Menus {
             },
             GameSettingsTab::System => match self.game_settings_selected {
                 0 => {
+                    let entry = settings.per_game.entry(key).or_default();
+                    let cur = entry.show_fps.unwrap_or(settings.show_fps);
+                    entry.show_fps = Some(!cur);
+                    Some(Action::Settings)
+                }
+                1 => Some(Action::Fullscreen),
+                2 => {
+                    let cur = settings.per_game.get(&key).and_then(|g| g.window_mode).unwrap_or(settings.window_mode);
+                    self.select_popup = Some(SelectPopup::game(
+                        SelectTarget::WindowMode,
+                        program_id,
+                        "Window Mode",
+                        WindowMode::ALL.iter().map(|w| w.name().to_string()).collect(),
+                        WindowMode::ALL.iter().position(|&w| w == cur).unwrap_or(0),
+                    ));
+                    None
+                }
+                3 => {
                     let cur = settings.per_game.get(&key).and_then(|g| g.language).unwrap_or(settings.language);
                     self.select_popup = Some(SelectPopup::game(
                         SelectTarget::Language,
@@ -685,13 +728,13 @@ impl Menus {
                     ));
                     None
                 }
-                1 => {
+                4 => {
                     let entry = settings.per_game.entry(key).or_default();
                     let cur = entry.recompiled.unwrap_or(settings.recompiled);
                     entry.recompiled = Some(!cur);
                     Some(Action::Settings)
                 }
-                2 => {
+                5 => {
                     settings.per_game.remove(&key);
                     Some(Action::Settings)
                 }
@@ -961,6 +1004,11 @@ impl Menus {
                 SelectTarget::Language => {
                     if let Some(&l) = Language::ALL.get(idx) {
                         entry.language = Some(l);
+                    }
+                }
+                SelectTarget::WindowMode => {
+                    if let Some(&w) = WindowMode::ALL.get(idx) {
+                        entry.window_mode = Some(w);
                     }
                 }
                 _ => {}
@@ -2330,10 +2378,69 @@ impl Menus {
                             let sel = self.game_settings_selected;
                             let mut new_sel = sel;
 
-                            // 0: Language
-                            let lang_val = game.language.unwrap_or(general.language);
-                            let (act, hov) = game_setting_row(ui, sel == 0, scroll, "Console Language", game.language.is_some(), lang_val.name(), general.language.name());
+                            // 0: Show Frame Rate
+                            let fps_val = game.show_fps.unwrap_or(general.show_fps);
+                            let (act, hov) = game_setting_row(
+                                ui,
+                                sel == 0,
+                                scroll,
+                                "Show Frame Rate",
+                                game.show_fps.is_some(),
+                                if fps_val { "Enabled" } else { "Disabled" },
+                                if general.show_fps { "Enabled" } else { "Disabled" },
+                            );
                             if hov { new_sel = 0; }
+                            match act {
+                                GameRowAction::Reset => game.show_fps = None,
+                                GameRowAction::Edit => game.show_fps = Some(!fps_val),
+                                GameRowAction::None => {}
+                            }
+
+                            // 1: Toggle Fullscreen
+                            let is_full_sel = sel == 1;
+                            if setting_row(ui, is_full_sel, scroll, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("Toggle Fullscreen").strong().size(13.0).color(Color32::from_rgb(225, 232, 245)));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.button("Toggle Fullscreen (F11)").clicked() {
+                                            actions.push(Action::Fullscreen);
+                                        }
+                                    });
+                                });
+                            }) {
+                                new_sel = 1;
+                            }
+
+                            // 2: Window Mode
+                            let win_val = game.window_mode.unwrap_or(general.window_mode);
+                            let (act, hov) = game_setting_row(
+                                ui,
+                                sel == 2,
+                                scroll,
+                                "Window Mode",
+                                game.window_mode.is_some(),
+                                win_val.name(),
+                                general.window_mode.name(),
+                            );
+                            if hov { new_sel = 2; }
+                            match act {
+                                GameRowAction::Reset => game.window_mode = None,
+                                GameRowAction::Edit => {
+                                    self.select_popup = Some(SelectPopup::game(
+                                        SelectTarget::WindowMode,
+                                        program_id,
+                                        "Window Mode",
+                                        WindowMode::ALL.iter().map(|w| w.name().to_string()).collect(),
+                                        WindowMode::ALL.iter().position(|&w| w == win_val).unwrap_or(0),
+                                    ));
+                                }
+                                GameRowAction::None => {}
+                            }
+
+                            // 3: Language
+                            let lang_val = game.language.unwrap_or(general.language);
+                            let (act, hov) = game_setting_row(ui, sel == 3, scroll, "Console Language", game.language.is_some(), lang_val.name(), general.language.name());
+                            if hov { new_sel = 3; }
                             match act {
                                 GameRowAction::Reset => game.language = None,
                                 GameRowAction::Edit => {
@@ -2348,19 +2455,19 @@ impl Menus {
                                 GameRowAction::None => {}
                             }
 
-                            // 1: Recompiled code
+                            // 4: Recompiled code
                             let recomp_val = game.recompiled.unwrap_or(general.recompiled);
-                            let (act, hov) = game_setting_row(ui, sel == 1, scroll, "Run Recompiled Code", game.recompiled.is_some(), if recomp_val { "Enabled" } else { "Disabled" }, if general.recompiled { "Enabled" } else { "Disabled" });
-                            if hov { new_sel = 1; }
+                            let (act, hov) = game_setting_row(ui, sel == 4, scroll, "Run Recompiled Code", game.recompiled.is_some(), if recomp_val { "Enabled" } else { "Disabled" }, if general.recompiled { "Enabled" } else { "Disabled" });
+                            if hov { new_sel = 4; }
                             match act {
                                 GameRowAction::Reset => game.recompiled = None,
                                 GameRowAction::Edit => game.recompiled = Some(!recomp_val),
                                 GameRowAction::None => {}
                             }
 
-                            // 2: Reset all to Global Settings
+                            // 5: Reset all to Global Settings
                             let has_custom = game != GameSettings::default();
-                            let is_reset_sel = sel == 2;
+                            let is_reset_sel = sel == 5;
                             if setting_row(ui, is_reset_sel, scroll, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new("Reset All to Global Settings").strong().size(13.0).color(if has_custom { Color32::WHITE } else { Color32::from_rgb(120, 130, 145) }));
@@ -2371,7 +2478,7 @@ impl Menus {
                                     });
                                 });
                             }) {
-                                new_sel = 2;
+                                new_sel = 5;
                             }
 
                             self.game_settings_selected = new_sel;
