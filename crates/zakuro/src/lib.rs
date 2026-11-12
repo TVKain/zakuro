@@ -602,7 +602,7 @@ impl ApplicationHandler for App {
                     backend.resize(size.width, size.height);
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } => self.key(event, consumed),
+            WindowEvent::KeyboardInput { event, .. } => self.key(event, event_loop, consumed),
             WindowEvent::MouseInput { state, button, .. } => {
                 if button == MouseButton::Left {
                     self.mouse_down = state == ElementState::Pressed && !self.pointer_taken(consumed);
@@ -847,7 +847,7 @@ impl App {
         self.apply_layout();
     }
 
-    fn key(&mut self, event: KeyEvent, consumed: bool) {
+    fn key(&mut self, event: KeyEvent, event_loop: &ActiveEventLoop, consumed: bool) {
         let pressed = event.state == ElementState::Pressed;
         let PhysicalKey::Code(code) = event.physical_key else { return };
         // Escape leaves a controller binding waiting for a button as it was
@@ -865,6 +865,168 @@ impl App {
             }
             return;
         }
+
+        // When a menu, pause screen, or settings modal is active over a game,
+        // intercept navigation and modal dismissal; NEVER leak keybinds or hotkeys to the game.
+        if self.menus.over_game() {
+            if pressed && !event.repeat {
+                // 0. Active Option Select Popup (Dropdown Picker)
+                if let Some(popup) = &mut self.menus.select_popup {
+                    match code {
+                        KeyCode::ArrowUp => {
+                            popup.selected = popup.selected.saturating_sub(1);
+                        }
+                        KeyCode::ArrowDown => {
+                            if !popup.options.is_empty() {
+                                popup.selected = (popup.selected + 1).min(popup.options.len() - 1);
+                            }
+                        }
+                        KeyCode::Enter | KeyCode::Space => {
+                            if let Some(act) = self.menus.confirm_select_popup(&mut self.settings) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        KeyCode::Escape => {
+                            self.menus.select_popup = None;
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+
+                // 1. Escape closes modals or unpauses
+                if code == KeyCode::Escape {
+                    if self.menus.modal_open() {
+                        self.menus.close_modals();
+                        self.keyboard.release();
+                        self.gamepads.suppress_current_held();
+                        if let Some(game) = &mut self.game {
+                            game.system.set_input(zakuro_core::services::hid::InputState::default());
+                        }
+                    } else if self.menus.menu_open {
+                        self.menus.menu_open = false;
+                        self.keyboard.release();
+                        self.gamepads.suppress_current_held();
+                        if let Some(game) = &mut self.game {
+                            game.system.set_input(zakuro_core::services::hid::InputState::default());
+                        }
+                    }
+                    return;
+                }
+
+                // 2. Fullscreen toggle
+                if code == KeyCode::F11 {
+                    self.toggle_fullscreen();
+                    return;
+                }
+
+                // 3. Settings modal navigation
+                if self.menus.settings_open {
+                    match code {
+                        KeyCode::Tab => {
+                            self.menus.settings_tab = self.menus.settings_tab.next();
+                            self.menus.settings_selected = 0;
+                            self.menus.settings_scroll_to_selected = true;
+                        }
+                        KeyCode::ArrowUp => self.menus.settings_up(),
+                        KeyCode::ArrowDown => self.menus.settings_down(),
+                        KeyCode::ArrowLeft => {
+                            if let Some(act) = self.menus.settings_adjust(&mut self.settings, -1) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        KeyCode::ArrowRight => {
+                            if let Some(act) = self.menus.settings_adjust(&mut self.settings, 1) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        KeyCode::Enter | KeyCode::Space => {
+                            if let Some(act) = self.menus.settings_activate(&mut self.settings) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+
+                // 4. Game Settings modal navigation
+                if self.menus.game_settings.is_some() {
+                    let program_id = self.menus.game_settings.as_ref().unwrap().0;
+                    match code {
+                        KeyCode::Tab => {
+                            self.menus.game_settings_tab = self.menus.game_settings_tab.next();
+                            self.menus.game_settings_selected = 0;
+                            self.menus.game_settings_scroll_to_selected = true;
+                        }
+                        KeyCode::ArrowUp => self.menus.game_settings_up(),
+                        KeyCode::ArrowDown => self.menus.game_settings_down(),
+                        KeyCode::ArrowLeft => {
+                            if let Some(act) = self.menus.game_settings_adjust(&mut self.settings, program_id, -1) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        KeyCode::ArrowRight => {
+                            if let Some(act) = self.menus.game_settings_adjust(&mut self.settings, program_id, 1) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        KeyCode::Enter | KeyCode::Space => {
+                            if let Some(act) = self.menus.game_settings_activate(&mut self.settings, program_id) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        KeyCode::KeyX | KeyCode::Delete | KeyCode::Backspace => {
+                            if let Some(act) = self.menus.game_settings_reset_selected(&mut self.settings, program_id) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+
+                // 5. In-Game Pause Menu navigation
+                if self.menus.menu_open {
+                    let has_game_settings = self.game.as_ref().and_then(|g| g.system.title.as_ref()).is_some();
+                    let max_idx = if has_game_settings { 8 } else { 7 };
+                    match code {
+                        KeyCode::ArrowUp => {
+                            self.menus.pause_selected = self.menus.pause_selected.saturating_sub(1);
+                        }
+                        KeyCode::ArrowDown => {
+                            self.menus.pause_selected = (self.menus.pause_selected + 1).min(max_idx);
+                        }
+                        KeyCode::ArrowLeft => {
+                            if self.menus.pause_selected == 1 {
+                                self.menus.slot = if self.menus.slot <= 1 { 9 } else { self.menus.slot - 1 };
+                            }
+                        }
+                        KeyCode::ArrowRight => {
+                            if self.menus.pause_selected == 1 {
+                                self.menus.slot = if self.menus.slot >= 9 { 1 } else { self.menus.slot + 1 };
+                            }
+                        }
+                        KeyCode::Enter | KeyCode::Space => {
+                            let game_info = self.game.as_ref().map(|g| (g.path.clone(), g.name.clone(), g.system.title.as_ref().map(|t| t.program_id())));
+                            if let Some(action) = self.menus.trigger_pause_selected(game_info) {
+                                self.act(action, event_loop);
+                            }
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+            }
+
+            // In menu/settings: if letting go of a key, ensure it's cleared in keyboard state
+            if !pressed {
+                self.keyboard.key(event.physical_key, false);
+            }
+            return;
+        }
+
+        // --- Active Gameplay Key Handling (when NOT in menu/settings) ---
         if code == KeyCode::Tab && !event.repeat && !self.settings.keys.binds(KeyCode::Tab) {
             // fast forward while it is held
             self.fast_forward_key = pressed && self.game.is_some();
@@ -874,6 +1036,10 @@ impl App {
                 KeyCode::Escape if self.game.is_some() => {
                     self.menus.menu_open = !self.menus.menu_open;
                     self.keyboard.release();
+                    self.gamepads.suppress_current_held();
+                    if let Some(game) = &mut self.game {
+                        game.system.set_input(zakuro_core::services::hid::InputState::default());
+                    }
                     return;
                 }
                 KeyCode::F1 => {
@@ -889,7 +1055,6 @@ impl App {
             }
         }
         let to_game = self.game.is_some()
-            && !self.menus.over_game()
             && !consumed
             && !self.gui.as_ref().is_some_and(Gui::wants_keyboard);
         // blowing into the microphone while M is held
@@ -943,9 +1108,18 @@ impl App {
             if (button == self.settings.pad.menu || button == gilrs::Button::Mode) && self.game.is_some() {
                 if self.menus.modal_open() {
                     self.menus.close_modals();
+                    self.keyboard.release();
+                    self.gamepads.suppress_current_held();
+                    if let Some(game) = &mut self.game {
+                        game.system.set_input(zakuro_core::services::hid::InputState::default());
+                    }
                 } else {
                     self.menus.menu_open = !self.menus.menu_open;
                     self.keyboard.release();
+                    self.gamepads.suppress_current_held();
+                    if let Some(game) = &mut self.game {
+                        game.system.set_input(zakuro_core::services::hid::InputState::default());
+                    }
                 }
                 continue;
             }
@@ -957,9 +1131,19 @@ impl App {
                         self.menus.rebinding_pad = None;
                     } else {
                         self.menus.close_modals();
+                        self.keyboard.release();
+                        self.gamepads.suppress_current_held();
+                        if let Some(game) = &mut self.game {
+                            game.system.set_input(zakuro_core::services::hid::InputState::default());
+                        }
                     }
                 } else if button == gilrs::Button::Start && (self.menus.settings_open || self.menus.game_settings.is_some()) {
                     self.menus.close_modals();
+                    self.keyboard.release();
+                    self.gamepads.suppress_current_held();
+                    if let Some(game) = &mut self.game {
+                        game.system.set_input(zakuro_core::services::hid::InputState::default());
+                    }
                 } else if (button == gilrs::Button::LeftTrigger || button == gilrs::Button::LeftTrigger2) && self.menus.settings_open {
                     self.menus.settings_tab = self.menus.settings_tab.prev();
                     self.menus.settings_selected = 0;
@@ -1054,6 +1238,10 @@ impl App {
                     gilrs::Button::East => {
                         self.menus.menu_open = false;
                         self.keyboard.release();
+                        self.gamepads.suppress_current_held();
+                        if let Some(game) = &mut self.game {
+                            game.system.set_input(zakuro_core::services::hid::InputState::default());
+                        }
                     }
                     gilrs::Button::South => {
                         let game_info = self.game.as_ref().map(|g| (g.path.clone(), g.name.clone(), g.system.title.as_ref().map(|t| t.program_id())));
@@ -1123,7 +1311,7 @@ impl App {
 
     /// whether the pointer is busy with something other than the game.
     fn pointer_taken(&self, consumed: bool) -> bool {
-        consumed || self.game.is_none() || self.menus.menu_open || self.gui.as_ref().is_some_and(Gui::wants_pointer)
+        consumed || self.game.is_none() || self.menus.over_game() || self.gui.as_ref().is_some_and(Gui::wants_pointer)
     }
 
     /// touches the bottom screen while the button is down over it.
@@ -1528,6 +1716,10 @@ impl App {
             Action::Resume => {
                 self.menus.menu_open = false;
                 self.keyboard.release();
+                self.gamepads.suppress_current_held();
+                if let Some(game) = &mut self.game {
+                    game.system.set_input(zakuro_core::services::hid::InputState::default());
+                }
             }
             Action::Reset => {
                 if let Some(path) = self.game.as_ref().map(|game| game.path.clone()) {
@@ -1625,6 +1817,11 @@ impl App {
         // a game waiting on its keyboard waits for the user, not running
         let typing = self.game.as_ref().is_some_and(|game| game.system.keyboard_request().is_some());
         let playing = self.game.is_some() && !self.paused && !self.menus.over_game() && !typing;
+        if self.menus.over_game() {
+            if let Some(game) = &mut self.game {
+                game.system.set_input(zakuro_core::services::hid::InputState::default());
+            }
+        }
         // Tab or a controller's right trigger, or the right stick's click
         // while ZR has the trigger, whichever no button of the console's is on
         let free = |button: gilrs::Button| self.settings.pad.map().iter().all(|&(_, bound)| bound != button);
@@ -2016,6 +2213,13 @@ impl App {
             actions.extend(menus.compiler_offer(ui.ctx()));
             menus.message(ui.ctx());
         });
+        if modal_open && !self.menus.modal_open() {
+            self.keyboard.release();
+            self.gamepads.suppress_current_held();
+            if let Some(game) = &mut self.game {
+                game.system.set_input(zakuro_core::services::hid::InputState::default());
+            }
+        }
         self.library.changed = false;
         for action in actions {
             self.act(action, event_loop);

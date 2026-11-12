@@ -29,6 +29,8 @@ pub struct Gamepads {
     dpad_axis_down: bool,
     dpad_axis_left: bool,
     dpad_axis_right: bool,
+    suppressed_buttons: Vec<Button>,
+    suppress_sticks: bool,
 }
 
 /// whether gilrs's reading of a controller is left out, a Pro Controller's
@@ -55,6 +57,8 @@ impl Gamepads {
             dpad_axis_down: false,
             dpad_axis_left: false,
             dpad_axis_right: false,
+            suppressed_buttons: Vec::new(),
+            suppress_sticks: false,
         }
     }
 
@@ -168,42 +172,104 @@ impl Gamepads {
             })
     }
 
+    /// marks all currently held buttons and active stick deflections as suppressed
+    /// until they are released / recentered, preventing inputs from menu navigation
+    /// or modal closure from bleeding into the emulated game.
+    pub fn suppress_current_held(&mut self) {
+        let reports = self.pro.reports();
+        let mut held = Vec::new();
+        for report in &reports {
+            held.extend(report.buttons.iter().copied());
+        }
+        if let Some(gilrs) = &self.gilrs {
+            for (_, pad) in gilrs.gamepads() {
+                if left_out(&pad, &reports) {
+                    continue;
+                }
+                for (_, bound) in self.buttons.map() {
+                    if pad.is_pressed(bound) {
+                        held.push(bound);
+                    }
+                }
+                for special in [
+                    Button::South,
+                    Button::East,
+                    Button::North,
+                    Button::West,
+                    Button::Start,
+                    Button::Select,
+                    Button::Mode,
+                    Button::LeftTrigger,
+                    Button::RightTrigger,
+                    Button::LeftTrigger2,
+                    Button::RightTrigger2,
+                    Button::DPadUp,
+                    Button::DPadDown,
+                    Button::DPadLeft,
+                    Button::DPadRight,
+                ] {
+                    if pad.is_pressed(special) {
+                        held.push(special);
+                    }
+                }
+            }
+        }
+        self.suppressed_buttons = held;
+        self.suppress_sticks = true;
+    }
+
     /// what the controllers hold down, over what the keyboard does.
-    pub fn apply(&self, mut state: InputState) -> InputState {
+    pub fn apply(&mut self, mut state: InputState) -> InputState {
+        // Unsuppress any buttons that have been physically released
+        let held_buttons = std::mem::take(&mut self.suppressed_buttons);
+        self.suppressed_buttons = held_buttons.into_iter().filter(|&b| self.holding(b)).collect();
+
         let reports = self.pro.reports();
         for report in &reports {
             for (button, bound) in self.buttons.map() {
-                if report.buttons.contains(&bound) {
+                if !self.suppressed_buttons.contains(&bound) && report.buttons.contains(&bound) {
                     state.buttons.set(button, true);
                 }
             }
-            sticks(&mut state, report.left, report.right);
+            if !self.suppress_sticks {
+                sticks(&mut state, report.left, report.right);
+            }
         }
         let Some(gilrs) = &self.gilrs else { return state };
+
+        let mut sticks_centered = true;
         for (_, pad) in gilrs.gamepads() {
             if left_out(&pad, &reports) {
                 continue;
             }
             for (button, bound) in self.buttons.map() {
-                if pad.is_pressed(bound) {
+                if !self.suppressed_buttons.contains(&bound) && pad.is_pressed(bound) {
                     state.buttons.set(button, true);
                 }
             }
             // the d-pad of some controllers is a pair of axes
             let dpad = [
-                (PadState::RIGHT, pad.value(Axis::DPadX) > 0.5),
-                (PadState::LEFT, pad.value(Axis::DPadX) < -0.5),
-                (PadState::UP, pad.value(Axis::DPadY) > 0.5),
-                (PadState::DOWN, pad.value(Axis::DPadY) < -0.5),
+                (PadState::RIGHT, Button::DPadRight, pad.value(Axis::DPadX) > 0.5),
+                (PadState::LEFT, Button::DPadLeft, pad.value(Axis::DPadX) < -0.5),
+                (PadState::UP, Button::DPadUp, pad.value(Axis::DPadY) > 0.5),
+                (PadState::DOWN, Button::DPadDown, pad.value(Axis::DPadY) < -0.5),
             ];
-            for (button, held) in dpad {
-                if held {
+            for (button, gilrs_btn, held) in dpad {
+                if held && !self.suppressed_buttons.contains(&gilrs_btn) {
                     state.buttons.set(button, true);
                 }
             }
             let left = [pad.value(Axis::LeftStickX), pad.value(Axis::LeftStickY)];
             let right = [pad.value(Axis::RightStickX), pad.value(Axis::RightStickY)];
-            sticks(&mut state, left, right);
+            if left[0].hypot(left[1]) > DEADZONE || right[0].hypot(right[1]) > DEADZONE {
+                sticks_centered = false;
+            }
+            if !self.suppress_sticks {
+                sticks(&mut state, left, right);
+            }
+        }
+        if sticks_centered {
+            self.suppress_sticks = false;
         }
         state
     }
@@ -256,7 +322,7 @@ mod tests {
     /// goes through as it was.
     #[test]
     fn no_controller_leaves_the_keyboard_alone() {
-        let gamepads = Gamepads::new(PadButtons::default());
+        let mut gamepads = Gamepads::new(PadButtons::default());
         if gamepads.gilrs.as_ref().is_some_and(|gilrs| gilrs.gamepads().next().is_some()) {
             return;
         }
@@ -264,5 +330,14 @@ mod tests {
         let applied = gamepads.apply(state);
         assert_eq!(applied.buttons, PadState::A);
         assert_eq!((applied.circle_x, applied.circle_y, applied.touch), (1.0, 0.0, Some((1, 2))));
+    }
+
+    #[test]
+    fn suppression_preserves_neutral_gameplay() {
+        let mut gamepads = Gamepads::new(PadButtons::default());
+        gamepads.suppress_current_held();
+        let state = InputState::default();
+        let applied = gamepads.apply(state);
+        assert_eq!(applied.buttons, PadState::default());
     }
 }
