@@ -869,7 +869,7 @@ impl Presenter for VulkanPresenter {
         };
         let (image_index, suboptimal) = match acquired {
             Ok(result) => result,
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::ERROR_SURFACE_LOST_KHR | vk::Result::SUBOPTIMAL_KHR) => {
                 self.stale = true;
                 self.defer(overlay);
                 return Err(PresentError::OutOfDate);
@@ -949,7 +949,7 @@ impl Presenter for VulkanPresenter {
                 self.stale = true;
                 Ok(())
             }
-            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR | vk::Result::ERROR_SURFACE_LOST_KHR) => {
                 self.stale = true;
                 Err(PresentError::OutOfDate)
             }

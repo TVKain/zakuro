@@ -311,7 +311,7 @@ fn setting_row(ui: &mut egui::Ui, selected: bool, content: impl FnOnce(&mut egui
         res.response.scroll_to_me(Some(egui::Align::Center));
     }
     ui.add_space(3.0);
-    res.response.hovered()
+    res.response.clicked()
 }
 
 fn cycle<T: Copy + PartialEq>(list: &[T], current: T, delta: i32) -> T {
@@ -347,7 +347,7 @@ impl Menus {
     pub fn settings_max_rows(&self) -> usize {
         match self.settings_tab {
             SettingsTab::Graphics => 13,
-            SettingsTab::Controller => 2,
+            SettingsTab::Controller => 17,
             SettingsTab::Audio => 3,
             SettingsTab::System => 10,
         }
@@ -415,12 +415,17 @@ impl Menus {
         match self.settings_tab {
             SettingsTab::Graphics => self.settings_adjust(settings, 1),
             SettingsTab::Controller => match self.settings_selected {
-                0 => {
+                i if i < 15 => {
+                    self.rebinding_pad = Some(i);
+                    self.rebinding = None;
+                    None
+                }
+                15 => {
                     settings.pad = PadButtons::default();
                     self.rebinding_pad = None;
                     None
                 }
-                1 => {
+                16 => {
                     settings.keys = Keys::default();
                     self.rebinding = None;
                     None
@@ -1133,6 +1138,7 @@ impl Menus {
                         };
                         if resp.clicked() {
                             self.settings_tab = tab;
+                            self.settings_selected = 0;
                         }
                     }
                     button_hint(ui, "RB", "", Color32::from_rgb(50, 60, 75));
@@ -1190,26 +1196,41 @@ impl Menus {
                             let sel = self.settings_selected;
                             let mut new_sel = sel;
                             ui.heading("Gamepad / Handheld Controls");
-                            egui::Grid::new("controller").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
-                                for (i, (name, button)) in settings.pad.all_mut().into_iter().enumerate() {
-                                    ui.label(name);
-                                    let text = if self.rebinding_pad == Some(i) { "press a button…".to_owned() } else { button_name(*button).to_owned() };
-                                    if ui.add_sized([120.0, 24.0], egui::Button::new(text)).clicked() {
-                                        self.rebinding_pad = Some(i);
-                                        self.rebinding = None;
-                                    }
-                                    if i % 2 == 1 {
-                                        ui.end_row();
-                                    }
+                            ui.label(RichText::new("Press (A) to rebind a button, (B) to cancel rebinding.").size(12.0).weak());
+                            ui.add_space(4.0);
+
+                            for (i, (name, button)) in settings.pad.all_mut().into_iter().enumerate() {
+                                let is_sel = sel == i;
+                                let is_rebinding = self.rebinding_pad == Some(i);
+                                if setting_row(ui, is_sel, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized([120.0, 22.0], egui::Label::new(RichText::new(name).strong()));
+                                        let text = if is_rebinding {
+                                            "press button… (B cancels)".to_owned()
+                                        } else {
+                                            button_name(*button).to_owned()
+                                        };
+                                        let mut btn = egui::Button::new(RichText::new(text).size(12.0));
+                                        if is_rebinding {
+                                            btn = btn.fill(Color32::from_rgb(180, 83, 9)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(251, 191, 36)));
+                                        }
+                                        if ui.add_sized([160.0, 22.0], btn).clicked() {
+                                            self.rebinding_pad = Some(i);
+                                            self.rebinding = None;
+                                        }
+                                    });
+                                }) {
+                                    new_sel = i;
                                 }
-                            });
-                            ui.label(RichText::new("The circle pad is the left stick, and View or Home opens the menu over the game.").weak());
-                            if setting_row(ui, sel == 0, |ui| {
+                            }
+                            ui.add_space(4.0);
+                            ui.label(RichText::new("The circle pad is the left stick, and Home opens the menu over the game.").weak());
+                            if setting_row(ui, sel == 15, |ui| {
                                 if ui.button("Default controller").clicked() {
                                     settings.pad = PadButtons::default();
                                     self.rebinding_pad = None;
                                 }
-                            }) { new_sel = 0; }
+                            }) { new_sel = 15; }
 
                             ui.add_space(8.0);
                             ui.separator();
@@ -1227,12 +1248,12 @@ impl Menus {
                                     }
                                 }
                             });
-                            if setting_row(ui, sel == 1, |ui| {
+                            if setting_row(ui, sel == 16, |ui| {
                                 if ui.button("Default keyboard").clicked() {
                                     settings.keys = Keys::default();
                                     self.rebinding = None;
                                 }
-                            }) { new_sel = 1; }
+                            }) { new_sel = 16; }
                             ui.label(RichText::new("Drag with the right mouse button to tilt the console, for games that use the motion sensors.").weak());
                             self.settings_selected = new_sel;
                         }

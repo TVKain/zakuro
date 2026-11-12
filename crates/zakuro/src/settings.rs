@@ -475,7 +475,7 @@ impl Default for PadButtons {
             right: Button::DPadRight,
             zl: Button::LeftTrigger2,
             zr: Button::RightTrigger2,
-            menu: Button::Select,
+            menu: Button::Mode,
         }
     }
 }
@@ -740,7 +740,7 @@ impl Settings {
     /// the saved settings, or the defaults when there are none.
     pub fn load() -> Settings {
         let Some(path) = path() else { return Settings::default() };
-        match std::fs::read_to_string(&path) {
+        let mut settings: Settings = match std::fs::read_to_string(&path) {
             Ok(text) => toml::from_str(&text).unwrap_or_else(|error| {
                 // kept aside, the next save would write over it
                 let aside = path.with_extension("toml.bad");
@@ -749,7 +749,11 @@ impl Settings {
                 Settings::default()
             }),
             Err(_) => Settings::default(),
+        };
+        if settings.pad.menu == settings.pad.select && settings.pad.menu == Button::Select {
+            settings.pad.menu = Button::Mode;
         }
+        settings
     }
 
     pub fn save(&self) {

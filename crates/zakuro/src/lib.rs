@@ -914,8 +914,8 @@ impl App {
                 continue;
             }
 
-            // 2. Menu Toggle: View/Select, Mode/Home, or configured menu button
-            if (button == self.settings.pad.menu || button == gilrs::Button::Mode || button == gilrs::Button::Select) && self.game.is_some() {
+            // 2. Menu Toggle: Mode/Home or configured menu button
+            if (button == self.settings.pad.menu || button == gilrs::Button::Mode) && self.game.is_some() {
                 if self.menus.modal_open() {
                     self.menus.close_modals();
                 } else {
@@ -928,7 +928,11 @@ impl App {
             // 3. Modal Dialogs (Settings, Cheats, Multiplayer, Message)
             if self.menus.modal_open() {
                 if button == gilrs::Button::East {
-                    self.menus.close_modals();
+                    if self.menus.rebinding_pad.is_some() {
+                        self.menus.rebinding_pad = None;
+                    } else {
+                        self.menus.close_modals();
+                    }
                 } else if button == gilrs::Button::Start && self.menus.settings_open {
                     self.menus.settings_open = false;
                 } else if (button == gilrs::Button::LeftTrigger || button == gilrs::Button::LeftTrigger2) && self.menus.settings_open {
@@ -945,19 +949,16 @@ impl App {
                             if let Some(act) = self.menus.settings_adjust(&mut self.settings, -1) {
                                 self.act(act, event_loop);
                             }
-                            self.apply_settings();
                         }
                         gilrs::Button::DPadRight => {
                             if let Some(act) = self.menus.settings_adjust(&mut self.settings, 1) {
                                 self.act(act, event_loop);
                             }
-                            self.apply_settings();
                         }
                         gilrs::Button::South => {
                             if let Some(act) = self.menus.settings_activate(&mut self.settings) {
                                 self.act(act, event_loop);
                             }
-                            self.apply_settings();
                         }
                         _ => {}
                     }
