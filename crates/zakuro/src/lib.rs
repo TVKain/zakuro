@@ -933,25 +933,31 @@ impl App {
                     self.menus.settings_open = false;
                 } else if (button == gilrs::Button::LeftTrigger || button == gilrs::Button::LeftTrigger2) && self.menus.settings_open {
                     self.menus.settings_tab = self.menus.settings_tab.prev();
-                    if let Some(gui) = &mut self.gui {
-                        gui.clear_focus();
-                        gui.move_focus_next();
-                    }
+                    self.menus.settings_selected = 0;
                 } else if (button == gilrs::Button::RightTrigger || button == gilrs::Button::RightTrigger2) && self.menus.settings_open {
                     self.menus.settings_tab = self.menus.settings_tab.next();
-                    if let Some(gui) = &mut self.gui {
-                        gui.clear_focus();
-                        gui.move_focus_next();
-                    }
-                } else if let Some(gui) = &mut self.gui {
+                    self.menus.settings_selected = 0;
+                } else if self.menus.settings_open {
                     match button {
-                        gilrs::Button::DPadUp => gui.move_focus_prev(),
-                        gilrs::Button::DPadDown => gui.move_focus_next(),
-                        gilrs::Button::DPadLeft => gui.send_key(egui::Key::ArrowLeft),
-                        gilrs::Button::DPadRight => gui.send_key(egui::Key::ArrowRight),
+                        gilrs::Button::DPadUp => self.menus.settings_up(),
+                        gilrs::Button::DPadDown => self.menus.settings_down(),
+                        gilrs::Button::DPadLeft => {
+                            if let Some(act) = self.menus.settings_adjust(&mut self.settings, -1) {
+                                self.act(act, event_loop);
+                            }
+                            self.apply_settings();
+                        }
+                        gilrs::Button::DPadRight => {
+                            if let Some(act) = self.menus.settings_adjust(&mut self.settings, 1) {
+                                self.act(act, event_loop);
+                            }
+                            self.apply_settings();
+                        }
                         gilrs::Button::South => {
-                            gui.send_key(egui::Key::Space);
-                            gui.send_key(egui::Key::Enter);
+                            if let Some(act) = self.menus.settings_activate(&mut self.settings) {
+                                self.act(act, event_loop);
+                            }
+                            self.apply_settings();
                         }
                         _ => {}
                     }

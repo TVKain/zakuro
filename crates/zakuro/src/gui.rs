@@ -75,6 +75,7 @@ impl Gui {
     }
 
     /// moves egui focus to the previous interactive widget.
+    #[allow(dead_code)]
     pub fn move_focus_prev(&mut self) {
         self.ctx.memory_mut(|m| {
             m.move_focus(egui::FocusDirection::Previous);
@@ -92,6 +93,7 @@ impl Gui {
         self.ctx.request_repaint();
     }
 
+    #[allow(dead_code)]
     pub fn send_key(&mut self, key: egui::Key) {
         self.extra_events.push(egui::Event::Key {
             key,

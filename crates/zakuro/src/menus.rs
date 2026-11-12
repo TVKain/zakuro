@@ -155,6 +155,8 @@ pub struct Menus {
     pub scroll_to_selected: bool,
     /// the tab currently selected in the settings dialog.
     pub settings_tab: SettingsTab,
+    /// the setting row currently selected by controller in settings.
+    pub settings_selected: usize,
     /// whether a modal dialog was just opened and needs initial widget focus.
     pub modal_just_opened: bool,
 }
@@ -285,13 +287,38 @@ fn button_hint(ui: &mut egui::Ui, button: &str, label: &str, btn_color: Color32)
 
 fn nav_button(ui: &mut egui::Ui, focused: bool, text: &str) -> (bool, bool) {
     let btn = egui::Button::new(RichText::new(text).size(14.0));
-    let width = ui.available_width();
     let resp = if focused {
-        ui.add_sized([width, 32.0], btn.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
+        ui.add_sized([260.0, 32.0], btn.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
     } else {
-        ui.add_sized([width, 32.0], btn)
+        ui.add_sized([260.0, 32.0], btn)
     };
     (resp.clicked(), resp.hovered())
+}
+
+fn setting_row(ui: &mut egui::Ui, selected: bool, content: impl FnOnce(&mut egui::Ui)) -> bool {
+    let mut frame = egui::Frame::new()
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(8, 5));
+    if selected {
+        frame = frame
+            .fill(Color32::from_rgb(30, 48, 75))
+            .stroke(egui::Stroke::new(1.5, Color32::from_rgb(56, 189, 248)));
+    } else {
+        frame = frame.fill(Color32::from_rgb(20, 23, 30));
+    }
+    let res = frame.show(ui, content);
+    if selected {
+        res.response.scroll_to_me(Some(egui::Align::Center));
+    }
+    ui.add_space(3.0);
+    res.response.hovered()
+}
+
+fn cycle<T: Copy + PartialEq>(list: &[T], current: T, delta: i32) -> T {
+    let len = list.len();
+    let idx = list.iter().position(|&x| x == current).unwrap_or(0);
+    let next = if delta > 0 { (idx + 1) % len } else { (idx + len - 1) % len };
+    list[next]
 }
 
 impl Menus {
@@ -313,7 +340,107 @@ impl Menus {
     /// opens the settings dialog and flags initial focus.
     pub fn open_settings(&mut self) {
         self.settings_open = true;
+        self.settings_selected = 0;
         self.modal_just_opened = true;
+    }
+
+    pub fn settings_max_rows(&self) -> usize {
+        match self.settings_tab {
+            SettingsTab::Graphics => 13,
+            SettingsTab::Controller => 2,
+            SettingsTab::Audio => 3,
+            SettingsTab::System => 10,
+        }
+    }
+
+    pub fn settings_up(&mut self) {
+        self.settings_selected = self.settings_selected.saturating_sub(1);
+    }
+
+    pub fn settings_down(&mut self) {
+        let max = self.settings_max_rows();
+        if max > 0 {
+            self.settings_selected = (self.settings_selected + 1).min(max - 1);
+        }
+    }
+
+    pub fn settings_adjust(&mut self, settings: &mut Settings, delta: i32) -> Option<Action> {
+        match self.settings_tab {
+            SettingsTab::Graphics => match self.settings_selected {
+                0 => {
+                    settings.renderer = match settings.renderer {
+                        Renderer::Vulkan => Renderer::OpenGl,
+                        Renderer::OpenGl => Renderer::Vulkan,
+                    };
+                }
+                1 => settings.hardware_rasterizer = !settings.hardware_rasterizer,
+                2 => settings.resolution = (settings.resolution as i32 + delta).clamp(1, 8) as u32,
+                3 => settings.texture_packs = !settings.texture_packs,
+                4 => settings.frame_interpolation = !settings.frame_interpolation,
+                5 => settings.layout = cycle(&Screens::ALL, settings.layout, delta),
+                6 => settings.orientation = cycle(&Orientation::ALL, settings.orientation, delta),
+                7 => settings.filter = cycle(&Filter::ALL, settings.filter, delta),
+                8 => settings.integer_scale = !settings.integer_scale,
+                9 => settings.top_shape = cycle(&TopShape::ALL, settings.top_shape, delta),
+                10 => settings.stereo = cycle(&Stereo3d::ALL, settings.stereo, delta),
+                11 => settings.depth_3d = (settings.depth_3d as i32 + delta * 5).clamp(0, 100) as u32,
+                12 => settings.swap_eyes = !settings.swap_eyes,
+                _ => {}
+            },
+            SettingsTab::Controller => {}
+            SettingsTab::Audio => match self.settings_selected {
+                0 => settings.volume = (settings.volume + (delta as f32 * 0.05)).clamp(0.0, 1.0),
+                1 => settings.mute = !settings.mute,
+                2 => settings.microphone = cycle(&MicrophoneSource::ALL, settings.microphone, delta),
+                _ => {}
+            },
+            SettingsTab::System => match self.settings_selected {
+                0 => settings.window_mode = cycle(&WindowMode::ALL, settings.window_mode, delta),
+                1 => settings.scale = (settings.scale as i32 + delta).clamp(1, 6) as u32,
+                2 => settings.show_fps = !settings.show_fps,
+                3 => {}
+                4 => settings.language = cycle(&Language::ALL, settings.language, delta),
+                5 => settings.recompiled = !settings.recompiled,
+                6 => settings.camera = cycle(&CameraSource::ALL, settings.camera, delta),
+                7 => {}
+                8 => {}
+                9 => settings.background_opacity = (settings.background_opacity + (delta as f32 * 0.05)).clamp(0.0, 1.0),
+                _ => {}
+            },
+        }
+        None
+    }
+
+    pub fn settings_activate(&mut self, settings: &mut Settings) -> Option<Action> {
+        match self.settings_tab {
+            SettingsTab::Graphics => self.settings_adjust(settings, 1),
+            SettingsTab::Controller => match self.settings_selected {
+                0 => {
+                    settings.pad = PadButtons::default();
+                    self.rebinding_pad = None;
+                    None
+                }
+                1 => {
+                    settings.keys = Keys::default();
+                    self.rebinding = None;
+                    None
+                }
+                _ => None,
+            },
+            SettingsTab::Audio => match self.settings_selected {
+                1 => {
+                    settings.mute = !settings.mute;
+                    None
+                }
+                _ => self.settings_adjust(settings, 1),
+            },
+            SettingsTab::System => match self.settings_selected {
+                3 => Some(Action::Fullscreen),
+                7 => Some(Action::ChooseCameraPicture),
+                8 => Some(Action::CopyReport),
+                _ => self.settings_adjust(settings, 1),
+            },
+        }
     }
 
     /// triggers the pause menu action at pause_selected index.
@@ -644,21 +771,17 @@ impl Menus {
         if !self.menu_open {
             return actions;
         }
-        egui::Window::new("Paused")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
+        egui::Area::new(egui::Id::new("pause_menu_modal"))
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .min_width(260.0)
-            .max_width(260.0)
-            .frame(
-                egui::Frame::NONE
+            .order(egui::Order::Foreground)
+            .show(&ctx, |ui| {
+                egui::Frame::new()
                     .fill(Color32::from_rgb(22, 25, 33))
                     .stroke(egui::Stroke::new(1.5, Color32::from_rgb(56, 189, 248)))
                     .corner_radius(egui::CornerRadius::same(12))
-                    .inner_margin(egui::Margin::symmetric(14, 14)),
-            )
-            .show(&ctx, |ui| {
+                    .inner_margin(egui::Margin::symmetric(16, 16))
+                    .show(ui, |ui| {
+                        ui.set_width(260.0);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(name).strong().size(18.0));
                     ui.add_space(2.0);
@@ -791,6 +914,7 @@ impl Menus {
                     self.pause_selected = new_pause_sel;
                 });
             });
+        });
         actions
     }
 
@@ -1019,36 +1143,52 @@ impl Menus {
                 egui::ScrollArea::vertical().max_height(scroll_h).show(ui, |ui| {
                     match self.settings_tab {
                         SettingsTab::Graphics => {
-                            egui::ComboBox::from_label("Presented with")
-                                .selected_text(match settings.renderer {
-                                    Renderer::Vulkan => "Vulkan",
-                                    Renderer::OpenGl => "OpenGL",
-                                })
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut settings.renderer, Renderer::Vulkan, "Vulkan");
-                                    ui.selectable_value(&mut settings.renderer, Renderer::OpenGl, "OpenGL");
-                                });
-                            rasterizer(ui, &mut settings.hardware_rasterizer);
-                            ui.add_enabled_ui(settings.hardware_rasterizer, |ui| {
-                                resolution(ui, &mut settings.resolution);
-                                texture_packs(ui, &mut settings.texture_packs);
-                            });
-                            let interpolates = settings.hardware_rasterizer && settings.renderer == Renderer::Vulkan;
-                            ui.add_enabled_ui(interpolates, |ui| interpolation(ui, &mut settings.frame_interpolation));
-                            screens(ui, &mut settings.layout);
-                            rotation(ui, &mut settings.orientation);
-                            filter(ui, &mut settings.filter);
-                            integer_scale(ui, &mut settings.integer_scale);
-                            top_shape(ui, &mut settings.top_shape);
-                            stereo_3d(ui, &mut settings.stereo);
+                            let sel = self.settings_selected;
+                            let mut new_sel = sel;
+                            if setting_row(ui, sel == 0, |ui| {
+                                egui::ComboBox::from_label("Presented with")
+                                    .selected_text(match settings.renderer {
+                                        Renderer::Vulkan => "Vulkan",
+                                        Renderer::OpenGl => "OpenGL",
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut settings.renderer, Renderer::Vulkan, "Vulkan");
+                                        ui.selectable_value(&mut settings.renderer, Renderer::OpenGl, "OpenGL");
+                                    });
+                            }) { new_sel = 0; }
+                            if setting_row(ui, sel == 1, |ui| rasterizer(ui, &mut settings.hardware_rasterizer)) { new_sel = 1; }
+                            let hw = settings.hardware_rasterizer;
+                            if setting_row(ui, sel == 2, |ui| {
+                                ui.add_enabled_ui(hw, |ui| resolution(ui, &mut settings.resolution));
+                            }) { new_sel = 2; }
+                            if setting_row(ui, sel == 3, |ui| {
+                                ui.add_enabled_ui(hw, |ui| texture_packs(ui, &mut settings.texture_packs));
+                            }) { new_sel = 3; }
+                            let interpolates = hw && settings.renderer == Renderer::Vulkan;
+                            if setting_row(ui, sel == 4, |ui| {
+                                ui.add_enabled_ui(interpolates, |ui| interpolation(ui, &mut settings.frame_interpolation));
+                            }) { new_sel = 4; }
+                            if setting_row(ui, sel == 5, |ui| screens(ui, &mut settings.layout)) { new_sel = 5; }
+                            if setting_row(ui, sel == 6, |ui| rotation(ui, &mut settings.orientation)) { new_sel = 6; }
+                            if setting_row(ui, sel == 7, |ui| filter(ui, &mut settings.filter)) { new_sel = 7; }
+                            if setting_row(ui, sel == 8, |ui| integer_scale(ui, &mut settings.integer_scale)) { new_sel = 8; }
+                            if setting_row(ui, sel == 9, |ui| top_shape(ui, &mut settings.top_shape)) { new_sel = 9; }
+                            if setting_row(ui, sel == 10, |ui| stereo_3d(ui, &mut settings.stereo)) { new_sel = 10; }
                             let stereo = settings.stereo != Stereo3d::Off;
-                            ui.add_enabled_ui(stereo, |ui| depth_3d(ui, &mut settings.depth_3d));
-                            ui.checkbox(&mut settings.swap_eyes, "Swap eyes")
-                                .on_hover_text("Each eye gets the other's picture, for viewing cross-eyed, glasses worn the other way round, or a monitor whose rows start with the other eye.");
+                            if setting_row(ui, sel == 11, |ui| {
+                                ui.add_enabled_ui(stereo, |ui| depth_3d(ui, &mut settings.depth_3d));
+                            }) { new_sel = 11; }
+                            if setting_row(ui, sel == 12, |ui| {
+                                ui.checkbox(&mut settings.swap_eyes, "Swap eyes")
+                                    .on_hover_text("Each eye gets the other's picture, for viewing cross-eyed, glasses worn the other way round, or a monitor whose rows start with the other eye.");
+                            }) { new_sel = 12; }
                             ui.label(RichText::new("F9 switches them while playing, F10 between the top and the bottom screen alone.").weak());
                             ui.label(RichText::new("The presenter changes the next time Zakuro starts, the 3D with the next game.").weak());
+                            self.settings_selected = new_sel;
                         }
                         SettingsTab::Controller => {
+                            let sel = self.settings_selected;
+                            let mut new_sel = sel;
                             ui.heading("Gamepad / Handheld Controls");
                             egui::Grid::new("controller").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
                                 for (i, (name, button)) in settings.pad.all_mut().into_iter().enumerate() {
@@ -1064,10 +1204,12 @@ impl Menus {
                                 }
                             });
                             ui.label(RichText::new("The circle pad is the left stick, and View or Home opens the menu over the game.").weak());
-                            if ui.button("Default controller").clicked() {
-                                settings.pad = PadButtons::default();
-                                self.rebinding_pad = None;
-                            }
+                            if setting_row(ui, sel == 0, |ui| {
+                                if ui.button("Default controller").clicked() {
+                                    settings.pad = PadButtons::default();
+                                    self.rebinding_pad = None;
+                                }
+                            }) { new_sel = 0; }
 
                             ui.add_space(8.0);
                             ui.separator();
@@ -1085,76 +1227,101 @@ impl Menus {
                                     }
                                 }
                             });
-                            if ui.button("Default keyboard").clicked() {
-                                settings.keys = Keys::default();
-                                self.rebinding = None;
-                            }
+                            if setting_row(ui, sel == 1, |ui| {
+                                if ui.button("Default keyboard").clicked() {
+                                    settings.keys = Keys::default();
+                                    self.rebinding = None;
+                                }
+                            }) { new_sel = 1; }
                             ui.label(RichText::new("Drag with the right mouse button to tilt the console, for games that use the motion sensors.").weak());
+                            self.settings_selected = new_sel;
                         }
                         SettingsTab::Audio => {
+                            let sel = self.settings_selected;
+                            let mut new_sel = sel;
                             ui.heading("Volume");
-                            ui.add(egui::Slider::new(&mut settings.volume, 0.0..=1.0).text("Volume").show_value(false));
-                            ui.checkbox(&mut settings.mute, "Mute");
+                            if setting_row(ui, sel == 0, |ui| {
+                                ui.add(egui::Slider::new(&mut settings.volume, 0.0..=1.0).text("Volume").show_value(false));
+                            }) { new_sel = 0; }
+                            if setting_row(ui, sel == 1, |ui| {
+                                ui.checkbox(&mut settings.mute, "Mute");
+                            }) { new_sel = 1; }
 
                             ui.add_space(8.0);
                             ui.separator();
                             ui.heading("Microphone");
-                            egui::ComboBox::from_label("Microphone").selected_text(settings.microphone.name()).show_ui(ui, |ui| {
-                                for source in MicrophoneSource::ALL {
-                                    ui.selectable_value(&mut settings.microphone, source, source.name());
-                                }
-                            })
-                            .response
-                            .on_hover_text("What the console's microphone hears. The computer's microphone is open only while a game listens, which some do all the time, Super Mario 3D Land among them. Holding M blows into it either way, for games that ask you to.");
+                            if setting_row(ui, sel == 2, |ui| {
+                                egui::ComboBox::from_label("Microphone").selected_text(settings.microphone.name()).show_ui(ui, |ui| {
+                                    for source in MicrophoneSource::ALL {
+                                        ui.selectable_value(&mut settings.microphone, source, source.name());
+                                    }
+                                })
+                                .response
+                                .on_hover_text("What the console's microphone hears. The computer's microphone is open only while a game listens, which some do all the time, Super Mario 3D Land among them. Holding M blows into it either way, for games that ask you to.");
+                            }) { new_sel = 2; }
+                            self.settings_selected = new_sel;
                         }
                         SettingsTab::System => {
+                            let sel = self.settings_selected;
+                            let mut new_sel = sel;
                             ui.heading("Display & Window");
-                            egui::ComboBox::from_label("Window mode")
-                                .selected_text(settings.window_mode.name())
-                                .show_ui(ui, |ui| {
-                                    for mode in WindowMode::ALL {
-                                        ui.selectable_value(&mut settings.window_mode, mode, mode.name());
-                                    }
-                                });
-                            window_scale(ui, &mut settings.scale);
-                            ui.checkbox(&mut settings.show_fps, "Show the frame rate");
-                            if ui.button("Toggle Fullscreen (F11)").clicked() {
-                                actions.push(Action::Fullscreen);
-                            }
+                            if setting_row(ui, sel == 0, |ui| {
+                                egui::ComboBox::from_label("Window mode")
+                                    .selected_text(settings.window_mode.name())
+                                    .show_ui(ui, |ui| {
+                                        for mode in WindowMode::ALL {
+                                            ui.selectable_value(&mut settings.window_mode, mode, mode.name());
+                                        }
+                                    });
+                            }) { new_sel = 0; }
+                            if setting_row(ui, sel == 1, |ui| window_scale(ui, &mut settings.scale)) { new_sel = 1; }
+                            if setting_row(ui, sel == 2, |ui| {
+                                ui.checkbox(&mut settings.show_fps, "Show the frame rate");
+                            }) { new_sel = 2; }
+                            if setting_row(ui, sel == 3, |ui| {
+                                if ui.button("Toggle Fullscreen (F11)").clicked() {
+                                    actions.push(Action::Fullscreen);
+                                }
+                            }) { new_sel = 3; }
 
                             ui.add_space(8.0);
                             ui.separator();
                             ui.heading("Emulation");
-                            language(ui, &mut settings.language);
-                            code(ui, &mut settings.recompiled);
-                            ui.label(RichText::new("Recompiled code changes with the next game started, or Reset.").weak());
-                            egui::ComboBox::from_label("Cameras").selected_text(settings.camera.name()).show_ui(ui, |ui| {
-                                for source in CameraSource::ALL {
-                                    ui.selectable_value(&mut settings.camera, source, source.name());
-                                }
-                            })
-                            .response
-                            .on_hover_text("What the console's cameras see. The computer's camera turns on only while a game takes pictures.");
-                            if settings.camera == CameraSource::Picture {
+                            if setting_row(ui, sel == 4, |ui| language(ui, &mut settings.language)) { new_sel = 4; }
+                            if setting_row(ui, sel == 5, |ui| {
+                                code(ui, &mut settings.recompiled);
+                                ui.label(RichText::new("Recompiled code changes with the next game started, or Reset.").weak());
+                            }) { new_sel = 5; }
+                            if setting_row(ui, sel == 6, |ui| {
+                                egui::ComboBox::from_label("Cameras").selected_text(settings.camera.name()).show_ui(ui, |ui| {
+                                    for source in CameraSource::ALL {
+                                        ui.selectable_value(&mut settings.camera, source, source.name());
+                                    }
+                                })
+                                .response
+                                .on_hover_text("What the console's cameras see. The computer's camera turns on only while a game takes pictures.");
+                            }) { new_sel = 6; }
+                            if setting_row(ui, sel == 7, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label("Picture");
-                                    match &settings.camera_picture {
-                                        Some(path) => ui.label(path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()),
-                                        None => ui.label(RichText::new("none").weak()),
-                                    };
-                                    if ui.button("Choose…").clicked() {
+                                    if ui.button("Show camera picture…").on_hover_text("Pick a picture for the console's cameras to see, a QR code's say, in place of the computer's camera.").clicked() {
                                         actions.push(Action::ChooseCameraPicture);
                                     }
+                                    if settings.camera == CameraSource::Picture {
+                                        match &settings.camera_picture {
+                                            Some(path) => ui.label(path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()),
+                                            None => ui.label(RichText::new("none").weak()),
+                                        };
+                                        if ui.button("Choose…").clicked() {
+                                            actions.push(Action::ChooseCameraPicture);
+                                        }
+                                    }
                                 });
-                            }
-                            ui.horizontal(|ui| {
-                                if ui.button("Show camera picture…").on_hover_text("Pick a picture for the console's cameras to see, a QR code's say, in place of the computer's camera.").clicked() {
-                                    actions.push(Action::ChooseCameraPicture);
-                                }
+                            }) { new_sel = 7; }
+                            if setting_row(ui, sel == 8, |ui| {
                                 if ui.button("Copy report info").clicked() {
                                     actions.push(Action::CopyReport);
                                 }
-                            });
+                            }) { new_sel = 8; }
 
                             ui.add_space(8.0);
                             ui.separator();
@@ -1181,12 +1348,15 @@ impl Menus {
                                     settings.background = None;
                                 }
                             });
-                            ui.add_enabled(
-                                settings.background.is_some(),
-                                egui::Slider::new(&mut settings.background_opacity, 0.0..=1.0)
-                                    .text("Opacity")
-                                    .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
-                            );
+                            if setting_row(ui, sel == 9, |ui| {
+                                ui.add_enabled(
+                                    settings.background.is_some(),
+                                    egui::Slider::new(&mut settings.background_opacity, 0.0..=1.0)
+                                        .text("Opacity")
+                                        .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                                );
+                            }) { new_sel = 9; }
+                            self.settings_selected = new_sel;
                         }
                     }
                 });
