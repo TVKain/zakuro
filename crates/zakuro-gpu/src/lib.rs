@@ -804,6 +804,17 @@ impl Gpu {
         1
     }
 
+    /// sets how many times the console's resolution the host's GPU draws at,
+    /// returning the actual scale applied.
+    pub fn set_scale(&mut self, scale: u32) -> u32 {
+        #[cfg(feature = "vulkan")]
+        if let Some(hardware) = self.resources.hardware.as_mut() {
+            return hardware.set_scale(scale);
+        }
+        let _ = scale;
+        1
+    }
+
     /// the newest picture the host's GPU drew for a screen's buffer, at the
     /// scale it draws at, while guest memory still holds the same picture.
     /// size is the pixels of a row the screen shows and its rows, stride the

@@ -1086,6 +1086,14 @@ impl System {
         memory::config::set_slider_3d(self.memory.phys.shared_page_mut(), value);
     }
 
+    /// sets the internal resolution multiplier and updates the GPU rasterizer scale,
+    /// returning the actual scale applied.
+    pub fn set_resolution(&mut self, resolution: u32) -> u32 {
+        self.config.resolution = resolution;
+        self.showing = [None, None, None];
+        self.gpu.set_scale(resolution)
+    }
+
     /// where a screen's picture is on the host's GPU, for a presenter sharing
     /// its device to draw straight from, none when the GPU does not show the
     /// screens itself or did not draw what the screen shows, read_screen_scaled

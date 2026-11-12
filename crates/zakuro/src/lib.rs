@@ -1422,6 +1422,10 @@ impl App {
         self.settings.save();
         self.active = self.settings.for_game(self.program_id());
         if let Some(game) = &mut self.game {
+            if game.system.config.resolution != self.active.resolution {
+                let actual = game.system.set_resolution(self.active.resolution);
+                log::info!("internal resolution changed to {actual}x");
+            }
             if game.system.gpu.interpolates() != self.active.frame_interpolation {
                 let on = game.system.set_interpolation(self.active.frame_interpolation);
                 log::info!("frame interpolation {}", if on { "on" } else { "off" });

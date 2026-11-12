@@ -229,15 +229,38 @@ vec3 shown(sampler2D image) {
         }
         return texture(image, at).rgb;
     }
+
+    if (mode == 1) {
+        vec2 texel = (floor(uv * size) + 0.5) / size;
+        return texture(image, texel).rgb;
+    }
+
     ivec2 taps = ivec2(clamp(ceil(covered), 1.0, 4.0));
     vec3 sum = vec3(0.0);
+    float total_w = 0.0;
+    vec3 center_color = texture(image, uv).rgb;
+    vec3 min_c = center_color;
+    vec3 max_c = center_color;
+
     for (int y = 0; y < taps.y; y++) {
         for (int x = 0; x < taps.x; x++) {
             vec2 offset = ((vec2(x, y) + 0.5) / vec2(taps) - 0.5) * covered / size;
-            sum += texture(image, uv + offset).rgb;
+            vec2 norm_d = ((vec2(x, y) + 0.5) / vec2(taps) - 0.5) * 2.0;
+            float w = exp(-1.2 * dot(norm_d, norm_d));
+            vec3 s = texture(image, uv + offset).rgb;
+            sum += s * w;
+            total_w += w;
+            min_c = min(min_c, s);
+            max_c = max(max_c, s);
         }
     }
-    return sum / float(taps.x * taps.y);
+    vec3 filtered = sum / max(total_w, 1e-5);
+
+    float amp_strength = (mode == 2) ? 0.35 : ((mode == 3) ? 0.20 : 0.15);
+    vec3 amp = clamp(min(min_c, 1.0 - max_c) / max(max_c, vec3(1e-4)), 0.0, 1.0);
+    vec3 sharp_w = -sqrt(amp) * amp_strength;
+    vec3 sharpened = (filtered + sharp_w * (min_c + max_c) * 2.0) / (1.0 + 4.0 * sharp_w);
+    return clamp(sharpened, min_c, max_c);
 }
 "#;
 

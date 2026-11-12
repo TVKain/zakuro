@@ -19,6 +19,8 @@ pub struct SharedDevice {
     pub(crate) statistics: bool,
     /// the blend state draws set as they go.
     pub(crate) dynamic: crate::raster::hardware::Dynamic,
+    /// whether the physical device supports anisotropic filtering.
+    pub(crate) anisotropy: bool,
 }
 
 impl SharedDevice {

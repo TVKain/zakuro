@@ -1414,6 +1414,8 @@ pub struct Hardware {
     /// whether the presenter shares the device, and shows screens straight
     /// from the images the GPU turns them upright into.
     direct: bool,
+    /// whether anisotropic filtering is supported on this device.
+    anisotropy: bool,
     device: ash::Device,
     push: ash::khr::push_descriptor::Device,
     queue: vk::Queue,
@@ -1577,7 +1579,7 @@ impl Hardware {
     pub fn with_device(shared: Arc<SharedDevice>, direct: bool, kept_pipelines: Option<std::path::PathBuf>) -> Result<Hardware, String> {
         let kept_pipelines: Option<Arc<std::path::Path>> = kept_pipelines.map(Into::into);
         let (instance, device, physical, family) = (shared.instance.clone(), shared.device.clone(), shared.physical, shared.family);
-        let (logic_ops, statistics, dynamic) = (shared.logic_ops, shared.statistics, shared.dynamic);
+        let (logic_ops, statistics, dynamic, anisotropy) = (shared.logic_ops, shared.statistics, shared.dynamic, shared.anisotropy);
         // SAFETY: the physical device came from this instance
         let properties = unsafe { instance.get_physical_device_properties(physical) };
         let name = properties.device_name_as_c_str().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1688,6 +1690,7 @@ impl Hardware {
                 blank: Image { image: vk::Image::null(), memory: vk::DeviceMemory::null(), view: vk::ImageView::null() },
                 _shared: shared,
                 direct,
+                anisotropy,
                 device,
                 push,
                 queue,
@@ -1844,14 +1847,58 @@ impl Hardware {
         self.scale
     }
 
-    /// draws at a multiple of the console's resolution, before anything is
-    /// drawn, when the GPU can scale surfaces, and says the one it took.
+    /// draws at a multiple of the console's resolution, when the GPU can scale surfaces,
+    /// and says the one it took. Safely recreates cached surfaces if changed at runtime.
     pub fn set_scale(&mut self, scale: u32) -> u32 {
-        if self.surfaces.is_empty() && self.blits {
-            // up to 8, and no more than keeps the largest buffers, 1024
-            // pixels across, within what the GPU makes
-            self.scale = scale.clamp(1, 8).min((self.max_image_size / 1024).max(1));
+        if !self.blits {
+            return self.scale;
         }
+        let target = scale.clamp(1, 8).min((self.max_image_size / 1024).max(1));
+        if self.scale == target {
+            return self.scale;
+        }
+        if self.recording {
+            let _ = self.submit();
+        } else {
+            self.end_rendering();
+        }
+        unsafe { self.device.device_wait_idle() }.ok();
+
+        // Clear existing surfaces, copies, textures, and samplers allocated at old scale
+        let surfaces = std::mem::take(&mut self.surfaces);
+        for surface in surfaces {
+            self.destroy_image(&surface.image);
+            let uprights = [&surface.upright, &surface.twin_upright].into_iter().flatten().map(|u| &u.image);
+            for image in [&surface.native, &surface.twin].into_iter().flatten().chain(uprights) {
+                self.destroy_image(image);
+            }
+            if let Some(capture) = surface.capture {
+                unsafe {
+                    self.device.destroy_buffer(capture.buffer.buffer, None);
+                    self.device.free_memory(capture.buffer.memory, None);
+                }
+            }
+            if let Some(screen) = surface.screen {
+                unsafe {
+                    self.device.destroy_buffer(screen.buffer.buffer, None);
+                    self.device.free_memory(screen.buffer.memory, None);
+                }
+            }
+        }
+        let copies: Vec<_> = std::mem::take(&mut self.copies).into_values().chain(std::mem::take(&mut self.twin_copies).into_values()).collect();
+        for copy in copies {
+            self.destroy_image(&copy.image);
+        }
+        let textures: Vec<_> = std::mem::take(&mut self.textures).into_values().collect();
+        for texture in textures {
+            self.destroy_image(&texture.image);
+        }
+        let samplers = std::mem::take(&mut self.samplers);
+        for &sampler in samplers.values() {
+            unsafe { self.device.destroy_sampler(sampler, None) };
+        }
+
+        self.scale = target;
         self.scale
     }
 
@@ -2895,7 +2942,7 @@ impl Hardware {
         };
         let filter = |linear: bool| if linear { vk::Filter::LINEAR } else { vk::Filter::NEAREST };
         let between = if filtering.between { vk::SamplerMipmapMode::LINEAR } else { vk::SamplerMipmapMode::NEAREST };
-        let info = vk::SamplerCreateInfo::default()
+        let mut info = vk::SamplerCreateInfo::default()
             .mag_filter(filter(filtering.magnify))
             .min_filter(filter(filtering.minify))
             .mipmap_mode(between)
@@ -2905,6 +2952,9 @@ impl Hardware {
             .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .min_lod(filtering.levels.0 as f32)
             .max_lod(filtering.levels.1 as f32);
+        if self.anisotropy && self.scale > 1 {
+            info = info.anisotropy_enable(true).max_anisotropy(16.0);
+        }
         // SAFETY: plain object creation on our device
         let sampler = unsafe { self.device.create_sampler(&info, None) }.map_err(vk_error("create a sampler"))?;
         self.samplers.insert(filtering, sampler);
@@ -5631,6 +5681,7 @@ pub(crate) fn render_device(
     // SAFETY: the physical device came from this instance
     let supported = unsafe { instance.get_physical_device_features(physical) };
     let logic_ops = supported.logic_op == vk::TRUE;
+    let anisotropy = supported.sampler_anisotropy == vk::TRUE;
     let dynamic = dynamic_state(instance, physical, logic_ops);
     if dynamic.blend {
         extensions.push(ash::ext::extended_dynamic_state3::NAME.as_ptr());
@@ -5649,6 +5700,7 @@ pub(crate) fn render_device(
     let features = vk::PhysicalDeviceFeatures::default()
         .depth_clamp(true)
         .logic_op(logic_ops)
+        .sampler_anisotropy(anisotropy)
         .pipeline_statistics_query(statistics);
     // the cache control, to make a pipeline only when the cache on disk
     // has it, every Vulkan 1.3 device does
@@ -5672,7 +5724,7 @@ pub(crate) fn render_device(
     // SAFETY: a queue the device was made with
     let queue = unsafe { device.get_device_queue(family, 0) };
     let (_entry, instance) = (entry.clone(), instance.clone());
-    Ok(SharedDevice { _entry, instance, physical, family, device, queue, logic_ops, statistics, dynamic })
+    Ok(SharedDevice { _entry, instance, physical, family, device, queue, logic_ops, statistics, dynamic, anisotropy })
 }
 
 /// which of the blend state the device lets draws set as they go, none
