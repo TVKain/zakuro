@@ -144,6 +144,7 @@ impl GameSettingsTab {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SelectTarget {
     Renderer,
+    Resolution,
     Layout,
     Orientation,
     Filter,
@@ -153,6 +154,38 @@ pub enum SelectTarget {
     WindowMode,
     Language,
     Camera,
+}
+
+pub const RESOLUTION_SCALES: [u32; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+/// detailed label showing multiplier, native rendered dimensions, and standard display equivalent
+pub fn resolution_label(scale: u32) -> &'static str {
+    match scale {
+        1 => "1x (400x240 - Native 3DS)",
+        2 => "2x (800x480 - 480p)",
+        3 => "3x (1200x720 - 720p HD)",
+        4 => "4x (1600x960)",
+        5 => "5x (2000x1200 - 1080p FHD)",
+        6 => "6x (2400x1440 - 1440p 2K)",
+        7 => "7x (2800x1680)",
+        8 => "8x (3200x1920 - 4K UHD)",
+        _ => "Custom",
+    }
+}
+
+/// compact badge label showing multiplier and resolution for setting buttons
+pub fn resolution_badge_label(scale: u32) -> &'static str {
+    match scale {
+        1 => "1x (400x240)",
+        2 => "2x (800x480)",
+        3 => "3x (1200x720 720p)",
+        4 => "4x (1600x960)",
+        5 => "5x (2000x1200 1080p)",
+        6 => "6x (2400x1440 2K)",
+        7 => "7x (2800x1680)",
+        8 => "8x (3200x1920 4K)",
+        _ => "Custom",
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -430,18 +463,18 @@ fn game_setting_row(
                         action = GameRowAction::Reset;
                     }
                     let badge_text = format!("CUSTOM: {custom_val}");
-                    let val_btn = egui::Button::new(RichText::new(badge_text).size(12.0).strong().color(Color32::from_rgb(56, 189, 248)))
+                    let val_btn = egui::Button::new(RichText::new(badge_text).size(11.5).strong().color(Color32::from_rgb(56, 189, 248)))
                         .fill(Color32::from_rgb(20, 38, 62))
                         .stroke(egui::Stroke::new(1.2, Color32::from_rgb(56, 189, 248)));
-                    if ui.add_sized([160.0, 26.0], val_btn).clicked() {
+                    if ui.add_sized([175.0, 26.0], val_btn).clicked() {
                         action = GameRowAction::Edit;
                     }
                 } else {
                     let badge_text = format!("GLOBAL: {global_val}");
-                    let val_btn = egui::Button::new(RichText::new(badge_text).size(12.0).color(Color32::from_rgb(148, 163, 184)))
+                    let val_btn = egui::Button::new(RichText::new(badge_text).size(11.5).color(Color32::from_rgb(148, 163, 184)))
                         .fill(Color32::from_rgb(24, 28, 38))
                         .stroke(egui::Stroke::new(1.0, Color32::from_rgb(51, 65, 85)));
-                    if ui.add_sized([160.0, 26.0], val_btn).on_hover_text("Currently following Global Setting. Click to override for this game.").clicked() {
+                    if ui.add_sized([175.0, 26.0], val_btn).on_hover_text("Currently following Global Setting. Click to override for this game.").clicked() {
                         action = GameRowAction::Edit;
                     }
                 }
@@ -608,10 +641,15 @@ impl Menus {
                     Some(Action::Settings)
                 }
                 1 => {
-                    let entry = settings.per_game.entry(key).or_default();
-                    let cur = entry.resolution.unwrap_or(settings.resolution);
-                    entry.resolution = Some(if cur >= 8 { 1 } else { cur + 1 });
-                    Some(Action::Settings)
+                    let cur = settings.per_game.get(&key).and_then(|g| g.resolution).unwrap_or(settings.resolution);
+                    self.select_popup = Some(SelectPopup::game(
+                        SelectTarget::Resolution,
+                        program_id,
+                        "Internal Resolution",
+                        RESOLUTION_SCALES.iter().map(|&s| resolution_label(s).to_string()).collect(),
+                        (cur.clamp(1, 8) - 1) as usize,
+                    ));
+                    None
                 }
                 2 => {
                     let entry = settings.per_game.entry(key).or_default();
@@ -823,7 +861,15 @@ impl Menus {
                     settings.hardware_rasterizer = !settings.hardware_rasterizer;
                     None
                 }
-                2 => None,
+                2 => {
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::Resolution,
+                        "Internal Resolution",
+                        RESOLUTION_SCALES.iter().map(|&s| resolution_label(s).to_string()).collect(),
+                        (settings.resolution.clamp(1, 8) - 1) as usize,
+                    ));
+                    None
+                }
                 3 => {
                     settings.texture_packs = !settings.texture_packs;
                     None
@@ -976,6 +1022,9 @@ impl Menus {
             let key = game_key(program_id);
             let entry = settings.per_game.entry(key).or_default();
             match popup.target {
+                SelectTarget::Resolution => {
+                    entry.resolution = Some((idx + 1) as u32);
+                }
                 SelectTarget::Layout => {
                     if let Some(&l) = Screens::ALL.get(idx) {
                         entry.layout = Some(l);
@@ -1015,6 +1064,9 @@ impl Menus {
             }
         } else {
             match popup.target {
+                SelectTarget::Resolution => {
+                    settings.resolution = (idx + 1) as u32;
+                }
                 SelectTarget::Renderer => {
                     if let Some(&r) = Renderer::ALL.get(idx) {
                         settings.renderer = r;
@@ -1088,7 +1140,7 @@ impl Menus {
                     .corner_radius(egui::CornerRadius::same(12))
                     .inner_margin(egui::Margin::symmetric(20, 16))
                     .show(ui, |ui| {
-                        ui.set_width(300.0);
+                        ui.set_width(330.0);
                         ui.vertical_centered(|ui| {
                             ui.heading(RichText::new(popup.title).strong().size(17.0).color(Color32::WHITE));
                             ui.add_space(3.0);
@@ -1097,33 +1149,38 @@ impl Menus {
                             ui.separator();
                             ui.add_space(6.0);
 
-                            for (i, opt) in popup.options.iter().enumerate() {
-                                let is_highlighted = popup.selected == i;
-                                let mut frame = egui::Frame::new()
-                                    .corner_radius(egui::CornerRadius::same(8))
-                                    .inner_margin(egui::Margin::symmetric(12, 7));
-                                if is_highlighted {
-                                    frame = frame
-                                        .fill(Color32::from_rgb(37, 99, 235))
-                                        .stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253)));
-                                } else {
-                                    frame = frame.fill(Color32::from_rgb(28, 33, 44));
-                                }
-                                let resp = frame.show(ui, |ui| {
-                                    ui.horizontal(|ui| {
+                            let max_list_h = (ctx.content_rect().height() - 160.0).clamp(180.0, 360.0);
+                            egui::ScrollArea::vertical()
+                                .max_height(max_list_h)
+                                .show(ui, |ui| {
+                                    for (i, opt) in popup.options.iter().enumerate() {
+                                        let is_highlighted = popup.selected == i;
+                                        let mut frame = egui::Frame::new()
+                                            .corner_radius(egui::CornerRadius::same(8))
+                                            .inner_margin(egui::Margin::symmetric(12, 7));
                                         if is_highlighted {
-                                            ui.label(RichText::new("▶").color(Color32::from_rgb(147, 197, 253)).strong());
+                                            frame = frame
+                                                .fill(Color32::from_rgb(37, 99, 235))
+                                                .stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253)));
                                         } else {
-                                            ui.add_space(14.0);
+                                            frame = frame.fill(Color32::from_rgb(28, 33, 44));
                                         }
-                                        ui.label(RichText::new(opt).size(13.5).strong().color(Color32::WHITE));
-                                    });
+                                        let resp = frame.show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                if is_highlighted {
+                                                    ui.label(RichText::new("▶").color(Color32::from_rgb(147, 197, 253)).strong());
+                                                } else {
+                                                    ui.add_space(14.0);
+                                                }
+                                                ui.label(RichText::new(opt).size(13.0).strong().color(Color32::WHITE));
+                                            });
+                                        });
+                                        ui.add_space(3.0);
+                                        if resp.response.clicked() {
+                                            confirmed_idx = Some(i);
+                                        }
+                                    }
                                 });
-                                ui.add_space(3.0);
-                                if resp.response.clicked() {
-                                    confirmed_idx = Some(i);
-                                }
-                            }
 
                             ui.add_space(6.0);
                             ui.separator();
@@ -1896,7 +1953,16 @@ impl Menus {
                             if setting_row(ui, sel == 1, scroll, |ui| rasterizer(ui, &mut settings.hardware_rasterizer)) { new_sel = 1; }
                             let hw = settings.hardware_rasterizer;
                             if setting_row(ui, sel == 2, scroll, |ui| {
-                                ui.add_enabled_ui(hw, |ui| resolution(ui, &mut settings.resolution));
+                                ui.add_enabled_ui(hw, |ui| {
+                                    if resolution(ui, &mut settings.resolution) {
+                                        self.select_popup = Some(SelectPopup::global(
+                                            SelectTarget::Resolution,
+                                            "Internal Resolution",
+                                            RESOLUTION_SCALES.iter().map(|&s| resolution_label(s).to_string()).collect(),
+                                            (settings.resolution.clamp(1, 8) - 1) as usize,
+                                        ));
+                                    }
+                                });
                             }) { new_sel = 2; }
                             if setting_row(ui, sel == 3, scroll, |ui| {
                                 ui.add_enabled_ui(hw, |ui| texture_packs(ui, &mut settings.texture_packs));
@@ -2218,11 +2284,27 @@ impl Menus {
 
                             // 1: Resolution
                             let res_val = game.resolution.unwrap_or(general.resolution);
-                            let (act, hov) = game_setting_row(ui, sel == 1, scroll, "Internal Resolution", game.resolution.is_some(), &format!("{res_val}x"), &format!("{}x", general.resolution));
+                            let (act, hov) = game_setting_row(
+                                ui,
+                                sel == 1,
+                                scroll,
+                                "Internal Resolution",
+                                game.resolution.is_some(),
+                                resolution_badge_label(res_val),
+                                resolution_badge_label(general.resolution),
+                            );
                             if hov { new_sel = 1; }
                             match act {
                                 GameRowAction::Reset => game.resolution = None,
-                                GameRowAction::Edit => game.resolution = Some(if res_val >= 8 { 1 } else { res_val + 1 }),
+                                GameRowAction::Edit => {
+                                    self.select_popup = Some(SelectPopup::game(
+                                        SelectTarget::Resolution,
+                                        program_id,
+                                        "Internal Resolution",
+                                        RESOLUTION_SCALES.iter().map(|&s| resolution_label(s).to_string()).collect(),
+                                        (res_val.clamp(1, 8) - 1) as usize,
+                                    ));
+                                }
                                 GameRowAction::None => {}
                             }
 
@@ -2616,9 +2698,23 @@ fn rasterizer(ui: &mut egui::Ui, value: &mut bool) {
     ui.checkbox(value, "Draw the 3D on the GPU");
 }
 
-fn resolution(ui: &mut egui::Ui, value: &mut u32) {
-    ui.add(egui::Slider::new(value, 1..=8).text("Resolution").suffix("x"))
-        .on_hover_text("How many times the console's resolution the 3D is drawn at. Past what the window shows, the extra pixels smooth the edges, at a cost to the GPU that grows fast.");
+fn resolution(ui: &mut egui::Ui, value: &mut u32) -> bool {
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Internal Resolution").size(13.0));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let label = resolution_badge_label(*value);
+            let btn = egui::Button::new(RichText::new(label).size(11.5).strong().color(Color32::from_rgb(56, 189, 248)))
+                .fill(Color32::from_rgb(20, 38, 62))
+                .stroke(egui::Stroke::new(1.2, Color32::from_rgb(56, 189, 248)));
+            if ui.add_sized([175.0, 26.0], btn).on_hover_text("Click to choose internal resolution from dropdown").clicked() {
+                clicked = true;
+            }
+            let slider = egui::Slider::new(value, 1..=8).show_value(false);
+            ui.add_sized([90.0, 24.0], slider);
+        });
+    });
+    clicked
 }
 
 fn texture_packs(ui: &mut egui::Ui, value: &mut bool) {
