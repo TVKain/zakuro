@@ -109,6 +109,38 @@ impl SettingsTab {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GameSettingsTab {
+    #[default]
+    Graphics,
+    System,
+}
+
+impl GameSettingsTab {
+    pub const ALL: [GameSettingsTab; 2] = [GameSettingsTab::Graphics, GameSettingsTab::System];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            GameSettingsTab::Graphics => "🎮 Graphics",
+            GameSettingsTab::System => "⚙ System",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            GameSettingsTab::Graphics => GameSettingsTab::System,
+            GameSettingsTab::System => GameSettingsTab::Graphics,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            GameSettingsTab::Graphics => GameSettingsTab::System,
+            GameSettingsTab::System => GameSettingsTab::Graphics,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SelectTarget {
     Renderer,
@@ -126,9 +158,32 @@ pub enum SelectTarget {
 #[derive(Clone, Debug)]
 pub struct SelectPopup {
     pub target: SelectTarget,
+    pub for_game: Option<u64>,
     pub title: &'static str,
     pub options: Vec<String>,
     pub selected: usize,
+}
+
+impl SelectPopup {
+    pub fn global(target: SelectTarget, title: &'static str, options: Vec<String>, selected: usize) -> Self {
+        Self {
+            target,
+            for_game: None,
+            title,
+            options,
+            selected,
+        }
+    }
+
+    pub fn game(target: SelectTarget, program_id: u64, title: &'static str, options: Vec<String>, selected: usize) -> Self {
+        Self {
+            target,
+            for_game: Some(program_id),
+            title,
+            options,
+            selected,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -183,6 +238,12 @@ pub struct Menus {
     pub settings_scroll_to_selected: bool,
     /// active selection popup dialog when choosing options via controller/UI.
     pub select_popup: Option<SelectPopup>,
+    /// the tab currently selected in the game settings dialog.
+    pub game_settings_tab: GameSettingsTab,
+    /// the setting row currently selected by controller in game settings.
+    pub game_settings_selected: usize,
+    /// whether the game settings scroll area should scroll to reveal game_settings_selected.
+    pub game_settings_scroll_to_selected: bool,
     /// whether a modal dialog was just opened and needs initial widget focus.
     pub modal_just_opened: bool,
 }
@@ -340,6 +401,59 @@ fn setting_row(ui: &mut egui::Ui, selected: bool, should_scroll: bool, content: 
     res.response.clicked()
 }
 
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum GameRowAction {
+    None,
+    Reset,
+    Edit,
+}
+
+fn game_setting_row(
+    ui: &mut egui::Ui,
+    selected: bool,
+    should_scroll: bool,
+    name: &str,
+    is_custom: bool,
+    custom_val: &str,
+    global_val: &str,
+) -> (GameRowAction, bool) {
+    let mut action = GameRowAction::None;
+    let clicked = setting_row(ui, selected, should_scroll, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(name).strong().size(13.0).color(Color32::from_rgb(225, 232, 245)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if is_custom {
+                    let reset_btn = egui::Button::new(RichText::new("↺ Global").size(11.0).color(Color32::from_rgb(148, 163, 184)))
+                        .fill(Color32::from_rgb(28, 33, 44))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(51, 65, 85)));
+                    if ui.add_sized([65.0, 26.0], reset_btn).on_hover_text("Revert to following Global Setting").clicked() {
+                        action = GameRowAction::Reset;
+                    }
+                    let badge_text = format!("CUSTOM: {custom_val}");
+                    let val_btn = egui::Button::new(RichText::new(badge_text).size(12.0).strong().color(Color32::from_rgb(56, 189, 248)))
+                        .fill(Color32::from_rgb(20, 38, 62))
+                        .stroke(egui::Stroke::new(1.2, Color32::from_rgb(56, 189, 248)));
+                    if ui.add_sized([160.0, 26.0], val_btn).clicked() {
+                        action = GameRowAction::Edit;
+                    }
+                } else {
+                    let badge_text = format!("GLOBAL: {global_val}");
+                    let val_btn = egui::Button::new(RichText::new(badge_text).size(12.0).color(Color32::from_rgb(148, 163, 184)))
+                        .fill(Color32::from_rgb(24, 28, 38))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(51, 65, 85)));
+                    if ui.add_sized([160.0, 26.0], val_btn).on_hover_text("Currently following Global Setting. Click to override for this game.").clicked() {
+                        action = GameRowAction::Edit;
+                    }
+                }
+            });
+        });
+    });
+    if action == GameRowAction::None && clicked {
+        action = GameRowAction::Edit;
+    }
+    (action, clicked)
+}
+
 fn cycle<T: Copy + PartialEq>(list: &[T], current: T, delta: i32) -> T {
     let len = list.len();
     let idx = list.iter().position(|&x| x == current).unwrap_or(0);
@@ -373,6 +487,217 @@ impl Menus {
         self.settings_selected = 0;
         self.settings_scroll_to_selected = true;
         self.modal_just_opened = true;
+    }
+
+    /// opens the game-specific settings dialog and flags initial focus.
+    pub fn open_game_settings(&mut self, program_id: u64, name: String) {
+        self.game_settings = Some((program_id, name));
+        self.game_settings_tab = GameSettingsTab::Graphics;
+        self.game_settings_selected = 0;
+        self.game_settings_scroll_to_selected = true;
+        self.modal_just_opened = true;
+    }
+
+    pub fn game_settings_up(&mut self) {
+        self.game_settings_selected = self.game_settings_selected.saturating_sub(1);
+        self.game_settings_scroll_to_selected = true;
+    }
+
+    pub fn game_settings_down(&mut self) {
+        let max = match self.game_settings_tab {
+            GameSettingsTab::Graphics => 12,
+            GameSettingsTab::System => 3,
+        };
+        self.game_settings_selected = (self.game_settings_selected + 1).min(max - 1);
+        self.game_settings_scroll_to_selected = true;
+    }
+
+    pub fn game_settings_adjust(&mut self, settings: &mut Settings, program_id: u64, delta: i32) -> Option<Action> {
+        let key = game_key(program_id);
+        let entry = settings.per_game.entry(key).or_default();
+        match self.game_settings_tab {
+            GameSettingsTab::Graphics => match self.game_settings_selected {
+                1 => {
+                    let cur = entry.resolution.unwrap_or(settings.resolution);
+                    let new_res = (cur as i32 + delta).clamp(1, 8) as u32;
+                    entry.resolution = Some(new_res);
+                    Some(Action::Settings)
+                }
+                10 => {
+                    let cur = entry.depth_3d.unwrap_or(settings.depth_3d);
+                    let new_depth = (cur as i32 + delta * 5).clamp(0, 100) as u32;
+                    entry.depth_3d = Some(new_depth);
+                    Some(Action::Settings)
+                }
+                _ => None,
+            },
+            GameSettingsTab::System => None,
+        }
+    }
+
+    pub fn game_settings_reset_selected(&mut self, settings: &mut Settings, program_id: u64) -> Option<Action> {
+        let key = game_key(program_id);
+        let mut remove_all = false;
+        if let Some(entry) = settings.per_game.get_mut(&key) {
+            match self.game_settings_tab {
+                GameSettingsTab::Graphics => match self.game_settings_selected {
+                    0 => entry.hardware_rasterizer = None,
+                    1 => entry.resolution = None,
+                    2 => entry.texture_packs = None,
+                    3 => entry.frame_interpolation = None,
+                    4 => entry.layout = None,
+                    5 => entry.orientation = None,
+                    6 => entry.filter = None,
+                    7 => entry.integer_scale = None,
+                    8 => entry.top_shape = None,
+                    9 => entry.stereo = None,
+                    10 => entry.depth_3d = None,
+                    11 => remove_all = true,
+                    _ => {}
+                },
+                GameSettingsTab::System => match self.game_settings_selected {
+                    0 => entry.language = None,
+                    1 => entry.recompiled = None,
+                    2 => remove_all = true,
+                    _ => {}
+                },
+            }
+            if *entry == GameSettings::default() {
+                remove_all = true;
+            }
+        }
+        if remove_all {
+            settings.per_game.remove(&key);
+        }
+        Some(Action::Settings)
+    }
+
+    pub fn game_settings_activate(&mut self, settings: &mut Settings, program_id: u64) -> Option<Action> {
+        let key = game_key(program_id);
+        match self.game_settings_tab {
+            GameSettingsTab::Graphics => match self.game_settings_selected {
+                0 => {
+                    let entry = settings.per_game.entry(key).or_default();
+                    let cur = entry.hardware_rasterizer.unwrap_or(settings.hardware_rasterizer);
+                    entry.hardware_rasterizer = Some(!cur);
+                    Some(Action::Settings)
+                }
+                1 => {
+                    let entry = settings.per_game.entry(key).or_default();
+                    let cur = entry.resolution.unwrap_or(settings.resolution);
+                    entry.resolution = Some(if cur >= 8 { 1 } else { cur + 1 });
+                    Some(Action::Settings)
+                }
+                2 => {
+                    let entry = settings.per_game.entry(key).or_default();
+                    let cur = entry.texture_packs.unwrap_or(settings.texture_packs);
+                    entry.texture_packs = Some(!cur);
+                    Some(Action::Settings)
+                }
+                3 => {
+                    let entry = settings.per_game.entry(key).or_default();
+                    let cur = entry.frame_interpolation.unwrap_or(settings.frame_interpolation);
+                    entry.frame_interpolation = Some(!cur);
+                    Some(Action::Settings)
+                }
+                4 => {
+                    let cur = settings.per_game.get(&key).and_then(|g| g.layout).unwrap_or(settings.layout);
+                    self.select_popup = Some(SelectPopup::game(
+                        SelectTarget::Layout,
+                        program_id,
+                        "Screen Layout",
+                        Screens::ALL.iter().map(|s| s.name().to_string()).collect(),
+                        Screens::ALL.iter().position(|&s| s == cur).unwrap_or(0),
+                    ));
+                    None
+                }
+                5 => {
+                    let cur = settings.per_game.get(&key).and_then(|g| g.orientation).unwrap_or(settings.orientation);
+                    self.select_popup = Some(SelectPopup::game(
+                        SelectTarget::Orientation,
+                        program_id,
+                        "Screen Orientation",
+                        Orientation::ALL.iter().map(|o| o.name().to_string()).collect(),
+                        Orientation::ALL.iter().position(|&o| o == cur).unwrap_or(0),
+                    ));
+                    None
+                }
+                6 => {
+                    let cur = settings.per_game.get(&key).and_then(|g| g.filter).unwrap_or(settings.filter);
+                    self.select_popup = Some(SelectPopup::game(
+                        SelectTarget::Filter,
+                        program_id,
+                        "Texture Filter",
+                        Filter::ALL.iter().map(|f| f.name().to_string()).collect(),
+                        Filter::ALL.iter().position(|&f| f == cur).unwrap_or(0),
+                    ));
+                    None
+                }
+                7 => {
+                    let entry = settings.per_game.entry(key).or_default();
+                    let cur = entry.integer_scale.unwrap_or(settings.integer_scale);
+                    entry.integer_scale = Some(!cur);
+                    Some(Action::Settings)
+                }
+                8 => {
+                    let cur = settings.per_game.get(&key).and_then(|g| g.top_shape).unwrap_or(settings.top_shape);
+                    self.select_popup = Some(SelectPopup::game(
+                        SelectTarget::TopShape,
+                        program_id,
+                        "Top Screen Aspect Ratio",
+                        TopShape::ALL.iter().map(|s| s.name().to_string()).collect(),
+                        TopShape::ALL.iter().position(|&s| s == cur).unwrap_or(0),
+                    ));
+                    None
+                }
+                9 => {
+                    let cur = settings.per_game.get(&key).and_then(|g| g.stereo).unwrap_or(settings.stereo);
+                    self.select_popup = Some(SelectPopup::game(
+                        SelectTarget::Stereo,
+                        program_id,
+                        "Stereo 3D Mode",
+                        Stereo3d::ALL.iter().map(|s| s.name().to_string()).collect(),
+                        Stereo3d::ALL.iter().position(|&s| s == cur).unwrap_or(0),
+                    ));
+                    None
+                }
+                10 => {
+                    let entry = settings.per_game.entry(key).or_default();
+                    let cur = entry.depth_3d.unwrap_or(settings.depth_3d);
+                    entry.depth_3d = Some(if cur >= 100 { 0 } else { cur + 10 });
+                    Some(Action::Settings)
+                }
+                11 => {
+                    settings.per_game.remove(&key);
+                    Some(Action::Settings)
+                }
+                _ => None,
+            },
+            GameSettingsTab::System => match self.game_settings_selected {
+                0 => {
+                    let cur = settings.per_game.get(&key).and_then(|g| g.language).unwrap_or(settings.language);
+                    self.select_popup = Some(SelectPopup::game(
+                        SelectTarget::Language,
+                        program_id,
+                        "Console Language",
+                        Language::ALL.iter().map(|l| l.name().to_string()).collect(),
+                        Language::ALL.iter().position(|&l| l == cur).unwrap_or(0),
+                    ));
+                    None
+                }
+                1 => {
+                    let entry = settings.per_game.entry(key).or_default();
+                    let cur = entry.recompiled.unwrap_or(settings.recompiled);
+                    entry.recompiled = Some(!cur);
+                    Some(Action::Settings)
+                }
+                2 => {
+                    settings.per_game.remove(&key);
+                    Some(Action::Settings)
+                }
+                _ => None,
+            },
+        }
     }
 
     pub fn settings_max_rows(&self) -> usize {
@@ -443,12 +768,12 @@ impl Menus {
         match self.settings_tab {
             SettingsTab::Graphics => match self.settings_selected {
                 0 => {
-                    self.select_popup = Some(SelectPopup {
-                        target: SelectTarget::Renderer,
-                        title: "Presenter / Backend",
-                        options: Renderer::ALL.iter().map(|r| r.name().to_string()).collect(),
-                        selected: Renderer::ALL.iter().position(|&r| r == settings.renderer).unwrap_or(0),
-                    });
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::Renderer,
+                        "Presenter / Backend",
+                        Renderer::ALL.iter().map(|r| r.name().to_string()).collect(),
+                        Renderer::ALL.iter().position(|&r| r == settings.renderer).unwrap_or(0),
+                    ));
                     None
                 }
                 1 => {
@@ -465,30 +790,30 @@ impl Menus {
                     None
                 }
                 5 => {
-                    self.select_popup = Some(SelectPopup {
-                        target: SelectTarget::Layout,
-                        title: "Screen Layout",
-                        options: Screens::ALL.iter().map(|s| s.name().to_string()).collect(),
-                        selected: Screens::ALL.iter().position(|&s| s == settings.layout).unwrap_or(0),
-                    });
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::Layout,
+                        "Screen Layout",
+                        Screens::ALL.iter().map(|s| s.name().to_string()).collect(),
+                        Screens::ALL.iter().position(|&s| s == settings.layout).unwrap_or(0),
+                    ));
                     None
                 }
                 6 => {
-                    self.select_popup = Some(SelectPopup {
-                        target: SelectTarget::Orientation,
-                        title: "Screen Orientation",
-                        options: Orientation::ALL.iter().map(|o| o.name().to_string()).collect(),
-                        selected: Orientation::ALL.iter().position(|&o| o == settings.orientation).unwrap_or(0),
-                    });
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::Orientation,
+                        "Screen Orientation",
+                        Orientation::ALL.iter().map(|o| o.name().to_string()).collect(),
+                        Orientation::ALL.iter().position(|&o| o == settings.orientation).unwrap_or(0),
+                    ));
                     None
                 }
                 7 => {
-                    self.select_popup = Some(SelectPopup {
-                        target: SelectTarget::Filter,
-                        title: "Filter",
-                        options: Filter::ALL.iter().map(|f| f.name().to_string()).collect(),
-                        selected: Filter::ALL.iter().position(|&f| f == settings.filter).unwrap_or(0),
-                    });
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::Filter,
+                        "Filter",
+                        Filter::ALL.iter().map(|f| f.name().to_string()).collect(),
+                        Filter::ALL.iter().position(|&f| f == settings.filter).unwrap_or(0),
+                    ));
                     None
                 }
                 8 => {
@@ -496,21 +821,21 @@ impl Menus {
                     None
                 }
                 9 => {
-                    self.select_popup = Some(SelectPopup {
-                        target: SelectTarget::TopShape,
-                        title: "Top Screen Aspect",
-                        options: TopShape::ALL.iter().map(|s| s.name().to_string()).collect(),
-                        selected: TopShape::ALL.iter().position(|&s| s == settings.top_shape).unwrap_or(0),
-                    });
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::TopShape,
+                        "Top Screen Aspect",
+                        TopShape::ALL.iter().map(|s| s.name().to_string()).collect(),
+                        TopShape::ALL.iter().position(|&s| s == settings.top_shape).unwrap_or(0),
+                    ));
                     None
                 }
                 10 => {
-                    self.select_popup = Some(SelectPopup {
-                        target: SelectTarget::Stereo,
-                        title: "3D Stereoscopy",
-                        options: Stereo3d::ALL.iter().map(|s| s.name().to_string()).collect(),
-                        selected: Stereo3d::ALL.iter().position(|&s| s == settings.stereo).unwrap_or(0),
-                    });
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::Stereo,
+                        "3D Stereoscopy",
+                        Stereo3d::ALL.iter().map(|s| s.name().to_string()).collect(),
+                        Stereo3d::ALL.iter().position(|&s| s == settings.stereo).unwrap_or(0),
+                    ));
                     None
                 }
                 11 => None,
@@ -545,24 +870,24 @@ impl Menus {
                     None
                 }
                 2 => {
-                    self.select_popup = Some(SelectPopup {
-                        target: SelectTarget::Microphone,
-                        title: "Microphone Source",
-                        options: MicrophoneSource::ALL.iter().map(|m| m.name().to_string()).collect(),
-                        selected: MicrophoneSource::ALL.iter().position(|&m| m == settings.microphone).unwrap_or(0),
-                    });
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::Microphone,
+                        "Microphone Source",
+                        MicrophoneSource::ALL.iter().map(|m| m.name().to_string()).collect(),
+                        MicrophoneSource::ALL.iter().position(|&m| m == settings.microphone).unwrap_or(0),
+                    ));
                     None
                 }
                 _ => None,
             },
             SettingsTab::System => match self.settings_selected {
                 0 => {
-                    self.select_popup = Some(SelectPopup {
-                        target: SelectTarget::WindowMode,
-                        title: "Window Mode",
-                        options: WindowMode::ALL.iter().map(|w| w.name().to_string()).collect(),
-                        selected: WindowMode::ALL.iter().position(|&w| w == settings.window_mode).unwrap_or(0),
-                    });
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::WindowMode,
+                        "Window Mode",
+                        WindowMode::ALL.iter().map(|w| w.name().to_string()).collect(),
+                        WindowMode::ALL.iter().position(|&w| w == settings.window_mode).unwrap_or(0),
+                    ));
                     None
                 }
                 1 => None,
@@ -572,12 +897,12 @@ impl Menus {
                 }
                 3 => Some(Action::Fullscreen),
                 4 => {
-                    self.select_popup = Some(SelectPopup {
-                        target: SelectTarget::Language,
-                        title: "System Language",
-                        options: Language::ALL.iter().map(|l| l.name().to_string()).collect(),
-                        selected: Language::ALL.iter().position(|&l| l == settings.language).unwrap_or(0),
-                    });
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::Language,
+                        "System Language",
+                        Language::ALL.iter().map(|l| l.name().to_string()).collect(),
+                        Language::ALL.iter().position(|&l| l == settings.language).unwrap_or(0),
+                    ));
                     None
                 }
                 5 => {
@@ -585,12 +910,12 @@ impl Menus {
                     None
                 }
                 6 => {
-                    self.select_popup = Some(SelectPopup {
-                        target: SelectTarget::Camera,
-                        title: "Camera Source",
-                        options: CameraSource::ALL.iter().map(|c| c.name().to_string()).collect(),
-                        selected: CameraSource::ALL.iter().position(|&c| c == settings.camera).unwrap_or(0),
-                    });
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::Camera,
+                        "Camera Source",
+                        CameraSource::ALL.iter().map(|c| c.name().to_string()).collect(),
+                        CameraSource::ALL.iter().position(|&c| c == settings.camera).unwrap_or(0),
+                    ));
                     None
                 }
                 7 => Some(Action::ChooseCameraPicture),
@@ -604,63 +929,101 @@ impl Menus {
     pub fn confirm_select_popup(&mut self, settings: &mut Settings) -> Option<Action> {
         let popup = self.select_popup.take()?;
         let idx = popup.selected;
-        match popup.target {
-            SelectTarget::Renderer => {
-                if let Some(&r) = Renderer::ALL.get(idx) {
-                    settings.renderer = r;
+        if let Some(program_id) = popup.for_game {
+            let key = game_key(program_id);
+            let entry = settings.per_game.entry(key).or_default();
+            match popup.target {
+                SelectTarget::Layout => {
+                    if let Some(&l) = Screens::ALL.get(idx) {
+                        entry.layout = Some(l);
+                    }
                 }
-            }
-            SelectTarget::Layout => {
-                if let Some(&l) = Screens::ALL.get(idx) {
-                    settings.layout = l;
+                SelectTarget::Orientation => {
+                    if let Some(&o) = Orientation::ALL.get(idx) {
+                        entry.orientation = Some(o);
+                    }
                 }
-            }
-            SelectTarget::Orientation => {
-                if let Some(&o) = Orientation::ALL.get(idx) {
-                    settings.orientation = o;
+                SelectTarget::Filter => {
+                    if let Some(&f) = Filter::ALL.get(idx) {
+                        entry.filter = Some(f);
+                    }
                 }
-            }
-            SelectTarget::Filter => {
-                if let Some(&f) = Filter::ALL.get(idx) {
-                    settings.filter = f;
+                SelectTarget::TopShape => {
+                    if let Some(&s) = TopShape::ALL.get(idx) {
+                        entry.top_shape = Some(s);
+                    }
                 }
-            }
-            SelectTarget::TopShape => {
-                if let Some(&s) = TopShape::ALL.get(idx) {
-                    settings.top_shape = s;
+                SelectTarget::Stereo => {
+                    if let Some(&s) = Stereo3d::ALL.get(idx) {
+                        entry.stereo = Some(s);
+                    }
                 }
-            }
-            SelectTarget::Stereo => {
-                if let Some(&s) = Stereo3d::ALL.get(idx) {
-                    settings.stereo = s;
+                SelectTarget::Language => {
+                    if let Some(&l) = Language::ALL.get(idx) {
+                        entry.language = Some(l);
+                    }
                 }
+                _ => {}
             }
-            SelectTarget::Microphone => {
-                if let Some(&m) = MicrophoneSource::ALL.get(idx) {
-                    settings.microphone = m;
+        } else {
+            match popup.target {
+                SelectTarget::Renderer => {
+                    if let Some(&r) = Renderer::ALL.get(idx) {
+                        settings.renderer = r;
+                    }
                 }
-            }
-            SelectTarget::WindowMode => {
-                if let Some(&w) = WindowMode::ALL.get(idx) {
-                    settings.window_mode = w;
+                SelectTarget::Layout => {
+                    if let Some(&l) = Screens::ALL.get(idx) {
+                        settings.layout = l;
+                    }
                 }
-            }
-            SelectTarget::Language => {
-                if let Some(&l) = Language::ALL.get(idx) {
-                    settings.language = l;
+                SelectTarget::Orientation => {
+                    if let Some(&o) = Orientation::ALL.get(idx) {
+                        settings.orientation = o;
+                    }
                 }
-            }
-            SelectTarget::Camera => {
-                if let Some(&c) = CameraSource::ALL.get(idx) {
-                    settings.camera = c;
+                SelectTarget::Filter => {
+                    if let Some(&f) = Filter::ALL.get(idx) {
+                        settings.filter = f;
+                    }
+                }
+                SelectTarget::TopShape => {
+                    if let Some(&s) = TopShape::ALL.get(idx) {
+                        settings.top_shape = s;
+                    }
+                }
+                SelectTarget::Stereo => {
+                    if let Some(&s) = Stereo3d::ALL.get(idx) {
+                        settings.stereo = s;
+                    }
+                }
+                SelectTarget::Microphone => {
+                    if let Some(&m) = MicrophoneSource::ALL.get(idx) {
+                        settings.microphone = m;
+                    }
+                }
+                SelectTarget::WindowMode => {
+                    if let Some(&w) = WindowMode::ALL.get(idx) {
+                        settings.window_mode = w;
+                    }
+                }
+                SelectTarget::Language => {
+                    if let Some(&l) = Language::ALL.get(idx) {
+                        settings.language = l;
+                    }
+                }
+                SelectTarget::Camera => {
+                    if let Some(&c) = CameraSource::ALL.get(idx) {
+                        settings.camera = c;
+                    }
                 }
             }
         }
-        None
+        Some(Action::Settings)
     }
 
     pub fn show_select_popup(&mut self, ctx: &egui::Context, settings: &mut Settings) -> Vec<Action> {
-        let actions = Vec::new();
+        let mut actions = Vec::new();
         let Some(popup) = self.select_popup.clone() else { return actions };
         let mut confirmed_idx = None;
 
@@ -735,7 +1098,9 @@ impl Menus {
             if let Some(p) = &mut self.select_popup {
                 p.selected = idx;
             }
-            self.confirm_select_popup(settings);
+            if let Some(act) = self.confirm_select_popup(settings) {
+                actions.push(act);
+            }
         }
         actions
     }
@@ -745,16 +1110,15 @@ impl Menus {
         let has_game_settings = game_info.as_ref().and_then(|g| g.2).is_some();
         match self.pause_selected {
             0 => Some(Action::Resume),
-            1 => Some(Action::SaveState),
-            2 => Some(Action::LoadState),
-            3 => {
-                self.open_settings();
+            1 => {
+                self.slot = if self.slot >= 9 { 1 } else { self.slot + 1 };
                 None
             }
+            2 => Some(Action::SaveState),
+            3 => Some(Action::LoadState),
             4 if has_game_settings => {
                 if let Some((_, name, Some(id))) = game_info {
-                    self.game_settings = Some((id, name));
-                    self.modal_just_opened = true;
+                    self.open_game_settings(id, name);
                 }
                 None
             }
@@ -1103,41 +1467,55 @@ impl Menus {
 
                             ui.add_space(4.0);
 
-                            // Slot selector
+                            // 1. Slot selector (Highlight when selected / hovered)
                             let arrow_w = 30.0;
                             let text_w = pause_w - (arrow_w * 2.0) - (item_spacing * 2.0);
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = item_spacing;
-                                ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
-                                if ui.add_sized([arrow_w, 28.0], egui::Button::new("◀")).clicked() {
-                                    self.slot = if self.slot <= 1 { 9 } else { self.slot - 1 };
-                                }
-                                let slot_label = format!("Slot {} ({})", self.slot, saved.unwrap_or("empty"));
-                                ui.allocate_ui_with_layout(egui::vec2(text_w, 28.0), Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
-                                    ui.label(RichText::new(slot_label).strong().size(13.0).color(Color32::from_rgb(220, 230, 242)));
+                            let is_slot_sel = pause_sel == 1;
+                            let mut slot_frame = egui::Frame::new()
+                                .corner_radius(egui::CornerRadius::same(6))
+                                .inner_margin(egui::Margin::symmetric(2, 2));
+                            if is_slot_sel {
+                                slot_frame = slot_frame
+                                    .fill(Color32::from_rgb(30, 48, 75))
+                                    .stroke(egui::Stroke::new(1.5, Color32::from_rgb(56, 189, 248)));
+                            } else {
+                                slot_frame = slot_frame.fill(Color32::TRANSPARENT);
+                            }
+                            let resp_slot = slot_frame.show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = item_spacing;
+                                    ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
+                                    if ui.add_sized([arrow_w, 26.0], egui::Button::new("◀")).clicked() {
+                                        self.slot = if self.slot <= 1 { 9 } else { self.slot - 1 };
+                                    }
+                                    let slot_label = format!("Slot {} ({})", self.slot, saved.unwrap_or("empty"));
+                                    ui.allocate_ui_with_layout(egui::vec2(text_w, 26.0), Layout::centered_and_justified(egui::Direction::LeftToRight), |ui| {
+                                        ui.label(RichText::new(slot_label).strong().size(13.0).color(Color32::from_rgb(220, 230, 242)));
+                                    });
+                                    if ui.add_sized([arrow_w, 28.0], egui::Button::new("▶")).clicked() {
+                                        self.slot = if self.slot >= 9 { 1 } else { self.slot + 1 };
+                                    }
                                 });
-                                if ui.add_sized([arrow_w, 28.0], egui::Button::new("▶")).clicked() {
-                                    self.slot = if self.slot >= 9 { 1 } else { self.slot + 1 };
-                                }
-                            });
+                            }).response;
+                            if resp_slot.hovered() { new_pause_sel = 1; }
 
-                            // Save / Load state
+                            // 2. Save state & 3. Load state
                             let half_w = (pause_w - item_spacing) / 2.0;
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = item_spacing;
-                                let focused_save = pause_sel == 1;
+                                let focused_save = pause_sel == 2;
                                 let btn_save = egui::Button::new(RichText::new("Save state").size(13.5));
                                 let resp_save = if focused_save {
                                     ui.add_sized([half_w, 32.0], btn_save.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
                                 } else {
                                     ui.add_sized([half_w, 32.0], btn_save)
                                 };
-                                if resp_save.hovered() { new_pause_sel = 1; }
+                                if resp_save.hovered() { new_pause_sel = 2; }
                                 if resp_save.on_hover_text("F5 saves to this slot while playing.").clicked() {
                                     actions.push(Action::SaveState);
                                 }
 
-                                let focused_load = pause_sel == 2;
+                                let focused_load = pause_sel == 3;
                                 let has_save = saved.is_some();
                                 let btn_load = egui::Button::new(
                                     RichText::new("Load state")
@@ -1151,7 +1529,7 @@ impl Menus {
                                 } else {
                                     ui.add_sized([half_w, 32.0], btn_load.fill(Color32::from_rgb(26, 29, 38)))
                                 };
-                                if resp_load.hovered() { new_pause_sel = 2; }
+                                if resp_load.hovered() { new_pause_sel = 3; }
                                 if has_save && resp_load.on_hover_text("F8 loads this slot while playing.").clicked() {
                                     actions.push(Action::LoadState);
                                 }
@@ -1159,18 +1537,13 @@ impl Menus {
 
                             ui.add_space(4.0);
 
-                            // 3. Settings
-                            let (c, h) = nav_button(ui, pause_sel == 3, "Settings");
-                            if h { new_pause_sel = 3; }
-                            if c { self.open_settings(); }
-
+                            // 4. Game Settings (ONLY Game Settings in pause menu)
                             let mut current_idx = 4;
                             if let Some(program_id) = program_id {
-                                let (c, h) = nav_button(ui, pause_sel == current_idx, "Settings for this game");
+                                let (c, h) = nav_button(ui, pause_sel == current_idx, "Game Settings");
                                 if h { new_pause_sel = current_idx; }
                                 if c {
-                                    self.game_settings = Some((program_id, name.to_owned()));
-                                    self.modal_just_opened = true;
+                                    self.open_game_settings(program_id, name.to_owned());
                                 }
                                 current_idx += 1;
                             }
@@ -1739,44 +2112,287 @@ impl Menus {
         let before = game.clone();
         let general: &Settings = settings;
         let mut open = true;
-        let max_h = (ctx.content_rect().height() - 16.0).max(200.0);
-        egui::Window::new(format!("Settings for {name}"))
+        let max_h = (ctx.content_rect().height() - 24.0).max(200.0);
+        let win_h = 480.0f32.min(max_h);
+        let scroll_h = (win_h - 150.0).max(60.0);
+
+        egui::Window::new(format!("⚙ Settings: {name}"))
             .id(egui::Id::new("game settings"))
             .open(&mut open)
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .default_width(520.0)
-            .max_width(520.0)
+            .default_width(560.0)
+            .max_width(560.0)
             .max_height(max_h)
-            .vscroll(true)
             .show(ctx, |ui| {
-                ui.label(RichText::new("Tick what this game is to have of its own. The rest follows the general settings.").weak());
+                ui.label(RichText::new("Customize settings for this game. Non-overridden options automatically follow Global Settings.").size(12.5).weak());
+                ui.add_space(4.0);
+
+                // Tab Bar
+                ui.horizontal(|ui| {
+                    button_hint(ui, "LB", "", Color32::from_rgb(50, 60, 75));
+                    for tab in GameSettingsTab::ALL {
+                        let is_current = self.game_settings_tab == tab;
+                        let btn = egui::Button::new(RichText::new(tab.name()).strong().size(13.0));
+                        let resp = if is_current {
+                            ui.add_sized([120.0, 30.0], btn.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
+                        } else {
+                            ui.add_sized([120.0, 30.0], btn)
+                        };
+                        if resp.clicked() {
+                            self.game_settings_tab = tab;
+                            self.game_settings_selected = 0;
+                            self.game_settings_scroll_to_selected = true;
+                        }
+                    }
+                    button_hint(ui, "RB", "", Color32::from_rgb(50, 60, 75));
+                });
+                ui.add_space(4.0);
                 ui.separator();
-                ui.heading("Graphics");
-                own(ui, &mut game.hardware_rasterizer, &general.hardware_rasterizer, rasterizer);
-                own(ui, &mut game.resolution, &general.resolution, resolution);
-                own(ui, &mut game.texture_packs, &general.texture_packs, texture_packs);
-                own(ui, &mut game.frame_interpolation, &general.frame_interpolation, interpolation);
-                own(ui, &mut game.scale, &general.scale, window_scale);
-                own(ui, &mut game.layout, &general.layout, screens);
-                own(ui, &mut game.orientation, &general.orientation, rotation);
-                own(ui, &mut game.filter, &general.filter, filter);
-                own(ui, &mut game.integer_scale, &general.integer_scale, integer_scale);
-                own(ui, &mut game.top_shape, &general.top_shape, top_shape);
-                own(ui, &mut game.stereo, &general.stereo, stereo_3d);
-                own(ui, &mut game.depth_3d, &general.depth_3d, depth_3d);
-                ui.separator();
-                ui.heading("Emulation");
-                own(ui, &mut game.language, &general.language, language);
-                own(ui, &mut game.recompiled, &general.recompiled, code);
-                ui.separator();
-                ui.label(RichText::new("Where the 3D is drawn, its resolution, the texture packs, the language and what runs the code change the next time the game starts, or with Reset.").weak());
-                if ui.add_enabled(game != GameSettings::default(), egui::Button::new("Follow the general settings in everything")).clicked() {
-                    game = GameSettings::default();
-                }
+
+                let scroll = self.game_settings_scroll_to_selected;
+
+                egui::ScrollArea::vertical().max_height(scroll_h).show(ui, |ui| {
+                    match self.game_settings_tab {
+                        GameSettingsTab::Graphics => {
+                            let sel = self.game_settings_selected;
+                            let mut new_sel = sel;
+
+                            // 0: Hardware rasterizer
+                            let hw_val = game.hardware_rasterizer.unwrap_or(general.hardware_rasterizer);
+                            let (act, hov) = game_setting_row(ui, sel == 0, scroll, "Draw 3D on GPU", game.hardware_rasterizer.is_some(), if hw_val { "Enabled" } else { "Disabled" }, if general.hardware_rasterizer { "Enabled" } else { "Disabled" });
+                            if hov { new_sel = 0; }
+                            match act {
+                                GameRowAction::Reset => game.hardware_rasterizer = None,
+                                GameRowAction::Edit => game.hardware_rasterizer = Some(!hw_val),
+                                GameRowAction::None => {}
+                            }
+
+                            // 1: Resolution
+                            let res_val = game.resolution.unwrap_or(general.resolution);
+                            let (act, hov) = game_setting_row(ui, sel == 1, scroll, "Internal Resolution", game.resolution.is_some(), &format!("{res_val}x"), &format!("{}x", general.resolution));
+                            if hov { new_sel = 1; }
+                            match act {
+                                GameRowAction::Reset => game.resolution = None,
+                                GameRowAction::Edit => game.resolution = Some(if res_val >= 8 { 1 } else { res_val + 1 }),
+                                GameRowAction::None => {}
+                            }
+
+                            // 2: Custom Textures
+                            let tex_val = game.texture_packs.unwrap_or(general.texture_packs);
+                            let (act, hov) = game_setting_row(ui, sel == 2, scroll, "Custom HD Textures", game.texture_packs.is_some(), if tex_val { "Enabled" } else { "Disabled" }, if general.texture_packs { "Enabled" } else { "Disabled" });
+                            if hov { new_sel = 2; }
+                            match act {
+                                GameRowAction::Reset => game.texture_packs = None,
+                                GameRowAction::Edit => game.texture_packs = Some(!tex_val),
+                                GameRowAction::None => {}
+                            }
+
+                            // 3: Frame interpolation
+                            let interp_val = game.frame_interpolation.unwrap_or(general.frame_interpolation);
+                            let (act, hov) = game_setting_row(ui, sel == 3, scroll, "Frame Interpolation", game.frame_interpolation.is_some(), if interp_val { "Enabled" } else { "Disabled" }, if general.frame_interpolation { "Enabled" } else { "Disabled" });
+                            if hov { new_sel = 3; }
+                            match act {
+                                GameRowAction::Reset => game.frame_interpolation = None,
+                                GameRowAction::Edit => game.frame_interpolation = Some(!interp_val),
+                                GameRowAction::None => {}
+                            }
+
+                            // 4: Screen Layout
+                            let layout_val = game.layout.unwrap_or(general.layout);
+                            let (act, hov) = game_setting_row(ui, sel == 4, scroll, "Screen Layout", game.layout.is_some(), layout_val.name(), general.layout.name());
+                            if hov { new_sel = 4; }
+                            match act {
+                                GameRowAction::Reset => game.layout = None,
+                                GameRowAction::Edit => {
+                                    self.select_popup = Some(SelectPopup::game(
+                                        SelectTarget::Layout,
+                                        program_id,
+                                        "Screen Layout",
+                                        Screens::ALL.iter().map(|s| s.name().to_string()).collect(),
+                                        Screens::ALL.iter().position(|&s| s == layout_val).unwrap_or(0),
+                                    ));
+                                }
+                                GameRowAction::None => {}
+                            }
+
+                            // 5: Screen Orientation
+                            let ori_val = game.orientation.unwrap_or(general.orientation);
+                            let (act, hov) = game_setting_row(ui, sel == 5, scroll, "Screen Orientation", game.orientation.is_some(), ori_val.name(), general.orientation.name());
+                            if hov { new_sel = 5; }
+                            match act {
+                                GameRowAction::Reset => game.orientation = None,
+                                GameRowAction::Edit => {
+                                    self.select_popup = Some(SelectPopup::game(
+                                        SelectTarget::Orientation,
+                                        program_id,
+                                        "Screen Orientation",
+                                        Orientation::ALL.iter().map(|o| o.name().to_string()).collect(),
+                                        Orientation::ALL.iter().position(|&o| o == ori_val).unwrap_or(0),
+                                    ));
+                                }
+                                GameRowAction::None => {}
+                            }
+
+                            // 6: Texture Filter
+                            let filt_val = game.filter.unwrap_or(general.filter);
+                            let (act, hov) = game_setting_row(ui, sel == 6, scroll, "Texture Filter", game.filter.is_some(), filt_val.name(), general.filter.name());
+                            if hov { new_sel = 6; }
+                            match act {
+                                GameRowAction::Reset => game.filter = None,
+                                GameRowAction::Edit => {
+                                    self.select_popup = Some(SelectPopup::game(
+                                        SelectTarget::Filter,
+                                        program_id,
+                                        "Texture Filter",
+                                        Filter::ALL.iter().map(|f| f.name().to_string()).collect(),
+                                        Filter::ALL.iter().position(|&f| f == filt_val).unwrap_or(0),
+                                    ));
+                                }
+                                GameRowAction::None => {}
+                            }
+
+                            // 7: Integer Scaling
+                            let int_val = game.integer_scale.unwrap_or(general.integer_scale);
+                            let (act, hov) = game_setting_row(ui, sel == 7, scroll, "Integer Scaling", game.integer_scale.is_some(), if int_val { "Enabled" } else { "Disabled" }, if general.integer_scale { "Enabled" } else { "Disabled" });
+                            if hov { new_sel = 7; }
+                            match act {
+                                GameRowAction::Reset => game.integer_scale = None,
+                                GameRowAction::Edit => game.integer_scale = Some(!int_val),
+                                GameRowAction::None => {}
+                            }
+
+                            // 8: Top Screen Shape
+                            let shape_val = game.top_shape.unwrap_or(general.top_shape);
+                            let (act, hov) = game_setting_row(ui, sel == 8, scroll, "Top Screen Aspect", game.top_shape.is_some(), shape_val.name(), general.top_shape.name());
+                            if hov { new_sel = 8; }
+                            match act {
+                                GameRowAction::Reset => game.top_shape = None,
+                                GameRowAction::Edit => {
+                                    self.select_popup = Some(SelectPopup::game(
+                                        SelectTarget::TopShape,
+                                        program_id,
+                                        "Top Screen Aspect Ratio",
+                                        TopShape::ALL.iter().map(|s| s.name().to_string()).collect(),
+                                        TopShape::ALL.iter().position(|&s| s == shape_val).unwrap_or(0),
+                                    ));
+                                }
+                                GameRowAction::None => {}
+                            }
+
+                            // 9: 3D Mode
+                            let st_val = game.stereo.unwrap_or(general.stereo);
+                            let (act, hov) = game_setting_row(ui, sel == 9, scroll, "Stereo 3D", game.stereo.is_some(), st_val.name(), general.stereo.name());
+                            if hov { new_sel = 9; }
+                            match act {
+                                GameRowAction::Reset => game.stereo = None,
+                                GameRowAction::Edit => {
+                                    self.select_popup = Some(SelectPopup::game(
+                                        SelectTarget::Stereo,
+                                        program_id,
+                                        "Stereo 3D Mode",
+                                        Stereo3d::ALL.iter().map(|s| s.name().to_string()).collect(),
+                                        Stereo3d::ALL.iter().position(|&s| s == st_val).unwrap_or(0),
+                                    ));
+                                }
+                                GameRowAction::None => {}
+                            }
+
+                            // 10: 3D Depth
+                            let dp_val = game.depth_3d.unwrap_or(general.depth_3d);
+                            let (act, hov) = game_setting_row(ui, sel == 10, scroll, "3D Depth", game.depth_3d.is_some(), &format!("{dp_val}%"), &format!("{}%", general.depth_3d));
+                            if hov { new_sel = 10; }
+                            match act {
+                                GameRowAction::Reset => game.depth_3d = None,
+                                GameRowAction::Edit => game.depth_3d = Some(if dp_val >= 100 { 0 } else { dp_val + 10 }),
+                                GameRowAction::None => {}
+                            }
+
+                            // 11: Reset all to Global Settings
+                            let has_custom = game != GameSettings::default();
+                            let is_reset_sel = sel == 11;
+                            if setting_row(ui, is_reset_sel, scroll, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("Reset All to Global Settings").strong().size(13.0).color(if has_custom { Color32::WHITE } else { Color32::from_rgb(120, 130, 145) }));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.add_enabled(has_custom, egui::Button::new("Follow Global Settings in Everything")).clicked() {
+                                            game = GameSettings::default();
+                                        }
+                                    });
+                                });
+                            }) {
+                                new_sel = 11;
+                            }
+
+                            self.game_settings_selected = new_sel;
+                        }
+                        GameSettingsTab::System => {
+                            let sel = self.game_settings_selected;
+                            let mut new_sel = sel;
+
+                            // 0: Language
+                            let lang_val = game.language.unwrap_or(general.language);
+                            let (act, hov) = game_setting_row(ui, sel == 0, scroll, "Console Language", game.language.is_some(), lang_val.name(), general.language.name());
+                            if hov { new_sel = 0; }
+                            match act {
+                                GameRowAction::Reset => game.language = None,
+                                GameRowAction::Edit => {
+                                    self.select_popup = Some(SelectPopup::game(
+                                        SelectTarget::Language,
+                                        program_id,
+                                        "Console Language",
+                                        Language::ALL.iter().map(|l| l.name().to_string()).collect(),
+                                        Language::ALL.iter().position(|&l| l == lang_val).unwrap_or(0),
+                                    ));
+                                }
+                                GameRowAction::None => {}
+                            }
+
+                            // 1: Recompiled code
+                            let recomp_val = game.recompiled.unwrap_or(general.recompiled);
+                            let (act, hov) = game_setting_row(ui, sel == 1, scroll, "Run Recompiled Code", game.recompiled.is_some(), if recomp_val { "Enabled" } else { "Disabled" }, if general.recompiled { "Enabled" } else { "Disabled" });
+                            if hov { new_sel = 1; }
+                            match act {
+                                GameRowAction::Reset => game.recompiled = None,
+                                GameRowAction::Edit => game.recompiled = Some(!recomp_val),
+                                GameRowAction::None => {}
+                            }
+
+                            // 2: Reset all to Global Settings
+                            let has_custom = game != GameSettings::default();
+                            let is_reset_sel = sel == 2;
+                            if setting_row(ui, is_reset_sel, scroll, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("Reset All to Global Settings").strong().size(13.0).color(if has_custom { Color32::WHITE } else { Color32::from_rgb(120, 130, 145) }));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.add_enabled(has_custom, egui::Button::new("Follow Global Settings in Everything")).clicked() {
+                                            game = GameSettings::default();
+                                        }
+                                    });
+                                });
+                            }) {
+                                new_sel = 2;
+                            }
+
+                            self.game_settings_selected = new_sel;
+                        }
+                    }
+                });
+
+                self.game_settings_scroll_to_selected = false;
+
                 ui.add_space(8.0);
                 ui.separator();
-                button_hint(ui, "B", "Close", Color32::from_rgb(220, 38, 38));
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    button_hint(ui, "A", "Change / Override", Color32::from_rgb(22, 163, 74));
+                    ui.add_space(6.0);
+                    button_hint(ui, "X", "Use Global", Color32::from_rgb(37, 99, 235));
+                    ui.add_space(6.0);
+                    button_hint(ui, "LB/RB", "Tabs", Color32::from_rgb(50, 60, 75));
+                    ui.add_space(6.0);
+                    button_hint(ui, "B", "Close", Color32::from_rgb(220, 38, 38));
+                });
             });
         if !open {
             self.game_settings = None;
@@ -1887,23 +2503,6 @@ impl Menus {
                 });
             });
     }
-}
-
-/// a row of a game's own settings. ticked, the game has a value of its own,
-/// starting from the general one. unticked, it follows the general one,
-/// which shows greyed out.
-fn own<T: Clone>(ui: &mut egui::Ui, own: &mut Option<T>, general: &T, row: impl FnOnce(&mut egui::Ui, &mut T)) {
-    ui.horizontal(|ui| {
-        let mut ticked = own.is_some();
-        if ui.checkbox(&mut ticked, "").on_hover_text("This game's own, rather than the general setting.").changed() {
-            *own = ticked.then(|| general.clone());
-        }
-        let mut value = own.clone().unwrap_or_else(|| general.clone());
-        ui.add_enabled_ui(ticked, |ui| row(ui, &mut value));
-        if ticked {
-            *own = Some(value);
-        }
-    });
 }
 
 fn rasterizer(ui: &mut egui::Ui, value: &mut bool) {
@@ -2121,17 +2720,16 @@ mod tests {
         ctx.run_ui(input, |ui| drop(panel.show(ui, |ui| row(ui)))).drop_without_applying_deltas();
     }
 
-    /// ticking a row gives the game the general value to start from, and
-    /// unticking it has the game follow the general setting again.
+    /// rendering a game setting row when following global and when overridden
     #[test]
-    fn ticking_a_row_gives_the_game_a_value_of_its_own() {
+    fn game_setting_row_renders() {
         let ctx = egui::Context::default();
-        let mut value = None;
-        for expected in [Some(3), None] {
-            frame_of_a_row(&ctx, false, |ui| own(ui, &mut value, &3u32, resolution));
-            frame_of_a_row(&ctx, true, |ui| own(ui, &mut value, &3u32, resolution));
-            assert_eq!(value, expected);
-        }
+        frame_of_a_row(&ctx, false, |ui| {
+            let _ = game_setting_row(ui, false, false, "Resolution", false, "", "1x");
+        });
+        frame_of_a_row(&ctx, false, |ui| {
+            let _ = game_setting_row(ui, true, false, "Resolution", true, "3x", "1x");
+        });
     }
 
     /// a game's settings go in the file only while it has some of its own,

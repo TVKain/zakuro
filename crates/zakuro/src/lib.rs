@@ -917,7 +917,9 @@ impl App {
                         }
                     }
                     gilrs::Button::South => {
-                        self.menus.confirm_select_popup(&mut self.settings);
+                        if let Some(act) = self.menus.confirm_select_popup(&mut self.settings) {
+                            self.act(act, event_loop);
+                        }
                     }
                     gilrs::Button::East => {
                         self.menus.select_popup = None;
@@ -947,7 +949,7 @@ impl App {
                 continue;
             }
 
-            // 3. Modal Dialogs (Settings, Cheats, Multiplayer, Message)
+            // 3. Modal Dialogs (Settings, Game Settings, Cheats, Multiplayer, Message)
             if self.menus.modal_open() {
                 if button == gilrs::Button::East {
                     if self.menus.rebinding_pad.is_some() {
@@ -955,8 +957,8 @@ impl App {
                     } else {
                         self.menus.close_modals();
                     }
-                } else if button == gilrs::Button::Start && self.menus.settings_open {
-                    self.menus.settings_open = false;
+                } else if button == gilrs::Button::Start && (self.menus.settings_open || self.menus.game_settings.is_some()) {
+                    self.menus.close_modals();
                 } else if (button == gilrs::Button::LeftTrigger || button == gilrs::Button::LeftTrigger2) && self.menus.settings_open {
                     self.menus.settings_tab = self.menus.settings_tab.prev();
                     self.menus.settings_selected = 0;
@@ -986,6 +988,43 @@ impl App {
                         }
                         _ => {}
                     }
+                } else if self.menus.game_settings.is_some() {
+                    let program_id = self.menus.game_settings.as_ref().unwrap().0;
+                    match button {
+                        gilrs::Button::LeftTrigger | gilrs::Button::LeftTrigger2 => {
+                            self.menus.game_settings_tab = self.menus.game_settings_tab.prev();
+                            self.menus.game_settings_selected = 0;
+                            self.menus.game_settings_scroll_to_selected = true;
+                        }
+                        gilrs::Button::RightTrigger | gilrs::Button::RightTrigger2 => {
+                            self.menus.game_settings_tab = self.menus.game_settings_tab.next();
+                            self.menus.game_settings_selected = 0;
+                            self.menus.game_settings_scroll_to_selected = true;
+                        }
+                        gilrs::Button::DPadUp => self.menus.game_settings_up(),
+                        gilrs::Button::DPadDown => self.menus.game_settings_down(),
+                        gilrs::Button::DPadLeft => {
+                            if let Some(act) = self.menus.game_settings_adjust(&mut self.settings, program_id, -1) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        gilrs::Button::DPadRight => {
+                            if let Some(act) = self.menus.game_settings_adjust(&mut self.settings, program_id, 1) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        gilrs::Button::South => {
+                            if let Some(act) = self.menus.game_settings_activate(&mut self.settings, program_id) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        gilrs::Button::West => {
+                            if let Some(act) = self.menus.game_settings_reset_selected(&mut self.settings, program_id) {
+                                self.act(act, event_loop);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 continue;
             }
@@ -1002,10 +1041,14 @@ impl App {
                         self.menus.pause_selected = (self.menus.pause_selected + 1).min(max_idx);
                     }
                     gilrs::Button::DPadLeft => {
-                        self.menus.slot = if self.menus.slot <= 1 { 9 } else { self.menus.slot - 1 };
+                        if self.menus.pause_selected == 1 {
+                            self.menus.slot = if self.menus.slot <= 1 { 9 } else { self.menus.slot - 1 };
+                        }
                     }
                     gilrs::Button::DPadRight => {
-                        self.menus.slot = if self.menus.slot >= 9 { 1 } else { self.menus.slot + 1 };
+                        if self.menus.pause_selected == 1 {
+                            self.menus.slot = if self.menus.slot >= 9 { 1 } else { self.menus.slot + 1 };
+                        }
                     }
                     gilrs::Button::East => {
                         self.menus.menu_open = false;
@@ -1062,8 +1105,7 @@ impl App {
                     }
                     gilrs::Button::North => {
                         if let Some(game) = self.library.games.get(self.menus.selected_game) {
-                            self.menus.game_settings = Some((game.program_id, game.name.clone()));
-                            self.menus.modal_just_opened = true;
+                            self.menus.open_game_settings(game.program_id, game.name.clone());
                         }
                     }
                     gilrs::Button::Start => {
