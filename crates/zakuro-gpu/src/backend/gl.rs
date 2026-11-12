@@ -211,15 +211,6 @@ vec3 xbrz_sample(sampler2D img, vec2 at, vec2 size, vec2 covered) {
     return res;
 }
 
-vec3 apply_cas(vec3 c, vec3 l, vec3 r, vec3 t, vec3 b, float sharpness) {
-    vec3 min_c = min(c, min(min(l, r), min(t, b)));
-    vec3 max_c = max(c, max(max(l, r), max(t, b)));
-    vec3 contrast = max_c - min_c;
-    vec3 w = -sharpness * clamp(contrast / max(max_c, vec3(1e-4)), 0.0, 1.0);
-    vec3 res = (c + w * (l + r + t + b)) / (1.0 + 4.0 * w);
-    return clamp(res, min_c, max_c);
-}
-
 vec3 shown(sampler2D image) {
     vec2 size = vec2(textureSize(image, 0));
     vec2 covered = fwidth(uv) * size;
@@ -244,55 +235,7 @@ vec3 shown(sampler2D image) {
         return texture(image, texel).rgb;
     }
 
-    vec2 px = max(fwidth(uv), vec2(1e-6));
-    vec3 c = texture(image, uv).rgb;
-    vec3 l = texture(image, uv - vec2(px.x, 0.0)).rgb;
-    vec3 r = texture(image, uv + vec2(px.x, 0.0)).rgb;
-    vec3 t = texture(image, uv - vec2(0.0, px.y)).rgb;
-    vec3 b = texture(image, uv + vec2(0.0, px.y)).rgb;
-
-    if (mode == 2) {
-        vec2 d = px * 0.70710678;
-        vec3 tl = texture(image, uv + vec2(-d.x, -d.y)).rgb;
-        vec3 tr = texture(image, uv + vec2( d.x, -d.y)).rgb;
-        vec3 bl = texture(image, uv + vec2(-d.x,  d.y)).rgb;
-        vec3 br = texture(image, uv + vec2( d.x,  d.y)).rgb;
-
-        vec3 cross = (l + r + t + b) * 0.25;
-        vec3 diag = (tl + tr + bl + br) * 0.25;
-        vec3 min_c = min(c, min(min(min(l, r), min(t, b)), min(min(tl, tr), min(bl, br))));
-        vec3 max_c = max(c, max(max(max(l, r), max(t, b)), max(max(tl, tr), max(bl, br))));
-
-        vec3 reconstructed = clamp(c * 1.5 - cross * 0.35 - diag * 0.15, min_c, max_c);
-        vec3 contrast = max_c - min_c;
-        vec3 w = -0.50 * clamp(contrast / max(max_c, vec3(1e-4)), 0.0, 1.0);
-        vec3 sharpened = (reconstructed + w * (cross * 4.0)) / (1.0 + 4.0 * w);
-        return clamp(sharpened, min_c, max_c);
-    }
-
-    if (mode == 3) {
-        const vec3 luma = vec3(0.2627, 0.6780, 0.0593);
-        float lum_c = dot(c, luma);
-        float lum_l = dot(l, luma);
-        float lum_r = dot(r, luma);
-        float lum_t = dot(t, luma);
-        float lum_b = dot(b, luma);
-
-        vec2 grad = vec2(lum_r - lum_l, lum_b - lum_t);
-        float edge = length(grad);
-
-        vec3 base_color = c;
-        if (edge > 0.04) {
-            vec2 tangent = vec2(-grad.y, grad.x) * (px / edge) * 0.5;
-            vec3 t1 = texture(image, uv + tangent).rgb;
-            vec3 t2 = texture(image, uv - tangent).rgb;
-            base_color = c * 0.5 + (t1 + t2) * 0.25;
-        }
-
-        return apply_cas(base_color, l, r, t, b, 0.35);
-    }
-
-    return apply_cas(c, l, r, t, b, 0.20);
+    return texture(image, uv).rgb;
 }
 "#;
 
@@ -509,12 +452,8 @@ impl GlPresenter {
 
     fn set_viewport(&self, viewport: Viewport) {
         // OpenGL's origin is the bottom left, so the y coordinate flips.
-        let vx = viewport.x.round();
-        let vy = viewport.y.round();
-        let vwidth = ((viewport.x + viewport.width).round() - vx).max(1.0);
-        let vheight = ((viewport.y + viewport.height).round() - vy).max(1.0);
-        let y = self.window.1 as f32 - vy - vheight;
-        unsafe { self.gl.viewport(vx as i32, y as i32, vwidth as i32, vheight as i32) };
+        let y = self.window.1 as f32 - viewport.y - viewport.height;
+        unsafe { self.gl.viewport(viewport.x as i32, y as i32, viewport.width as i32, viewport.height as i32) };
     }
 
     fn draw_screen(&self, index: usize, viewport: Viewport) {

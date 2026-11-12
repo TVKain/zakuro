@@ -1353,28 +1353,24 @@ fn set_viewport(
     extent: vk::Extent2D,
 ) {
     unsafe {
-        let vx = viewport.x.round();
-        let vy = viewport.y.round();
-        let vwidth = ((viewport.x + viewport.width).round() - vx).max(1.0);
-        let vheight = ((viewport.y + viewport.height).round() - vy).max(1.0);
         device.cmd_set_viewport(
             command_buffer,
             0,
             &[vk::Viewport {
-                x: vx,
-                y: vy,
-                width: vwidth,
-                height: vheight,
+                x: viewport.x,
+                y: viewport.y,
+                width: viewport.width,
+                height: viewport.height,
                 min_depth: 0.0,
                 max_depth: 1.0,
             }],
         );
         // the scissor has to be clamped to the framebuffer or validation
         // complains when the window is smaller than the layout wants.
-        let x = vx.max(0.0) as i32;
-        let y = vy.max(0.0) as i32;
-        let width = (vwidth as u32).min(extent.width.saturating_sub(x as u32));
-        let height = (vheight as u32).min(extent.height.saturating_sub(y as u32));
+        let x = viewport.x.max(0.0) as i32;
+        let y = viewport.y.max(0.0) as i32;
+        let width = (viewport.width as u32).min(extent.width.saturating_sub(x as u32));
+        let height = (viewport.height as u32).min(extent.height.saturating_sub(y as u32));
         device.cmd_set_scissor(
             command_buffer,
             0,
