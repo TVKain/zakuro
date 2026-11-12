@@ -17,6 +17,27 @@ pub enum Renderer {
     OpenGl,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowMode {
+    #[default]
+    Maximized,
+    Fullscreen,
+    Windowed,
+}
+
+impl WindowMode {
+    pub const ALL: [WindowMode; 3] = [WindowMode::Maximized, WindowMode::Fullscreen, WindowMode::Windowed];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            WindowMode::Maximized => "Maximized",
+            WindowMode::Fullscreen => "Fullscreen",
+            WindowMode::Windowed => "Windowed",
+        }
+    }
+}
+
 /// how the screens are arranged in the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -553,6 +574,9 @@ pub struct Settings {
     pub recompiled: bool,
     /// window size, times the console's.
     pub scale: u32,
+    /// how the window opens and displays.
+    #[serde(deserialize_with = "or_default")]
+    pub window_mode: WindowMode,
     #[serde(deserialize_with = "or_default")]
     pub layout: Screens,
     #[serde(deserialize_with = "or_default")]
@@ -616,6 +640,7 @@ impl Default for Settings {
             frame_interpolation: false,
             recompiled: true,
             scale: 2,
+            window_mode: WindowMode::Maximized,
             layout: Screens::Stacked,
             orientation: Orientation::North,
             filter: Filter::Smooth,

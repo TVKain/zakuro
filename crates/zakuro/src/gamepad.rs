@@ -21,6 +21,14 @@ pub struct Gamepads {
     /// the buttons they held at the last poll, to tell the ones pressed
     /// since.
     pro_held: Vec<Button>,
+    stick_up: bool,
+    stick_down: bool,
+    stick_left: bool,
+    stick_right: bool,
+    dpad_axis_up: bool,
+    dpad_axis_down: bool,
+    dpad_axis_left: bool,
+    dpad_axis_right: bool,
 }
 
 /// whether gilrs's reading of a controller is left out, a Pro Controller's
@@ -34,7 +42,20 @@ impl Gamepads {
         let gilrs = Gilrs::new()
             .inspect_err(|error| log::warn!("controllers are not available, {error}"))
             .ok();
-        Gamepads { gilrs, buttons, pro: Controllers::new(), pro_held: Vec::new() }
+        Gamepads {
+            gilrs,
+            buttons,
+            pro: Controllers::new(),
+            pro_held: Vec::new(),
+            stick_up: false,
+            stick_down: false,
+            stick_left: false,
+            stick_right: false,
+            dpad_axis_up: false,
+            dpad_axis_down: false,
+            dpad_axis_left: false,
+            dpad_axis_right: false,
+        }
     }
 
     pub fn set_buttons(&mut self, buttons: PadButtons) {
@@ -55,6 +76,80 @@ impl Gamepads {
                     }
                     EventType::Disconnected => log::info!("controller disconnected"),
                     _ => {}
+                }
+            }
+            for (_, pad) in gilrs.gamepads() {
+                if left_out(&pad, &reports) {
+                    continue;
+                }
+                let ly = pad.value(Axis::LeftStickY);
+                let lx = pad.value(Axis::LeftStickX);
+                if ly > 0.55 {
+                    if !self.stick_up {
+                        self.stick_up = true;
+                        pressed.push(Button::DPadUp);
+                    }
+                } else if ly < 0.25 {
+                    self.stick_up = false;
+                }
+                if ly < -0.55 {
+                    if !self.stick_down {
+                        self.stick_down = true;
+                        pressed.push(Button::DPadDown);
+                    }
+                } else if ly > -0.25 {
+                    self.stick_down = false;
+                }
+                if lx > 0.55 {
+                    if !self.stick_right {
+                        self.stick_right = true;
+                        pressed.push(Button::DPadRight);
+                    }
+                } else if lx < 0.25 {
+                    self.stick_right = false;
+                }
+                if lx < -0.55 {
+                    if !self.stick_left {
+                        self.stick_left = true;
+                        pressed.push(Button::DPadLeft);
+                    }
+                } else if lx > -0.25 {
+                    self.stick_left = false;
+                }
+
+                let dy = pad.value(Axis::DPadY);
+                let dx = pad.value(Axis::DPadX);
+                if dy > 0.55 {
+                    if !self.dpad_axis_up {
+                        self.dpad_axis_up = true;
+                        pressed.push(Button::DPadUp);
+                    }
+                } else if dy < 0.25 {
+                    self.dpad_axis_up = false;
+                }
+                if dy < -0.55 {
+                    if !self.dpad_axis_down {
+                        self.dpad_axis_down = true;
+                        pressed.push(Button::DPadDown);
+                    }
+                } else if dy > -0.25 {
+                    self.dpad_axis_down = false;
+                }
+                if dx > 0.55 {
+                    if !self.dpad_axis_right {
+                        self.dpad_axis_right = true;
+                        pressed.push(Button::DPadRight);
+                    }
+                } else if dx < 0.25 {
+                    self.dpad_axis_right = false;
+                }
+                if dx < -0.55 {
+                    if !self.dpad_axis_left {
+                        self.dpad_axis_left = true;
+                        pressed.push(Button::DPadLeft);
+                    }
+                } else if dx > -0.25 {
+                    self.dpad_axis_left = false;
                 }
             }
         }

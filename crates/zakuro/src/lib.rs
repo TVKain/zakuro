@@ -37,7 +37,7 @@ use library::Library;
 use menus::{Action, Menus};
 use present::Backend;
 use recompile::{Job, Stage, Toolchain, Wanted};
-use settings::{CameraSource, MicrophoneSource, Renderer, Screens, Settings};
+use settings::{CameraSource, MicrophoneSource, Renderer, Screens, Settings, WindowMode};
 
 pub use zakuro_core::memory::Memory;
 pub use zakuro_core::recompiled::Linked;
@@ -529,7 +529,16 @@ impl ApplicationHandler for App {
         }
 
         let size = self.window_size();
-        let attributes = Window::default_attributes().with_title("Zakuro").with_inner_size(size);
+        let mut attributes = Window::default_attributes().with_title("Zakuro").with_inner_size(size);
+        match self.settings.window_mode {
+            WindowMode::Fullscreen => {
+                attributes = attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
+            }
+            WindowMode::Maximized => {
+                attributes = attributes.with_maximized(true);
+            }
+            WindowMode::Windowed => {}
+        }
         let renderer = self.options.renderer.unwrap_or(match self.settings.renderer {
             Renderer::Vulkan => RendererKind::Vulkan,
             Renderer::OpenGl => RendererKind::OpenGl,
@@ -892,18 +901,123 @@ impl App {
         }
     }
 
-    /// takes in the controllers' buttons, a binding waiting for one takes
-    /// it, and Home opens and closes the menu over the game.
-    fn poll_gamepads(&mut self) {
+    /// takes in the controllers' buttons, handles menu navigation,
+    /// modal closing, game launching, and pause menu actions.
+    fn poll_gamepads(&mut self, event_loop: &ActiveEventLoop) {
         for button in self.gamepads.poll() {
+            // 1. Controller button rebinding in settings
             if let Some(index) = self.menus.rebinding_pad.take() {
                 if let Some((_, bound)) = self.settings.pad.all_mut().into_iter().nth(index) {
                     *bound = button;
                 }
                 self.apply_settings();
-            } else if (button == self.settings.pad.menu || button == gilrs::Button::Mode || button == gilrs::Button::Select) && self.game.is_some() {
-                self.menus.menu_open = !self.menus.menu_open;
-                self.keyboard.release();
+                continue;
+            }
+
+            // 2. Menu Toggle: View/Select, Mode/Home, or configured menu button
+            if (button == self.settings.pad.menu || button == gilrs::Button::Mode || button == gilrs::Button::Select) && self.game.is_some() {
+                if self.menus.modal_open() {
+                    self.menus.close_modals();
+                } else {
+                    self.menus.menu_open = !self.menus.menu_open;
+                    self.keyboard.release();
+                }
+                continue;
+            }
+
+            // 3. Modal Dialogs (Settings, Cheats, Multiplayer, Message)
+            if self.menus.modal_open() {
+                if button == gilrs::Button::East {
+                    self.menus.close_modals();
+                } else if button == gilrs::Button::Start && self.menus.settings_open {
+                    self.menus.settings_open = false;
+                }
+                continue;
+            }
+
+            // 4. Over a running game (Pause Menu is open)
+            if self.game.is_some() && self.menus.menu_open {
+                let has_game_settings = self.game.as_ref().and_then(|g| g.system.title.as_ref()).is_some();
+                let max_idx = if has_game_settings { 10 } else { 9 };
+                match button {
+                    gilrs::Button::DPadUp => {
+                        self.menus.pause_selected = self.menus.pause_selected.saturating_sub(1);
+                    }
+                    gilrs::Button::DPadDown => {
+                        self.menus.pause_selected = (self.menus.pause_selected + 1).min(max_idx);
+                    }
+                    gilrs::Button::DPadLeft => {
+                        self.menus.slot = if self.menus.slot <= 1 { 9 } else { self.menus.slot - 1 };
+                    }
+                    gilrs::Button::DPadRight => {
+                        self.menus.slot = if self.menus.slot >= 9 { 1 } else { self.menus.slot + 1 };
+                    }
+                    gilrs::Button::East => {
+                        self.menus.menu_open = false;
+                        self.keyboard.release();
+                    }
+                    gilrs::Button::South => {
+                        let game_info = self.game.as_ref().map(|g| (g.path.clone(), g.name.clone(), g.system.title.as_ref().map(|t| t.program_id())));
+                        if let Some(action) = self.menus.trigger_pause_selected(game_info) {
+                            self.act(action, event_loop);
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // 5. In the Library (no game running)
+            if self.game.is_none() {
+                let count = self.library.games.len();
+                match button {
+                    gilrs::Button::DPadUp => {
+                        if count > 0 {
+                            self.menus.selected_game = self.menus.selected_game.saturating_sub(1);
+                            self.menus.scroll_to_selected = true;
+                        }
+                    }
+                    gilrs::Button::DPadDown => {
+                        if count > 0 {
+                            self.menus.selected_game = (self.menus.selected_game + 1).min(count - 1);
+                            self.menus.scroll_to_selected = true;
+                        }
+                    }
+                    gilrs::Button::LeftTrigger => {
+                        if count > 0 {
+                            self.menus.selected_game = self.menus.selected_game.saturating_sub(5);
+                            self.menus.scroll_to_selected = true;
+                        }
+                    }
+                    gilrs::Button::RightTrigger => {
+                        if count > 0 {
+                            self.menus.selected_game = (self.menus.selected_game + 5).min(count - 1);
+                            self.menus.scroll_to_selected = true;
+                        }
+                    }
+                    gilrs::Button::South => {
+                        if let Some(game) = self.library.games.get(self.menus.selected_game) {
+                            self.act(Action::Play(game.path.clone()), event_loop);
+                        }
+                    }
+                    gilrs::Button::West => {
+                        if let Some(game) = self.library.games.get(self.menus.selected_game) {
+                            self.act(Action::Mods(game.program_id), event_loop);
+                        }
+                    }
+                    gilrs::Button::North => {
+                        if let Some(game) = self.library.games.get(self.menus.selected_game) {
+                            self.menus.game_settings = Some((game.program_id, game.name.clone()));
+                        }
+                    }
+                    gilrs::Button::Start => {
+                        self.menus.settings_open = true;
+                    }
+                    gilrs::Button::Select => {
+                        self.act(Action::Rescan, event_loop);
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -963,14 +1077,22 @@ impl App {
             if !full {
                 self.maximized_before_full_screen = window.is_maximized();
                 self.resize_after_full_screen = false;
+                window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                self.settings.window_mode = WindowMode::Fullscreen;
+            } else {
+                window.set_fullscreen(None);
+                if self.maximized_before_full_screen {
+                    window.set_maximized(true);
+                    self.settings.window_mode = WindowMode::Maximized;
+                } else {
+                    window.set_maximized(false);
+                    self.settings.window_mode = WindowMode::Windowed;
+                    if self.resize_after_full_screen {
+                        let _ = window.request_inner_size(self.window_size());
+                    }
+                }
             }
-            window.set_fullscreen((!full).then_some(Fullscreen::Borderless(None)));
-            // the layout may have changed meanwhile, which full screen kept
-            // the window's size through. a window maximized before comes
-            // back maximized, resizing it would take it out of that
-            if full && self.resize_after_full_screen && !self.maximized_before_full_screen {
-                let _ = window.request_inner_size(self.window_size());
-            }
+            self.settings.save();
         }
     }
 
@@ -1001,6 +1123,28 @@ impl App {
         self.gamepads.set_buttons(self.settings.pad.clone());
         self.apply_volume();
         self.apply_layout();
+        if let Some(window) = &self.window {
+            match self.settings.window_mode {
+                WindowMode::Fullscreen => {
+                    if window.fullscreen().is_none() {
+                        window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    }
+                }
+                WindowMode::Maximized => {
+                    if window.fullscreen().is_some() {
+                        window.set_fullscreen(None);
+                    }
+                    window.set_maximized(true);
+                }
+                WindowMode::Windowed => {
+                    if window.fullscreen().is_some() {
+                        window.set_fullscreen(None);
+                    }
+                    window.set_maximized(false);
+                    let _ = window.request_inner_size(self.window_size());
+                }
+            }
+        }
     }
 
     /// gives the running game's cameras what the settings say they see,
@@ -1364,7 +1508,7 @@ impl App {
         }
         self.library.poll();
         self.poll_jobs();
-        self.poll_gamepads();
+        self.poll_gamepads(event_loop);
         // a room that went away takes the game's local wireless with it
         if self.room.as_ref().is_some_and(|room| !room.open()) {
             self.leave_room();

@@ -17,6 +17,38 @@ impl Gui {
     pub fn new(window: &Window) -> Gui {
         let ctx = egui::Context::default();
         ctx.set_fonts(fonts(system_fonts()));
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = egui::Color32::from_rgb(18, 20, 26);
+        visuals.window_fill = egui::Color32::from_rgb(26, 29, 38);
+        visuals.extreme_bg_color = egui::Color32::from_rgb(12, 14, 18);
+        visuals.faint_bg_color = egui::Color32::from_rgb(22, 25, 33);
+        visuals.window_corner_radius = egui::CornerRadius::same(12);
+        visuals.menu_corner_radius = egui::CornerRadius::same(8);
+        visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
+        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(32, 36, 48);
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 56, 72));
+        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(230, 235, 245));
+        visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
+        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(46, 54, 72);
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(56, 189, 248));
+        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+        visuals.widgets.active.corner_radius = egui::CornerRadius::same(8);
+        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(30, 90, 160);
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 180, 255));
+        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+        visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(8);
+        visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(22, 25, 33);
+        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(42, 48, 62));
+        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(175, 185, 200));
+        visuals.selection.bg_fill = egui::Color32::from_rgba_premultiplied(40, 120, 220, 160);
+        visuals.selection.stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 190, 255));
+        ctx.set_visuals(visuals);
+
+        ctx.style_mut_of(egui::Theme::Dark, |style| {
+            style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+            style.spacing.button_padding = egui::vec2(12.0, 7.0);
+            style.spacing.window_margin = egui::Margin::same(14);
+        });
         let state = egui_winit::State::new(
             ctx.clone(),
             ViewportId::ROOT,
