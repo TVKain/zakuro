@@ -931,6 +931,20 @@ impl App {
                     self.menus.close_modals();
                 } else if button == gilrs::Button::Start && self.menus.settings_open {
                     self.menus.settings_open = false;
+                } else if button == gilrs::Button::LeftTrigger && self.menus.settings_open {
+                    self.menus.settings_tab = self.menus.settings_tab.prev();
+                } else if button == gilrs::Button::RightTrigger && self.menus.settings_open {
+                    self.menus.settings_tab = self.menus.settings_tab.next();
+                } else if let Some(gui) = &mut self.gui {
+                    match button {
+                        gilrs::Button::DPadUp => gui.send_key(egui::Key::ArrowUp),
+                        gilrs::Button::DPadDown => gui.send_key(egui::Key::ArrowDown),
+                        gilrs::Button::DPadLeft => gui.send_key(egui::Key::ArrowLeft),
+                        gilrs::Button::DPadRight => gui.send_key(egui::Key::ArrowRight),
+                        gilrs::Button::South => gui.send_key(egui::Key::Space),
+                        gilrs::Button::LeftThumb => gui.send_key(egui::Key::Tab),
+                        _ => {}
+                    }
                 }
                 continue;
             }

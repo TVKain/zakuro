@@ -68,6 +68,47 @@ pub enum Action {
     CheatsFolder,
 }
 
+/// the active tab in the settings dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsTab {
+    #[default]
+    Graphics,
+    Controller,
+    Audio,
+    System,
+}
+
+impl SettingsTab {
+    pub const ALL: [SettingsTab; 4] = [SettingsTab::Graphics, SettingsTab::Controller, SettingsTab::Audio, SettingsTab::System];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SettingsTab::Graphics => "🎮 Graphics",
+            SettingsTab::Controller => "🕹 Controls",
+            SettingsTab::Audio => "🔊 Audio",
+            SettingsTab::System => "⚙ System",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            SettingsTab::Graphics => SettingsTab::Controller,
+            SettingsTab::Controller => SettingsTab::Audio,
+            SettingsTab::Audio => SettingsTab::System,
+            SettingsTab::System => SettingsTab::Graphics,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            SettingsTab::Graphics => SettingsTab::System,
+            SettingsTab::Controller => SettingsTab::Graphics,
+            SettingsTab::Audio => SettingsTab::Controller,
+            SettingsTab::System => SettingsTab::Audio,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Menus {
     /// the menu over a running game.
@@ -112,6 +153,8 @@ pub struct Menus {
     pub pause_selected: usize,
     /// whether the library scroll area should scroll to reveal selected_game.
     pub scroll_to_selected: bool,
+    /// the tab currently selected in the settings dialog.
+    pub settings_tab: SettingsTab,
 }
 
 /// the room the player is in, as the multiplayer window shows it.
@@ -240,10 +283,11 @@ fn button_hint(ui: &mut egui::Ui, button: &str, label: &str, btn_color: Color32)
 
 fn nav_button(ui: &mut egui::Ui, focused: bool, text: &str) -> (bool, bool) {
     let btn = egui::Button::new(RichText::new(text).size(14.0));
+    let width = ui.available_width();
     let resp = if focused {
-        ui.add_sized([220.0, 30.0], btn.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
+        ui.add_sized([width, 32.0], btn.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
     } else {
-        ui.add_sized([220.0, 30.0], btn)
+        ui.add_sized([width, 32.0], btn)
     };
     (resp.clicked(), resp.hovered())
 }
@@ -599,9 +643,13 @@ impl Menus {
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(260.0)
+            .max_width(260.0)
             .show(&ctx, |ui| {
-                ui.label(RichText::new(name).strong().size(18.0));
-                ui.label(RichText::new(if recompiled { "⚡ running recompiled code" } else { "interpreted" }).weak());
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new(name).strong().size(18.0));
+                    ui.label(RichText::new(if recompiled { "⚡ running recompiled code" } else { "interpreted" }).weak());
+                });
                 ui.add_space(8.0);
 
                 let pause_sel = self.pause_selected;
@@ -625,12 +673,13 @@ impl Menus {
                     ui.label(RichText::new(saved.unwrap_or("empty")).weak());
                 });
                 ui.horizontal(|ui| {
+                    let slot_w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
                     let focused_save = pause_sel == 3;
                     let btn_save = egui::Button::new("Save state");
                     let resp_save = if focused_save {
-                        ui.add_sized([106.0, 30.0], btn_save.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
+                        ui.add_sized([slot_w, 32.0], btn_save.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
                     } else {
-                        ui.add_sized([106.0, 30.0], btn_save)
+                        ui.add_sized([slot_w, 32.0], btn_save)
                     };
                     if resp_save.hovered() {
                         new_pause_sel = 3;
@@ -642,9 +691,9 @@ impl Menus {
                     let focused_load = pause_sel == 4;
                     let btn_load = egui::Button::new("Load state");
                     let resp_load = if focused_load {
-                        ui.add_enabled(saved.is_some(), btn_load.min_size(Vec2::new(106.0, 30.0)).fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
+                        ui.add_enabled(saved.is_some(), btn_load.min_size(Vec2::new(slot_w, 32.0)).fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
                     } else {
-                        ui.add_enabled(saved.is_some(), btn_load.min_size(Vec2::new(106.0, 30.0)))
+                        ui.add_enabled(saved.is_some(), btn_load.min_size(Vec2::new(slot_w, 32.0)))
                     };
                     if resp_load.hovered() {
                         new_pause_sel = 4;
@@ -676,8 +725,9 @@ impl Menus {
                 if c { self.multiplayer_open = true; }
                 current_idx += 1;
 
+                let full_w = ui.available_width();
                 if ui
-                    .add_sized([220.0, 30.0], egui::Button::new("Show camera a picture"))
+                    .add_sized([full_w, 32.0], egui::Button::new("Show camera picture"))
                     .on_hover_text("Pick a picture for the console's cameras to see, a QR code's say, in place of the computer's camera.")
                     .clicked()
                 {
@@ -685,7 +735,7 @@ impl Menus {
                 }
 
                 if ui
-                    .add_sized([220.0, 30.0], egui::Button::new("Copy info for a report"))
+                    .add_sized([full_w, 32.0], egui::Button::new("Copy report info"))
                     .clicked()
                 {
                     actions.push(Action::CopyReport);
@@ -711,11 +761,12 @@ impl Menus {
                 ui.add_space(8.0);
                 ui.separator();
                 ui.horizontal(|ui| {
+                    ui.add_space(4.0);
                     button_hint(ui, "A", "Select", Color32::from_rgb(22, 163, 74));
-                    ui.add_space(6.0);
-                    button_hint(ui, "B / View", "Resume", Color32::from_rgb(220, 38, 38));
-                    ui.add_space(6.0);
-                    button_hint(ui, "D-Pad", "Navigate", Color32::from_rgb(75, 85, 99));
+                    ui.add_space(8.0);
+                    button_hint(ui, "B", "Resume", Color32::from_rgb(220, 38, 38));
+                    ui.add_space(8.0);
+                    button_hint(ui, "D-Pad", "Move", Color32::from_rgb(75, 85, 99));
                 });
                 self.pause_selected = new_pause_sel;
             });
@@ -727,7 +778,12 @@ impl Menus {
     pub fn cheats(&mut self, ctx: &egui::Context, cheats: &[(String, bool, String, bool)]) -> Vec<Action> {
         let mut actions = Vec::new();
         let mut open = self.cheats_open;
-        egui::Window::new("Cheats").open(&mut open).default_width(380.0).show(ctx, |ui| {
+        egui::Window::new("Cheats")
+            .open(&mut open)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(420.0)
+            .show(ctx, |ui| {
             let mut checkbox = |ui: &mut egui::Ui, index: usize, name: &str, enabled: bool, notes: &str| {
                 let mut on = enabled;
                 let mut response = ui.checkbox(&mut on, name);
@@ -783,7 +839,12 @@ impl Menus {
         let mut actions = Vec::new();
         let before = settings.clone();
         let mut open = self.multiplayer_open;
-        egui::Window::new("Multiplayer").open(&mut open).default_width(380.0).show(ctx, |ui| {
+        egui::Window::new("Multiplayer")
+            .open(&mut open)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(420.0)
+            .show(ctx, |ui| {
             ui.label(
                 RichText::new("Local wireless play with others goes through a room, which one of you opens and the others join over the network.")
                     .weak(),
@@ -898,177 +959,217 @@ impl Menus {
         let mut actions = Vec::new();
         let before = settings.clone();
         let mut open = self.settings_open;
-        // taller than a screen has room for, so it scrolls, and it can be
-        // dragged to any size that fits
-        let room = ctx.content_rect().height() - 16.0;
-        egui::Window::new("Settings")
+        let max_h = (ctx.content_rect().height() - 24.0).max(200.0);
+        let win_h = 480.0f32.min(max_h);
+        let scroll_h = (win_h - 150.0).max(60.0);
+        egui::Window::new("⚙ Settings")
             .id(egui::Id::new("settings"))
             .open(&mut open)
-            .vscroll(true)
-            .default_size([460.0, room])
-            .max_height(room)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(580.0)
+            .max_width(580.0)
+            .max_height(max_h)
             .show(ctx, |ui| {
                 if own {
                     ui.label(RichText::new("This game has settings of its own, which go over these. They are in Settings for this game, in the menu.").weak());
                 }
-                ui.heading("Games");
+
+                // Tab Bar
                 ui.horizontal(|ui| {
-                    match &settings.games {
-                        Some(folder) => ui.label(folder.display().to_string()),
-                        None => ui.label(RichText::new("none").weak()),
-                    };
-                    if ui.button("Choose…").clicked() {
-                        actions.push(Action::ChooseFolder);
-                    }
-                });
-
-                ui.separator();
-                ui.heading("Graphics");
-                egui::ComboBox::from_label("Presented with")
-                    .selected_text(match settings.renderer {
-                        Renderer::Vulkan => "Vulkan",
-                        Renderer::OpenGl => "OpenGL",
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut settings.renderer, Renderer::Vulkan, "Vulkan");
-                        ui.selectable_value(&mut settings.renderer, Renderer::OpenGl, "OpenGL");
-                    });
-                rasterizer(ui, &mut settings.hardware_rasterizer);
-                ui.add_enabled_ui(settings.hardware_rasterizer, |ui| {
-                    resolution(ui, &mut settings.resolution);
-                    texture_packs(ui, &mut settings.texture_packs);
-                });
-                let interpolates = settings.hardware_rasterizer && settings.renderer == Renderer::Vulkan;
-                ui.add_enabled_ui(interpolates, |ui| interpolation(ui, &mut settings.frame_interpolation));
-                window_scale(ui, &mut settings.scale);
-                screens(ui, &mut settings.layout);
-                rotation(ui, &mut settings.orientation);
-                filter(ui, &mut settings.filter);
-                integer_scale(ui, &mut settings.integer_scale);
-                top_shape(ui, &mut settings.top_shape);
-                stereo_3d(ui, &mut settings.stereo);
-                let stereo = settings.stereo != Stereo3d::Off;
-                ui.add_enabled_ui(stereo, |ui| depth_3d(ui, &mut settings.depth_3d));
-                // on whatever the 3D is here, a game can have its own
-                ui.checkbox(&mut settings.swap_eyes, "Swap eyes")
-                    .on_hover_text("Each eye gets the other's picture, for viewing cross-eyed, glasses worn the other way round, or a monitor whose rows start with the other eye.");
-                ui.label(
-                    RichText::new("F9 switches them while playing, F10 between the top and the bottom screen alone.").weak(),
-                );
-                ui.label(RichText::new("The presenter changes the next time Zakuro starts, the 3D with the next game.").weak());
-
-                ui.separator();
-                ui.heading("Emulation");
-                language(ui, &mut settings.language);
-                egui::ComboBox::from_label("Cameras").selected_text(settings.camera.name()).show_ui(ui, |ui| {
-                    for source in CameraSource::ALL {
-                        ui.selectable_value(&mut settings.camera, source, source.name());
-                    }
-                })
-                .response
-                .on_hover_text("What the console's cameras see. The computer's camera turns on only while a game takes pictures.");
-                if settings.camera == CameraSource::Picture {
-                    ui.horizontal(|ui| {
-                        ui.label("Picture");
-                        match &settings.camera_picture {
-                            Some(path) => ui.label(path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()),
-                            None => ui.label(RichText::new("none").weak()),
+                    button_hint(ui, "LB", "", Color32::from_rgb(50, 60, 75));
+                    for tab in SettingsTab::ALL {
+                        let is_current = self.settings_tab == tab;
+                        let btn = egui::Button::new(RichText::new(tab.name()).strong().size(13.0));
+                        let resp = if is_current {
+                            ui.add_sized([105.0, 30.0], btn.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
+                        } else {
+                            ui.add_sized([105.0, 30.0], btn)
                         };
-                        if ui.button("Choose…").clicked() {
-                            actions.push(Action::ChooseCameraPicture);
+                        if resp.clicked() {
+                            self.settings_tab = tab;
                         }
-                    });
-                }
-                egui::ComboBox::from_label("Microphone").selected_text(settings.microphone.name()).show_ui(ui, |ui| {
-                    for source in MicrophoneSource::ALL {
-                        ui.selectable_value(&mut settings.microphone, source, source.name());
                     }
-                })
-                .response
-                .on_hover_text("What the console's microphone hears. The computer's microphone is open only while a game listens, which some do all the time, Super Mario 3D Land among them. Holding M blows into it either way, for games that ask you to.");
-                code(ui, &mut settings.recompiled);
-                ui.label(RichText::new("It changes with the next game started, or Reset.").weak());
-
+                    button_hint(ui, "RB", "", Color32::from_rgb(50, 60, 75));
+                });
+                ui.add_space(4.0);
                 ui.separator();
-                ui.heading("Sound");
-                ui.add(egui::Slider::new(&mut settings.volume, 0.0..=1.0).text("Volume").show_value(false));
-                ui.checkbox(&mut settings.mute, "Mute");
 
-                ui.separator();
-                ui.heading("Interface");
-                egui::ComboBox::from_label("Window mode")
-                    .selected_text(settings.window_mode.name())
-                    .show_ui(ui, |ui| {
-                        for mode in WindowMode::ALL {
-                            ui.selectable_value(&mut settings.window_mode, mode, mode.name());
+                egui::ScrollArea::vertical().max_height(scroll_h).show(ui, |ui| {
+                    match self.settings_tab {
+                        SettingsTab::Graphics => {
+                            egui::ComboBox::from_label("Presented with")
+                                .selected_text(match settings.renderer {
+                                    Renderer::Vulkan => "Vulkan",
+                                    Renderer::OpenGl => "OpenGL",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut settings.renderer, Renderer::Vulkan, "Vulkan");
+                                    ui.selectable_value(&mut settings.renderer, Renderer::OpenGl, "OpenGL");
+                                });
+                            rasterizer(ui, &mut settings.hardware_rasterizer);
+                            ui.add_enabled_ui(settings.hardware_rasterizer, |ui| {
+                                resolution(ui, &mut settings.resolution);
+                                texture_packs(ui, &mut settings.texture_packs);
+                            });
+                            let interpolates = settings.hardware_rasterizer && settings.renderer == Renderer::Vulkan;
+                            ui.add_enabled_ui(interpolates, |ui| interpolation(ui, &mut settings.frame_interpolation));
+                            screens(ui, &mut settings.layout);
+                            rotation(ui, &mut settings.orientation);
+                            filter(ui, &mut settings.filter);
+                            integer_scale(ui, &mut settings.integer_scale);
+                            top_shape(ui, &mut settings.top_shape);
+                            stereo_3d(ui, &mut settings.stereo);
+                            let stereo = settings.stereo != Stereo3d::Off;
+                            ui.add_enabled_ui(stereo, |ui| depth_3d(ui, &mut settings.depth_3d));
+                            ui.checkbox(&mut settings.swap_eyes, "Swap eyes")
+                                .on_hover_text("Each eye gets the other's picture, for viewing cross-eyed, glasses worn the other way round, or a monitor whose rows start with the other eye.");
+                            ui.label(RichText::new("F9 switches them while playing, F10 between the top and the bottom screen alone.").weak());
+                            ui.label(RichText::new("The presenter changes the next time Zakuro starts, the 3D with the next game.").weak());
                         }
-                    });
-                ui.checkbox(&mut settings.show_fps, "Show the frame rate");
+                        SettingsTab::Controller => {
+                            ui.heading("Gamepad / Handheld Controls");
+                            egui::Grid::new("controller").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
+                                for (i, (name, button)) in settings.pad.all_mut().into_iter().enumerate() {
+                                    ui.label(name);
+                                    let text = if self.rebinding_pad == Some(i) { "press a button…".to_owned() } else { button_name(*button).to_owned() };
+                                    if ui.add_sized([120.0, 24.0], egui::Button::new(text)).clicked() {
+                                        self.rebinding_pad = Some(i);
+                                        self.rebinding = None;
+                                    }
+                                    if i % 2 == 1 {
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                            ui.label(RichText::new("The circle pad is the left stick, and View or Home opens the menu over the game.").weak());
+                            if ui.button("Default controller").clicked() {
+                                settings.pad = PadButtons::default();
+                                self.rebinding_pad = None;
+                            }
+
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.heading("Keyboard Controls");
+                            egui::Grid::new("controls").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
+                                for (i, (name, key)) in settings.keys.all_mut().into_iter().enumerate() {
+                                    ui.label(name);
+                                    let text = if self.rebinding == Some(i) { "press a key…".to_owned() } else { key_name(*key) };
+                                    if ui.add_sized([120.0, 24.0], egui::Button::new(text)).clicked() {
+                                        self.rebinding = Some(i);
+                                        self.rebinding_pad = None;
+                                    }
+                                    if i % 2 == 1 {
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                            if ui.button("Default keyboard").clicked() {
+                                settings.keys = Keys::default();
+                                self.rebinding = None;
+                            }
+                            ui.label(RichText::new("Drag with the right mouse button to tilt the console, for games that use the motion sensors.").weak());
+                        }
+                        SettingsTab::Audio => {
+                            ui.heading("Volume");
+                            ui.add(egui::Slider::new(&mut settings.volume, 0.0..=1.0).text("Volume").show_value(false));
+                            ui.checkbox(&mut settings.mute, "Mute");
+
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.heading("Microphone");
+                            egui::ComboBox::from_label("Microphone").selected_text(settings.microphone.name()).show_ui(ui, |ui| {
+                                for source in MicrophoneSource::ALL {
+                                    ui.selectable_value(&mut settings.microphone, source, source.name());
+                                }
+                            })
+                            .response
+                            .on_hover_text("What the console's microphone hears. The computer's microphone is open only while a game listens, which some do all the time, Super Mario 3D Land among them. Holding M blows into it either way, for games that ask you to.");
+                        }
+                        SettingsTab::System => {
+                            ui.heading("Display & Window");
+                            egui::ComboBox::from_label("Window mode")
+                                .selected_text(settings.window_mode.name())
+                                .show_ui(ui, |ui| {
+                                    for mode in WindowMode::ALL {
+                                        ui.selectable_value(&mut settings.window_mode, mode, mode.name());
+                                    }
+                                });
+                            window_scale(ui, &mut settings.scale);
+                            ui.checkbox(&mut settings.show_fps, "Show the frame rate");
+
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.heading("Emulation");
+                            language(ui, &mut settings.language);
+                            code(ui, &mut settings.recompiled);
+                            ui.label(RichText::new("Recompiled code changes with the next game started, or Reset.").weak());
+                            egui::ComboBox::from_label("Cameras").selected_text(settings.camera.name()).show_ui(ui, |ui| {
+                                for source in CameraSource::ALL {
+                                    ui.selectable_value(&mut settings.camera, source, source.name());
+                                }
+                            })
+                            .response
+                            .on_hover_text("What the console's cameras see. The computer's camera turns on only while a game takes pictures.");
+                            if settings.camera == CameraSource::Picture {
+                                ui.horizontal(|ui| {
+                                    ui.label("Picture");
+                                    match &settings.camera_picture {
+                                        Some(path) => ui.label(path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()),
+                                        None => ui.label(RichText::new("none").weak()),
+                                    };
+                                    if ui.button("Choose…").clicked() {
+                                        actions.push(Action::ChooseCameraPicture);
+                                    }
+                                });
+                            }
+
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.heading("Games & Files");
+                            ui.horizontal(|ui| {
+                                match &settings.games {
+                                    Some(folder) => ui.label(folder.display().to_string()),
+                                    None => ui.label(RichText::new("none").weak()),
+                                };
+                                if ui.button("Choose folder…").clicked() {
+                                    actions.push(Action::ChooseFolder);
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Library background");
+                                match &settings.background {
+                                    Some(path) => ui.label(path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()),
+                                    None => ui.label(RichText::new("none").weak()),
+                                };
+                                if ui.button("Choose…").clicked() {
+                                    actions.push(Action::ChooseBackground);
+                                }
+                                if settings.background.is_some() && ui.button("Remove").clicked() {
+                                    settings.background = None;
+                                }
+                            });
+                            ui.add_enabled(
+                                settings.background.is_some(),
+                                egui::Slider::new(&mut settings.background_opacity, 0.0..=1.0)
+                                    .text("Opacity")
+                                    .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                            );
+                        }
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("Library background");
-                    match &settings.background {
-                        Some(path) => ui.label(path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()),
-                        None => ui.label(RichText::new("none").weak()),
-                    };
-                    if ui.button("Choose…").clicked() {
-                        actions.push(Action::ChooseBackground);
-                    }
-                    if settings.background.is_some() && ui.button("Remove").clicked() {
-                        settings.background = None;
-                    }
+                    button_hint(ui, "LB / RB", "Switch Tab", Color32::from_rgb(50, 60, 75));
+                    ui.add_space(8.0);
+                    button_hint(ui, "D-Pad", "Navigate", Color32::from_rgb(75, 85, 99));
+                    ui.add_space(8.0);
+                    button_hint(ui, "A", "Select / Toggle", Color32::from_rgb(22, 163, 74));
+                    ui.add_space(8.0);
+                    button_hint(ui, "B", "Close", Color32::from_rgb(220, 38, 38));
                 });
-                ui.add_enabled(
-                    settings.background.is_some(),
-                    egui::Slider::new(&mut settings.background_opacity, 0.0..=1.0)
-                        .text("Opacity")
-                        .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
-                );
-
-
-                ui.separator();
-                ui.heading("Controls");
-                egui::Grid::new("controls").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
-                    for (i, (name, key)) in settings.keys.all_mut().into_iter().enumerate() {
-                        ui.label(name);
-                        let text = if self.rebinding == Some(i) { "press a key…".to_owned() } else { key_name(*key) };
-                        if ui.add_sized([110.0, 20.0], egui::Button::new(text)).clicked() {
-                            self.rebinding = Some(i);
-                            self.rebinding_pad = None;
-                        }
-                        if i % 2 == 1 {
-                            ui.end_row();
-                        }
-                    }
-                });
-                if ui.button("Default controls").clicked() {
-                    settings.keys = Keys::default();
-                    self.rebinding = None;
-                }
-                ui.label(RichText::new("Drag with the right mouse button to tilt the console, for games that use the motion sensors.").weak());
-
-                ui.separator();
-                ui.heading("Controller");
-                egui::Grid::new("controller").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
-                    for (i, (name, button)) in settings.pad.all_mut().into_iter().enumerate() {
-                        ui.label(name);
-                        let text = if self.rebinding_pad == Some(i) { "press a button…" } else { button_name(*button) };
-                        if ui.add_sized([110.0, 20.0], egui::Button::new(text)).clicked() {
-                            self.rebinding_pad = Some(i);
-                            self.rebinding = None;
-                        }
-                        if i % 2 == 1 {
-                            ui.end_row();
-                        }
-                    }
-                });
-                ui.label(RichText::new("The circle pad is the left stick, and View or Home opens the menu over the game.").weak());
-                if ui.button("Default controller").clicked() {
-                    settings.pad = PadButtons::default();
-                    self.rebinding_pad = None;
-                }
-                ui.add_space(8.0);
-                ui.separator();
-                button_hint(ui, "B", "Close settings", Color32::from_rgb(220, 38, 38));
             });
         self.settings_open = open;
         if !open {
@@ -1090,13 +1191,16 @@ impl Menus {
         let before = game.clone();
         let general: &Settings = settings;
         let mut open = true;
-        let room = ctx.content_rect().height() - 16.0;
+        let max_h = (ctx.content_rect().height() - 16.0).max(200.0);
         egui::Window::new(format!("Settings for {name}"))
             .id(egui::Id::new("game settings"))
             .open(&mut open)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(520.0)
+            .max_width(520.0)
+            .max_height(max_h)
             .vscroll(true)
-            .default_size([420.0, room.min(540.0)])
-            .max_height(room)
             .show(ctx, |ui| {
                 ui.label(RichText::new("Tick what this game is to have of its own. The rest follows the general settings.").weak());
                 ui.separator();
@@ -1122,6 +1226,9 @@ impl Menus {
                 if ui.add_enabled(game != GameSettings::default(), egui::Button::new("Follow the general settings in everything")).clicked() {
                     game = GameSettings::default();
                 }
+                ui.add_space(8.0);
+                ui.separator();
+                button_hint(ui, "B", "Close", Color32::from_rgb(220, 38, 38));
             });
         if !open {
             self.game_settings = None;

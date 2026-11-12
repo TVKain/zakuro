@@ -11,6 +11,7 @@ use zakuro_gpu::{Overlay, OverlayMesh, OverlayTexture, OverlayVertex};
 pub struct Gui {
     pub ctx: egui::Context,
     state: egui_winit::State,
+    extra_events: Vec<egui::Event>,
 }
 
 impl Gui {
@@ -57,12 +58,30 @@ impl Gui {
             None,
             Some(8192),
         );
-        Gui { ctx, state }
+        Gui { ctx, state, extra_events: Vec::new() }
     }
 
     /// hands egui an event, true when it wants it for itself.
     pub fn event(&mut self, window: &Window, event: &WindowEvent) -> bool {
         self.state.on_window_event(window, event).consumed
+    }
+
+    /// injects a simulated key press and release event for controller UI navigation.
+    pub fn send_key(&mut self, key: egui::Key) {
+        self.extra_events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        self.extra_events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
     }
 
     /// whether egui is using the keyboard or the pointer, in which case the
@@ -77,7 +96,8 @@ impl Gui {
 
     /// runs the interface for a frame and returns what to draw.
     pub fn frame(&mut self, window: &Window, ui: impl FnMut(&mut egui::Ui)) -> Overlay {
-        let input = self.state.take_egui_input(window);
+        let mut input = self.state.take_egui_input(window);
+        input.events.append(&mut self.extra_events);
         let mut output = self.ctx.run_ui(input, ui);
         self.state.handle_platform_output(window, output.platform_output);
         let pixels_per_point = output.pixels_per_point;
