@@ -155,6 +155,8 @@ pub struct Menus {
     pub scroll_to_selected: bool,
     /// the tab currently selected in the settings dialog.
     pub settings_tab: SettingsTab,
+    /// whether a modal dialog was just opened and needs initial widget focus.
+    pub modal_just_opened: bool,
 }
 
 /// the room the player is in, as the multiplayer window shows it.
@@ -305,6 +307,13 @@ impl Menus {
         self.multiplayer_open = false;
         self.game_settings = None;
         self.message = None;
+        self.modal_just_opened = false;
+    }
+
+    /// opens the settings dialog and flags initial focus.
+    pub fn open_settings(&mut self) {
+        self.settings_open = true;
+        self.modal_just_opened = true;
     }
 
     /// triggers the pause menu action at pause_selected index.
@@ -312,40 +321,35 @@ impl Menus {
         let has_game_settings = game_info.as_ref().and_then(|g| g.2).is_some();
         match self.pause_selected {
             0 => Some(Action::Resume),
-            1 => Some(Action::Reset),
-            2 => Some(Action::Fullscreen),
-            3 => Some(Action::SaveState),
-            4 => Some(Action::LoadState),
-            5 => {
-                self.settings_open = true;
+            1 => Some(Action::SaveState),
+            2 => Some(Action::LoadState),
+            3 => {
+                self.open_settings();
                 None
             }
-            6 if has_game_settings => {
+            4 if has_game_settings => {
                 if let Some((_, name, Some(id))) = game_info {
                     self.game_settings = Some((id, name));
+                    self.modal_just_opened = true;
                 }
                 None
             }
-            6 => {
+            4 => {
                 self.cheats_open = true;
+                self.modal_just_opened = true;
                 None
             }
-            7 if has_game_settings => {
+            5 if has_game_settings => {
                 self.cheats_open = true;
+                self.modal_just_opened = true;
                 None
             }
-            7 => {
-                self.multiplayer_open = true;
-                None
-            }
-            8 if has_game_settings => {
-                self.multiplayer_open = true;
-                None
-            }
-            8 => Some(Action::Library),
-            9 if has_game_settings => Some(Action::Library),
-            9 => Some(Action::Quit),
-            10 if has_game_settings => Some(Action::Quit),
+            5 => Some(Action::Reset),
+            6 if has_game_settings => Some(Action::Reset),
+            6 => Some(Action::Library),
+            7 if has_game_settings => Some(Action::Library),
+            7 => Some(Action::Quit),
+            8 if has_game_settings => Some(Action::Quit),
             _ => None,
         }
     }
@@ -376,10 +380,11 @@ impl Menus {
                 };
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui.button("Settings").clicked() {
-                        self.settings_open = true;
+                        self.open_settings();
                     }
                     if ui.button("Multiplayer").clicked() {
                         self.multiplayer_open = true;
+                        self.modal_just_opened = true;
                     }
                     if ui.add_enabled(settings.games.is_some(), egui::Button::new("Refresh")).clicked() {
                         actions.push(Action::Rescan);
@@ -640,135 +645,151 @@ impl Menus {
             return actions;
         }
         egui::Window::new("Paused")
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-            .default_width(260.0)
+            .min_width(260.0)
             .max_width(260.0)
+            .frame(
+                egui::Frame::NONE
+                    .fill(Color32::from_rgb(22, 25, 33))
+                    .stroke(egui::Stroke::new(1.5, Color32::from_rgb(56, 189, 248)))
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::symmetric(14, 14)),
+            )
             .show(&ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new(name).strong().size(18.0));
-                    ui.label(RichText::new(if recompiled { "⚡ running recompiled code" } else { "interpreted" }).weak());
-                });
-                ui.add_space(8.0);
+                    ui.add_space(2.0);
+                    pill_badge(
+                        ui,
+                        if recompiled { "⚡ RECOMPILED" } else { "INTERPRETED" },
+                        if recompiled { Color32::from_rgb(30, 42, 60) } else { Color32::from_rgb(45, 35, 25) },
+                        if recompiled { Color32::from_rgb(96, 165, 250) } else { Color32::from_rgb(251, 191, 36) },
+                    );
+                    ui.add_space(8.0);
 
-                let pause_sel = self.pause_selected;
-                let mut new_pause_sel = pause_sel;
+                    let pause_sel = self.pause_selected;
+                    let mut new_pause_sel = pause_sel;
 
-                let (c, h) = nav_button(ui, pause_sel == 0, "Resume");
-                if h { new_pause_sel = 0; }
-                if c { actions.push(Action::Resume); }
+                    // 0. Resume
+                    let (c, h) = nav_button(ui, pause_sel == 0, "Resume");
+                    if h { new_pause_sel = 0; }
+                    if c { actions.push(Action::Resume); }
 
-                let (c, h) = nav_button(ui, pause_sel == 1, "Reset");
-                if h { new_pause_sel = 1; }
-                if c { actions.push(Action::Reset); }
+                    ui.add_space(6.0);
 
-                let (c, h) = nav_button(ui, pause_sel == 2, "Fullscreen");
-                if h { new_pause_sel = 2; }
-                if c { actions.push(Action::Fullscreen); }
+                    // Slot selector & Save/Load
+                    ui.horizontal(|ui| {
+                        let total_w = ui.available_width();
+                        let btn_arrow_w = 26.0;
+                        let text_w = total_w - (btn_arrow_w * 2.0) - (ui.spacing().item_spacing.x * 2.0);
+                        if ui.add_sized([btn_arrow_w, 24.0], egui::Button::new("◀")).clicked() {
+                            self.slot = if self.slot <= 1 { 9 } else { self.slot - 1 };
+                        }
+                        let slot_label = format!("Slot {} ({})", self.slot, saved.unwrap_or("empty"));
+                        ui.add_sized([text_w, 24.0], egui::Label::new(RichText::new(slot_label).strong()));
+                        if ui.add_sized([btn_arrow_w, 24.0], egui::Button::new("▶")).clicked() {
+                            self.slot = if self.slot >= 9 { 1 } else { self.slot + 1 };
+                        }
+                    });
 
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut self.slot).range(1..=9).prefix("Slot "));
-                    ui.label(RichText::new(saved.unwrap_or("empty")).weak());
-                });
-                ui.horizontal(|ui| {
-                    let slot_w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-                    let focused_save = pause_sel == 3;
-                    let btn_save = egui::Button::new("Save state");
-                    let resp_save = if focused_save {
-                        ui.add_sized([slot_w, 32.0], btn_save.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
-                    } else {
-                        ui.add_sized([slot_w, 32.0], btn_save)
-                    };
-                    if resp_save.hovered() {
-                        new_pause_sel = 3;
+                    ui.horizontal(|ui| {
+                        let slot_w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+                        let focused_save = pause_sel == 1;
+                        let btn_save = egui::Button::new("Save state");
+                        let resp_save = if focused_save {
+                            ui.add_sized([slot_w, 32.0], btn_save.fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
+                        } else {
+                            ui.add_sized([slot_w, 32.0], btn_save)
+                        };
+                        if resp_save.hovered() { new_pause_sel = 1; }
+                        if resp_save.on_hover_text("F5 saves to this slot while playing.").clicked() {
+                            actions.push(Action::SaveState);
+                        }
+
+                        let focused_load = pause_sel == 2;
+                        let btn_load = egui::Button::new("Load state");
+                        let resp_load = if focused_load {
+                            ui.add_enabled(saved.is_some(), btn_load.min_size(Vec2::new(slot_w, 32.0)).fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
+                        } else {
+                            ui.add_enabled(saved.is_some(), btn_load.min_size(Vec2::new(slot_w, 32.0)))
+                        };
+                        if resp_load.hovered() { new_pause_sel = 2; }
+                        if resp_load.on_hover_text("F8 loads this slot while playing.").clicked() {
+                            actions.push(Action::LoadState);
+                        }
+                    });
+
+                    ui.add_space(6.0);
+
+                    // 3. Settings
+                    let (c, h) = nav_button(ui, pause_sel == 3, "Settings");
+                    if h { new_pause_sel = 3; }
+                    if c { self.open_settings(); }
+
+                    let mut current_idx = 4;
+                    if let Some(program_id) = program_id {
+                        let (c, h) = nav_button(ui, pause_sel == current_idx, "Settings for this game");
+                        if h { new_pause_sel = current_idx; }
+                        if c {
+                            self.game_settings = Some((program_id, name.to_owned()));
+                            self.modal_just_opened = true;
+                        }
+                        current_idx += 1;
                     }
-                    if resp_save.on_hover_text("F5 saves to this slot while playing.").clicked() {
-                        actions.push(Action::SaveState);
-                    }
 
-                    let focused_load = pause_sel == 4;
-                    let btn_load = egui::Button::new("Load state");
-                    let resp_load = if focused_load {
-                        ui.add_enabled(saved.is_some(), btn_load.min_size(Vec2::new(slot_w, 32.0)).fill(Color32::from_rgb(37, 99, 235)).stroke(egui::Stroke::new(1.5, Color32::from_rgb(147, 197, 253))))
-                    } else {
-                        ui.add_enabled(saved.is_some(), btn_load.min_size(Vec2::new(slot_w, 32.0)))
-                    };
-                    if resp_load.hovered() {
-                        new_pause_sel = 4;
-                    }
-                    if resp_load.on_hover_text("F8 loads this slot while playing.").clicked() {
-                        actions.push(Action::LoadState);
-                    }
-                });
-                ui.add_space(6.0);
-                let (c, h) = nav_button(ui, pause_sel == 5, "Settings");
-                if h { new_pause_sel = 5; }
-                if c { self.settings_open = true; }
-
-                let mut current_idx = 6;
-                if let Some(program_id) = program_id {
-                    let (c, h) = nav_button(ui, pause_sel == current_idx, "Settings for this game");
+                    // Cheats
+                    let (c, h) = nav_button(ui, pause_sel == current_idx, "Cheats");
                     if h { new_pause_sel = current_idx; }
-                    if c { self.game_settings = Some((program_id, name.to_owned())); }
+                    if c {
+                        self.cheats_open = true;
+                        self.modal_just_opened = true;
+                    }
                     current_idx += 1;
-                }
 
-                let (c, h) = nav_button(ui, pause_sel == current_idx, "Cheats");
-                if h { new_pause_sel = current_idx; }
-                if c { self.cheats_open = true; }
-                current_idx += 1;
+                    // Reset
+                    let (c, h) = nav_button(ui, pause_sel == current_idx, "Reset");
+                    if h { new_pause_sel = current_idx; }
+                    if c { actions.push(Action::Reset); }
+                    current_idx += 1;
 
-                let (c, h) = nav_button(ui, pause_sel == current_idx, "Multiplayer");
-                if h { new_pause_sel = current_idx; }
-                if c { self.multiplayer_open = true; }
-                current_idx += 1;
+                    // Back to library
+                    let (c, h) = nav_button(ui, pause_sel == current_idx, "Back to the library");
+                    if h { new_pause_sel = current_idx; }
+                    if c { actions.push(Action::Library); }
+                    current_idx += 1;
 
-                let full_w = ui.available_width();
-                if ui
-                    .add_sized([full_w, 32.0], egui::Button::new("Show camera picture"))
-                    .on_hover_text("Pick a picture for the console's cameras to see, a QR code's say, in place of the computer's camera.")
-                    .clicked()
-                {
-                    actions.push(Action::ChooseCameraPicture);
-                }
+                    // Quit
+                    let (c, h) = nav_button(ui, pause_sel == current_idx, "Quit");
+                    if h { new_pause_sel = current_idx; }
+                    if c { actions.push(Action::Quit); }
 
-                if ui
-                    .add_sized([full_w, 32.0], egui::Button::new("Copy report info"))
-                    .clicked()
-                {
-                    actions.push(Action::CopyReport);
-                }
+                    for job in jobs.iter().filter(|job| !job.stage().finished()) {
+                        ui.separator();
+                        ui.label(&job.name);
+                        progress(ui, job);
+                    }
+                    if waiting > 0 {
+                        ui.label(RichText::new(format!("{waiting} more waiting to recompile")).weak());
+                    }
 
-                let (c, h) = nav_button(ui, pause_sel == current_idx, "Back to the library");
-                if h { new_pause_sel = current_idx; }
-                if c { actions.push(Action::Library); }
-                current_idx += 1;
-
-                let (c, h) = nav_button(ui, pause_sel == current_idx, "Quit");
-                if h { new_pause_sel = current_idx; }
-                if c { actions.push(Action::Quit); }
-                for job in jobs.iter().filter(|job| !job.stage().finished()) {
+                    ui.add_space(8.0);
                     ui.separator();
-                    ui.label(&job.name);
-                    progress(ui, job);
-                }
-                if waiting > 0 {
-                    ui.label(RichText::new(format!("{waiting} more waiting to recompile")).weak());
-                }
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.add_space(4.0);
-                    button_hint(ui, "A", "Select", Color32::from_rgb(22, 163, 74));
-                    ui.add_space(8.0);
-                    button_hint(ui, "B", "Resume", Color32::from_rgb(220, 38, 38));
-                    ui.add_space(8.0);
-                    button_hint(ui, "D-Pad", "Move", Color32::from_rgb(75, 85, 99));
+                    ui.horizontal(|ui| {
+                        let total_w = ui.available_width();
+                        let hint_w = 216.0;
+                        let pad = ((total_w - hint_w) / 2.0).max(0.0);
+                        ui.add_space(pad);
+                        button_hint(ui, "A", "Select", Color32::from_rgb(22, 163, 74));
+                        ui.add_space(8.0);
+                        button_hint(ui, "B", "Resume", Color32::from_rgb(220, 38, 38));
+                        ui.add_space(8.0);
+                        button_hint(ui, "D-Pad", "Move", Color32::from_rgb(75, 85, 99));
+                    });
+                    self.pause_selected = new_pause_sel;
                 });
-                self.pause_selected = new_pause_sel;
             });
         actions
     }
@@ -1097,6 +1118,9 @@ impl Menus {
                                 });
                             window_scale(ui, &mut settings.scale);
                             ui.checkbox(&mut settings.show_fps, "Show the frame rate");
+                            if ui.button("Toggle Fullscreen (F11)").clicked() {
+                                actions.push(Action::Fullscreen);
+                            }
 
                             ui.add_space(8.0);
                             ui.separator();
@@ -1123,6 +1147,14 @@ impl Menus {
                                     }
                                 });
                             }
+                            ui.horizontal(|ui| {
+                                if ui.button("Show camera picture…").on_hover_text("Pick a picture for the console's cameras to see, a QR code's say, in place of the computer's camera.").clicked() {
+                                    actions.push(Action::ChooseCameraPicture);
+                                }
+                                if ui.button("Copy report info").clicked() {
+                                    actions.push(Action::CopyReport);
+                                }
+                            });
 
                             ui.add_space(8.0);
                             ui.separator();

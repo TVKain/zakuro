@@ -931,18 +931,28 @@ impl App {
                     self.menus.close_modals();
                 } else if button == gilrs::Button::Start && self.menus.settings_open {
                     self.menus.settings_open = false;
-                } else if button == gilrs::Button::LeftTrigger && self.menus.settings_open {
+                } else if (button == gilrs::Button::LeftTrigger || button == gilrs::Button::LeftTrigger2) && self.menus.settings_open {
                     self.menus.settings_tab = self.menus.settings_tab.prev();
-                } else if button == gilrs::Button::RightTrigger && self.menus.settings_open {
+                    if let Some(gui) = &mut self.gui {
+                        gui.clear_focus();
+                        gui.move_focus_next();
+                    }
+                } else if (button == gilrs::Button::RightTrigger || button == gilrs::Button::RightTrigger2) && self.menus.settings_open {
                     self.menus.settings_tab = self.menus.settings_tab.next();
+                    if let Some(gui) = &mut self.gui {
+                        gui.clear_focus();
+                        gui.move_focus_next();
+                    }
                 } else if let Some(gui) = &mut self.gui {
                     match button {
-                        gilrs::Button::DPadUp => gui.send_key(egui::Key::ArrowUp),
-                        gilrs::Button::DPadDown => gui.send_key(egui::Key::ArrowDown),
+                        gilrs::Button::DPadUp => gui.move_focus_prev(),
+                        gilrs::Button::DPadDown => gui.move_focus_next(),
                         gilrs::Button::DPadLeft => gui.send_key(egui::Key::ArrowLeft),
                         gilrs::Button::DPadRight => gui.send_key(egui::Key::ArrowRight),
-                        gilrs::Button::South => gui.send_key(egui::Key::Space),
-                        gilrs::Button::LeftThumb => gui.send_key(egui::Key::Tab),
+                        gilrs::Button::South => {
+                            gui.send_key(egui::Key::Space);
+                            gui.send_key(egui::Key::Enter);
+                        }
                         _ => {}
                     }
                 }
@@ -952,7 +962,7 @@ impl App {
             // 4. Over a running game (Pause Menu is open)
             if self.game.is_some() && self.menus.menu_open {
                 let has_game_settings = self.game.as_ref().and_then(|g| g.system.title.as_ref()).is_some();
-                let max_idx = if has_game_settings { 10 } else { 9 };
+                let max_idx = if has_game_settings { 8 } else { 7 };
                 match button {
                     gilrs::Button::DPadUp => {
                         self.menus.pause_selected = self.menus.pause_selected.saturating_sub(1);
@@ -1022,10 +1032,11 @@ impl App {
                     gilrs::Button::North => {
                         if let Some(game) = self.library.games.get(self.menus.selected_game) {
                             self.menus.game_settings = Some((game.program_id, game.name.clone()));
+                            self.menus.modal_just_opened = true;
                         }
                     }
                     gilrs::Button::Start => {
-                        self.menus.settings_open = true;
+                        self.menus.open_settings();
                     }
                     gilrs::Button::Select => {
                         self.act(Action::Rescan, event_loop);
@@ -1886,15 +1897,27 @@ impl App {
         let corner = self.overlay_corner.clone().filter(|_| game.is_some());
         let (menus, library, settings, jobs, waiting) = (&mut self.menus, &self.library, &mut self.settings, &self.jobs, &self.waiting);
         let mut actions = Vec::new();
+        let modal_open = menus.modal_open();
+        if menus.modal_just_opened {
+            menus.modal_just_opened = false;
+            gui.clear_focus();
+            gui.move_focus_next();
+        }
         let overlay = gui.frame(window, |ui| {
-            match &game {
-                Some((name, fps, recompiled)) => {
-                    actions.extend(menus.game(ui, name, program_id, show_fps.then_some(*fps), *recompiled, fast, jobs, waiting.len(), saved.as_deref()));
-                    if let Some(text) = &corner {
-                        menus::corner(ui.ctx(), text);
+            ui.add_enabled_ui(!modal_open, |ui| {
+                match &game {
+                    Some((name, fps, recompiled)) => {
+                        actions.extend(menus.game(ui, name, program_id, show_fps.then_some(*fps), *recompiled, fast, jobs, waiting.len(), saved.as_deref()));
+                        if let Some(text) = &corner {
+                            menus::corner(ui.ctx(), text);
+                        }
                     }
+                    None => actions.extend(menus.library(ui, library, settings, jobs, waiting)),
                 }
-                None => actions.extend(menus.library(ui, library, settings, jobs, waiting)),
+            });
+            if modal_open {
+                let rect = ui.clip_rect();
+                ui.painter().rect_filled(rect, 0.0, egui::Color32::from_black_alpha(160));
             }
             let own = program_id.is_some_and(|id| settings.has_own(id));
             actions.extend(menus.settings(ui.ctx(), settings, own));

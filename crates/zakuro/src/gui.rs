@@ -66,7 +66,32 @@ impl Gui {
         self.state.on_window_event(window, event).consumed
     }
 
-    /// injects a simulated key press and release event for controller UI navigation.
+    /// moves egui focus to the next interactive widget.
+    pub fn move_focus_next(&mut self) {
+        self.ctx.memory_mut(|m| {
+            m.move_focus(egui::FocusDirection::Next);
+        });
+        self.ctx.request_repaint();
+    }
+
+    /// moves egui focus to the previous interactive widget.
+    pub fn move_focus_prev(&mut self) {
+        self.ctx.memory_mut(|m| {
+            m.move_focus(egui::FocusDirection::Previous);
+        });
+        self.ctx.request_repaint();
+    }
+
+    /// clears any current widget focus.
+    pub fn clear_focus(&mut self) {
+        self.ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        self.ctx.request_repaint();
+    }
+
     pub fn send_key(&mut self, key: egui::Key) {
         self.extra_events.push(egui::Event::Key {
             key,
