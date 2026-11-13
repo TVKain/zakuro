@@ -218,6 +218,38 @@ impl SelectPopup {
             selected,
         }
     }
+
+    pub fn global_enum<T: Copy + PartialEq>(
+        target: SelectTarget,
+        title: &'static str,
+        all: &[T],
+        current: T,
+        name_fn: impl Fn(T) -> &'static str,
+    ) -> Self {
+        Self::global(
+            target,
+            title,
+            all.iter().map(|&item| name_fn(item).to_string()).collect(),
+            all.iter().position(|&item| item == current).unwrap_or(0),
+        )
+    }
+
+    pub fn game_enum<T: Copy + PartialEq>(
+        target: SelectTarget,
+        program_id: u64,
+        title: &'static str,
+        all: &[T],
+        current: T,
+        name_fn: impl Fn(T) -> &'static str,
+    ) -> Self {
+        Self::game(
+            target,
+            program_id,
+            title,
+            all.iter().map(|&item| name_fn(item).to_string()).collect(),
+            all.iter().position(|&item| item == current).unwrap_or(0),
+        )
+    }
 }
 
 #[derive(Default)]
@@ -488,6 +520,93 @@ fn game_setting_row(
     (action, clicked)
 }
 
+struct RowCtx<'a, 'b> {
+    ui: &'a mut egui::Ui,
+    selected: bool,
+    scroll: bool,
+    new_sel: &'b mut usize,
+    index: usize,
+}
+
+impl<'a, 'b> RowCtx<'a, 'b> {
+    fn new(ui: &'a mut egui::Ui, selected_index: usize, scroll: bool, new_sel: &'b mut usize, index: usize) -> Self {
+        Self {
+            ui,
+            selected: selected_index == index,
+            scroll,
+            new_sel,
+            index,
+        }
+    }
+}
+
+fn game_setting_toggle_row(
+    ctx: RowCtx<'_, '_>,
+    name: &str,
+    field: &mut Option<bool>,
+    global_val: bool,
+) {
+    let cur = field.unwrap_or(global_val);
+    let (act, hov) = game_setting_row(
+        ctx.ui,
+        ctx.selected,
+        ctx.scroll,
+        name,
+        field.is_some(),
+        if cur { "Enabled" } else { "Disabled" },
+        if global_val { "Enabled" } else { "Disabled" },
+    );
+    if hov {
+        *ctx.new_sel = ctx.index;
+    }
+    match act {
+        GameRowAction::Reset => *field = None,
+        GameRowAction::Edit => *field = Some(!cur),
+        GameRowAction::None => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn game_setting_enum_row<T: Copy + PartialEq>(
+    ctx: RowCtx<'_, '_>,
+    name: &'static str,
+    target: SelectTarget,
+    field: &mut Option<T>,
+    global_val: T,
+    all: &[T],
+    name_fn: impl Fn(T) -> &'static str,
+    program_id: u64,
+    popup: &mut Option<SelectPopup>,
+) {
+    let cur = field.unwrap_or(global_val);
+    let (act, hov) = game_setting_row(
+        ctx.ui,
+        ctx.selected,
+        ctx.scroll,
+        name,
+        field.is_some(),
+        name_fn(cur),
+        name_fn(global_val),
+    );
+    if hov {
+        *ctx.new_sel = ctx.index;
+    }
+    match act {
+        GameRowAction::Reset => *field = None,
+        GameRowAction::Edit => {
+            *popup = Some(SelectPopup::game_enum(
+                target,
+                program_id,
+                name,
+                all,
+                cur,
+                name_fn,
+            ));
+        }
+        GameRowAction::None => {}
+    }
+}
+
 fn cycle<T: Copy + PartialEq>(list: &[T], current: T, delta: i32) -> T {
     let len = list.len();
     let idx = list.iter().position(|&x| x == current).unwrap_or(0);
@@ -672,34 +791,37 @@ impl Menus {
                 }
                 4 => {
                     let cur = settings.per_game.get(&key).and_then(|g| g.layout).unwrap_or(settings.layout);
-                    self.select_popup = Some(SelectPopup::game(
+                    self.select_popup = Some(SelectPopup::game_enum(
                         SelectTarget::Layout,
                         program_id,
                         "Screen Layout",
-                        Screens::ALL.iter().map(|s| s.name().to_string()).collect(),
-                        Screens::ALL.iter().position(|&s| s == cur).unwrap_or(0),
+                        &Screens::ALL,
+                        cur,
+                        |s| s.name(),
                     ));
                     None
                 }
                 5 => {
                     let cur = settings.per_game.get(&key).and_then(|g| g.orientation).unwrap_or(settings.orientation);
-                    self.select_popup = Some(SelectPopup::game(
+                    self.select_popup = Some(SelectPopup::game_enum(
                         SelectTarget::Orientation,
                         program_id,
                         "Screen Orientation",
-                        Orientation::ALL.iter().map(|o| o.name().to_string()).collect(),
-                        Orientation::ALL.iter().position(|&o| o == cur).unwrap_or(0),
+                        &Orientation::ALL,
+                        cur,
+                        |o| o.name(),
                     ));
                     None
                 }
                 6 => {
                     let cur = settings.per_game.get(&key).and_then(|g| g.filter).unwrap_or(settings.filter);
-                    self.select_popup = Some(SelectPopup::game(
+                    self.select_popup = Some(SelectPopup::game_enum(
                         SelectTarget::Filter,
                         program_id,
                         "Texture Filter",
-                        Filter::ALL.iter().map(|f| f.name().to_string()).collect(),
-                        Filter::ALL.iter().position(|&f| f == cur).unwrap_or(0),
+                        &Filter::ALL,
+                        cur,
+                        |f| f.name(),
                     ));
                     None
                 }
@@ -711,23 +833,25 @@ impl Menus {
                 }
                 8 => {
                     let cur = settings.per_game.get(&key).and_then(|g| g.top_shape).unwrap_or(settings.top_shape);
-                    self.select_popup = Some(SelectPopup::game(
+                    self.select_popup = Some(SelectPopup::game_enum(
                         SelectTarget::TopShape,
                         program_id,
                         "Top Screen Aspect Ratio",
-                        TopShape::ALL.iter().map(|s| s.name().to_string()).collect(),
-                        TopShape::ALL.iter().position(|&s| s == cur).unwrap_or(0),
+                        &TopShape::ALL,
+                        cur,
+                        |s| s.name(),
                     ));
                     None
                 }
                 9 => {
                     let cur = settings.per_game.get(&key).and_then(|g| g.stereo).unwrap_or(settings.stereo);
-                    self.select_popup = Some(SelectPopup::game(
+                    self.select_popup = Some(SelectPopup::game_enum(
                         SelectTarget::Stereo,
                         program_id,
                         "Stereo 3D Mode",
-                        Stereo3d::ALL.iter().map(|s| s.name().to_string()).collect(),
-                        Stereo3d::ALL.iter().position(|&s| s == cur).unwrap_or(0),
+                        &Stereo3d::ALL,
+                        cur,
+                        |s| s.name(),
                     ));
                     None
                 }
@@ -752,35 +876,38 @@ impl Menus {
                 }
                 1 => {
                     let cur = settings.per_game.get(&key).and_then(|g| g.fps_limit).unwrap_or(settings.fps_limit);
-                    self.select_popup = Some(SelectPopup::game(
+                    self.select_popup = Some(SelectPopup::game_enum(
                         SelectTarget::FpsLimit,
                         program_id,
                         "Frame Rate Limit",
-                        FpsLimit::ALL.iter().map(|f| f.name().to_string()).collect(),
-                        FpsLimit::ALL.iter().position(|&f| f == cur).unwrap_or(1),
+                        &FpsLimit::ALL,
+                        cur,
+                        |f| f.name(),
                     ));
                     None
                 }
                 2 => Some(Action::Fullscreen),
                 3 => {
                     let cur = settings.per_game.get(&key).and_then(|g| g.window_mode).unwrap_or(settings.window_mode);
-                    self.select_popup = Some(SelectPopup::game(
+                    self.select_popup = Some(SelectPopup::game_enum(
                         SelectTarget::WindowMode,
                         program_id,
                         "Window Mode",
-                        WindowMode::ALL.iter().map(|w| w.name().to_string()).collect(),
-                        WindowMode::ALL.iter().position(|&w| w == cur).unwrap_or(0),
+                        &WindowMode::ALL,
+                        cur,
+                        |w| w.name(),
                     ));
                     None
                 }
                 4 => {
                     let cur = settings.per_game.get(&key).and_then(|g| g.language).unwrap_or(settings.language);
-                    self.select_popup = Some(SelectPopup::game(
+                    self.select_popup = Some(SelectPopup::game_enum(
                         SelectTarget::Language,
                         program_id,
                         "Console Language",
-                        Language::ALL.iter().map(|l| l.name().to_string()).collect(),
-                        Language::ALL.iter().position(|&l| l == cur).unwrap_or(0),
+                        &Language::ALL,
+                        cur,
+                        |l| l.name(),
                     ));
                     None
                 }
@@ -868,11 +995,12 @@ impl Menus {
         match self.settings_tab {
             SettingsTab::Graphics => match self.settings_selected {
                 0 => {
-                    self.select_popup = Some(SelectPopup::global(
+                    self.select_popup = Some(SelectPopup::global_enum(
                         SelectTarget::Renderer,
                         "Presenter / Backend",
-                        Renderer::ALL.iter().map(|r| r.name().to_string()).collect(),
-                        Renderer::ALL.iter().position(|&r| r == settings.renderer).unwrap_or(0),
+                        &Renderer::ALL,
+                        settings.renderer,
+                        |r| r.name(),
                     ));
                     None
                 }
@@ -898,29 +1026,32 @@ impl Menus {
                     None
                 }
                 5 => {
-                    self.select_popup = Some(SelectPopup::global(
+                    self.select_popup = Some(SelectPopup::global_enum(
                         SelectTarget::Layout,
                         "Screen Layout",
-                        Screens::ALL.iter().map(|s| s.name().to_string()).collect(),
-                        Screens::ALL.iter().position(|&s| s == settings.layout).unwrap_or(0),
+                        &Screens::ALL,
+                        settings.layout,
+                        |s| s.name(),
                     ));
                     None
                 }
                 6 => {
-                    self.select_popup = Some(SelectPopup::global(
+                    self.select_popup = Some(SelectPopup::global_enum(
                         SelectTarget::Orientation,
                         "Screen Orientation",
-                        Orientation::ALL.iter().map(|o| o.name().to_string()).collect(),
-                        Orientation::ALL.iter().position(|&o| o == settings.orientation).unwrap_or(0),
+                        &Orientation::ALL,
+                        settings.orientation,
+                        |o| o.name(),
                     ));
                     None
                 }
                 7 => {
-                    self.select_popup = Some(SelectPopup::global(
+                    self.select_popup = Some(SelectPopup::global_enum(
                         SelectTarget::Filter,
                         "Filter",
-                        Filter::ALL.iter().map(|f| f.name().to_string()).collect(),
-                        Filter::ALL.iter().position(|&f| f == settings.filter).unwrap_or(0),
+                        &Filter::ALL,
+                        settings.filter,
+                        |f| f.name(),
                     ));
                     None
                 }
@@ -929,20 +1060,22 @@ impl Menus {
                     None
                 }
                 9 => {
-                    self.select_popup = Some(SelectPopup::global(
+                    self.select_popup = Some(SelectPopup::global_enum(
                         SelectTarget::TopShape,
                         "Top Screen Aspect",
-                        TopShape::ALL.iter().map(|s| s.name().to_string()).collect(),
-                        TopShape::ALL.iter().position(|&s| s == settings.top_shape).unwrap_or(0),
+                        &TopShape::ALL,
+                        settings.top_shape,
+                        |s| s.name(),
                     ));
                     None
                 }
                 10 => {
-                    self.select_popup = Some(SelectPopup::global(
+                    self.select_popup = Some(SelectPopup::global_enum(
                         SelectTarget::Stereo,
                         "3D Stereoscopy",
-                        Stereo3d::ALL.iter().map(|s| s.name().to_string()).collect(),
-                        Stereo3d::ALL.iter().position(|&s| s == settings.stereo).unwrap_or(0),
+                        &Stereo3d::ALL,
+                        settings.stereo,
+                        |s| s.name(),
                     ));
                     None
                 }
@@ -978,11 +1111,12 @@ impl Menus {
                     None
                 }
                 2 => {
-                    self.select_popup = Some(SelectPopup::global(
+                    self.select_popup = Some(SelectPopup::global_enum(
                         SelectTarget::Microphone,
                         "Microphone Source",
-                        MicrophoneSource::ALL.iter().map(|m| m.name().to_string()).collect(),
-                        MicrophoneSource::ALL.iter().position(|&m| m == settings.microphone).unwrap_or(0),
+                        &MicrophoneSource::ALL,
+                        settings.microphone,
+                        |m| m.name(),
                     ));
                     None
                 }
@@ -990,11 +1124,12 @@ impl Menus {
             },
             SettingsTab::System => match self.settings_selected {
                 0 => {
-                    self.select_popup = Some(SelectPopup::global(
+                    self.select_popup = Some(SelectPopup::global_enum(
                         SelectTarget::WindowMode,
                         "Window Mode",
-                        WindowMode::ALL.iter().map(|w| w.name().to_string()).collect(),
-                        WindowMode::ALL.iter().position(|&w| w == settings.window_mode).unwrap_or(0),
+                        &WindowMode::ALL,
+                        settings.window_mode,
+                        |w| w.name(),
                     ));
                     None
                 }
@@ -1004,21 +1139,23 @@ impl Menus {
                     None
                 }
                 3 => {
-                    self.select_popup = Some(SelectPopup::global(
+                    self.select_popup = Some(SelectPopup::global_enum(
                         SelectTarget::FpsLimit,
                         "Frame Rate Limit",
-                        FpsLimit::ALL.iter().map(|f| f.name().to_string()).collect(),
-                        FpsLimit::ALL.iter().position(|&f| f == settings.fps_limit).unwrap_or(1),
+                        &FpsLimit::ALL,
+                        settings.fps_limit,
+                        |f| f.name(),
                     ));
                     None
                 }
                 4 => Some(Action::Fullscreen),
                 5 => {
-                    self.select_popup = Some(SelectPopup::global(
+                    self.select_popup = Some(SelectPopup::global_enum(
                         SelectTarget::Language,
                         "System Language",
-                        Language::ALL.iter().map(|l| l.name().to_string()).collect(),
-                        Language::ALL.iter().position(|&l| l == settings.language).unwrap_or(0),
+                        &Language::ALL,
+                        settings.language,
+                        |l| l.name(),
                     ));
                     None
                 }
@@ -1027,11 +1164,12 @@ impl Menus {
                     None
                 }
                 7 => {
-                    self.select_popup = Some(SelectPopup::global(
+                    self.select_popup = Some(SelectPopup::global_enum(
                         SelectTarget::Camera,
                         "Camera Source",
-                        CameraSource::ALL.iter().map(|c| c.name().to_string()).collect(),
-                        CameraSource::ALL.iter().position(|&c| c == settings.camera).unwrap_or(0),
+                        &CameraSource::ALL,
+                        settings.camera,
+                        |c| c.name(),
                     ));
                     None
                 }
@@ -1978,15 +2116,7 @@ impl Menus {
                             let sel = self.settings_selected;
                             let mut new_sel = sel;
                             if setting_row(ui, sel == 0, scroll, |ui| {
-                                egui::ComboBox::from_label("Presented with")
-                                    .selected_text(match settings.renderer {
-                                        Renderer::Vulkan => "Vulkan",
-                                        Renderer::OpenGl => "OpenGL",
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(&mut settings.renderer, Renderer::Vulkan, "Vulkan");
-                                        ui.selectable_value(&mut settings.renderer, Renderer::OpenGl, "OpenGL");
-                                    });
+                                combo_enum(ui, "Presented with", &mut settings.renderer, &Renderer::ALL, |r| r.name());
                             }) { new_sel = 0; }
                             if setting_row(ui, sel == 1, scroll, |ui| rasterizer(ui, &mut settings.hardware_rasterizer)) { new_sel = 1; }
                             let hw = settings.hardware_rasterizer;
@@ -2121,13 +2251,8 @@ impl Menus {
                             ui.separator();
                             ui.heading("Microphone");
                             if setting_row(ui, sel == 2, scroll, |ui| {
-                                egui::ComboBox::from_label("Microphone").selected_text(settings.microphone.name()).show_ui(ui, |ui| {
-                                    for source in MicrophoneSource::ALL {
-                                        ui.selectable_value(&mut settings.microphone, source, source.name());
-                                    }
-                                })
-                                .response
-                                .on_hover_text("What the console's microphone hears. The computer's microphone is open only while a game listens, which some do all the time, Super Mario 3D Land among them. Holding M blows into it either way, for games that ask you to.");
+                                combo_enum(ui, "Microphone", &mut settings.microphone, &MicrophoneSource::ALL, |m| m.name())
+                                    .on_hover_text("What the console's microphone hears. The computer's microphone is open only while a game listens, which some do all the time, Super Mario 3D Land among them. Holding M blows into it either way, for games that ask you to.");
                             }) { new_sel = 2; }
                             self.settings_selected = new_sel;
                         }
@@ -2136,26 +2261,14 @@ impl Menus {
                             let mut new_sel = sel;
                             ui.heading("Display & Window");
                             if setting_row(ui, sel == 0, scroll, |ui| {
-                                egui::ComboBox::from_label("Window mode")
-                                    .selected_text(settings.window_mode.name())
-                                    .show_ui(ui, |ui| {
-                                        for mode in WindowMode::ALL {
-                                            ui.selectable_value(&mut settings.window_mode, mode, mode.name());
-                                        }
-                                    });
+                                combo_enum(ui, "Window mode", &mut settings.window_mode, &WindowMode::ALL, |w| w.name());
                             }) { new_sel = 0; }
                             if setting_row(ui, sel == 1, scroll, |ui| window_scale(ui, &mut settings.scale)) { new_sel = 1; }
                             if setting_row(ui, sel == 2, scroll, |ui| {
                                 ui.checkbox(&mut settings.show_fps, "Show the frame rate");
                             }) { new_sel = 2; }
                             if setting_row(ui, sel == 3, scroll, |ui| {
-                                egui::ComboBox::from_label("Frame rate limit")
-                                    .selected_text(settings.fps_limit.name())
-                                    .show_ui(ui, |ui| {
-                                        for limit in FpsLimit::ALL {
-                                            ui.selectable_value(&mut settings.fps_limit, limit, limit.name());
-                                        }
-                                    });
+                                combo_enum(ui, "Frame rate limit", &mut settings.fps_limit, &FpsLimit::ALL, |f| f.name());
                             }) { new_sel = 3; }
                             if setting_row(ui, sel == 4, scroll, |ui| {
                                 if ui.button("Toggle Fullscreen (F11)").clicked() {
@@ -2172,13 +2285,8 @@ impl Menus {
                                 ui.label(RichText::new("Recompiled code changes with the next game started, or Reset.").weak());
                             }) { new_sel = 6; }
                             if setting_row(ui, sel == 7, scroll, |ui| {
-                                egui::ComboBox::from_label("Cameras").selected_text(settings.camera.name()).show_ui(ui, |ui| {
-                                    for source in CameraSource::ALL {
-                                        ui.selectable_value(&mut settings.camera, source, source.name());
-                                    }
-                                })
-                                .response
-                                .on_hover_text("What the console's cameras see. The computer's camera turns on only while a game takes pictures.");
+                                combo_enum(ui, "Cameras", &mut settings.camera, &CameraSource::ALL, |c| c.name())
+                                    .on_hover_text("What the console's cameras see. The computer's camera turns on only while a game takes pictures.");
                             }) { new_sel = 7; }
                             if setting_row(ui, sel == 8, scroll, |ui| {
                                 ui.horizontal(|ui| {
@@ -2320,14 +2428,7 @@ impl Menus {
                             let mut new_sel = sel;
 
                             // 0: Hardware rasterizer
-                            let hw_val = game.hardware_rasterizer.unwrap_or(general.hardware_rasterizer);
-                            let (act, hov) = game_setting_row(ui, sel == 0, scroll, "Draw 3D on GPU", game.hardware_rasterizer.is_some(), if hw_val { "Enabled" } else { "Disabled" }, if general.hardware_rasterizer { "Enabled" } else { "Disabled" });
-                            if hov { new_sel = 0; }
-                            match act {
-                                GameRowAction::Reset => game.hardware_rasterizer = None,
-                                GameRowAction::Edit => game.hardware_rasterizer = Some(!hw_val),
-                                GameRowAction::None => {}
-                            }
+                            game_setting_toggle_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 0), "Draw 3D on GPU", &mut game.hardware_rasterizer, general.hardware_rasterizer);
 
                             // 1: Resolution
                             let res_val = game.resolution.unwrap_or(general.resolution);
@@ -2356,124 +2457,28 @@ impl Menus {
                             }
 
                             // 2: Custom Textures
-                            let tex_val = game.texture_packs.unwrap_or(general.texture_packs);
-                            let (act, hov) = game_setting_row(ui, sel == 2, scroll, "Custom HD Textures", game.texture_packs.is_some(), if tex_val { "Enabled" } else { "Disabled" }, if general.texture_packs { "Enabled" } else { "Disabled" });
-                            if hov { new_sel = 2; }
-                            match act {
-                                GameRowAction::Reset => game.texture_packs = None,
-                                GameRowAction::Edit => game.texture_packs = Some(!tex_val),
-                                GameRowAction::None => {}
-                            }
+                            game_setting_toggle_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 2), "Custom HD Textures", &mut game.texture_packs, general.texture_packs);
 
                             // 3: Frame interpolation
-                            let interp_val = game.frame_interpolation.unwrap_or(general.frame_interpolation);
-                            let (act, hov) = game_setting_row(ui, sel == 3, scroll, "Frame Interpolation", game.frame_interpolation.is_some(), if interp_val { "Enabled" } else { "Disabled" }, if general.frame_interpolation { "Enabled" } else { "Disabled" });
-                            if hov { new_sel = 3; }
-                            match act {
-                                GameRowAction::Reset => game.frame_interpolation = None,
-                                GameRowAction::Edit => game.frame_interpolation = Some(!interp_val),
-                                GameRowAction::None => {}
-                            }
+                            game_setting_toggle_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 3), "Frame Interpolation", &mut game.frame_interpolation, general.frame_interpolation);
 
                             // 4: Screen Layout
-                            let layout_val = game.layout.unwrap_or(general.layout);
-                            let (act, hov) = game_setting_row(ui, sel == 4, scroll, "Screen Layout", game.layout.is_some(), layout_val.name(), general.layout.name());
-                            if hov { new_sel = 4; }
-                            match act {
-                                GameRowAction::Reset => game.layout = None,
-                                GameRowAction::Edit => {
-                                    self.select_popup = Some(SelectPopup::game(
-                                        SelectTarget::Layout,
-                                        program_id,
-                                        "Screen Layout",
-                                        Screens::ALL.iter().map(|s| s.name().to_string()).collect(),
-                                        Screens::ALL.iter().position(|&s| s == layout_val).unwrap_or(0),
-                                    ));
-                                }
-                                GameRowAction::None => {}
-                            }
+                            game_setting_enum_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 4), "Screen Layout", SelectTarget::Layout, &mut game.layout, general.layout, &Screens::ALL, |s| s.name(), program_id, &mut self.select_popup);
 
                             // 5: Screen Orientation
-                            let ori_val = game.orientation.unwrap_or(general.orientation);
-                            let (act, hov) = game_setting_row(ui, sel == 5, scroll, "Screen Orientation", game.orientation.is_some(), ori_val.name(), general.orientation.name());
-                            if hov { new_sel = 5; }
-                            match act {
-                                GameRowAction::Reset => game.orientation = None,
-                                GameRowAction::Edit => {
-                                    self.select_popup = Some(SelectPopup::game(
-                                        SelectTarget::Orientation,
-                                        program_id,
-                                        "Screen Orientation",
-                                        Orientation::ALL.iter().map(|o| o.name().to_string()).collect(),
-                                        Orientation::ALL.iter().position(|&o| o == ori_val).unwrap_or(0),
-                                    ));
-                                }
-                                GameRowAction::None => {}
-                            }
+                            game_setting_enum_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 5), "Screen Orientation", SelectTarget::Orientation, &mut game.orientation, general.orientation, &Orientation::ALL, |o| o.name(), program_id, &mut self.select_popup);
 
                             // 6: Texture Filter
-                            let filt_val = game.filter.unwrap_or(general.filter);
-                            let (act, hov) = game_setting_row(ui, sel == 6, scroll, "Texture Filter", game.filter.is_some(), filt_val.name(), general.filter.name());
-                            if hov { new_sel = 6; }
-                            match act {
-                                GameRowAction::Reset => game.filter = None,
-                                GameRowAction::Edit => {
-                                    self.select_popup = Some(SelectPopup::game(
-                                        SelectTarget::Filter,
-                                        program_id,
-                                        "Texture Filter",
-                                        Filter::ALL.iter().map(|f| f.name().to_string()).collect(),
-                                        Filter::ALL.iter().position(|&f| f == filt_val).unwrap_or(0),
-                                    ));
-                                }
-                                GameRowAction::None => {}
-                            }
+                            game_setting_enum_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 6), "Texture Filter", SelectTarget::Filter, &mut game.filter, general.filter, &Filter::ALL, |f| f.name(), program_id, &mut self.select_popup);
 
                             // 7: Integer Scaling
-                            let int_val = game.integer_scale.unwrap_or(general.integer_scale);
-                            let (act, hov) = game_setting_row(ui, sel == 7, scroll, "Integer Scaling", game.integer_scale.is_some(), if int_val { "Enabled" } else { "Disabled" }, if general.integer_scale { "Enabled" } else { "Disabled" });
-                            if hov { new_sel = 7; }
-                            match act {
-                                GameRowAction::Reset => game.integer_scale = None,
-                                GameRowAction::Edit => game.integer_scale = Some(!int_val),
-                                GameRowAction::None => {}
-                            }
+                            game_setting_toggle_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 7), "Integer Scaling", &mut game.integer_scale, general.integer_scale);
 
                             // 8: Top Screen Shape
-                            let shape_val = game.top_shape.unwrap_or(general.top_shape);
-                            let (act, hov) = game_setting_row(ui, sel == 8, scroll, "Top Screen Aspect", game.top_shape.is_some(), shape_val.name(), general.top_shape.name());
-                            if hov { new_sel = 8; }
-                            match act {
-                                GameRowAction::Reset => game.top_shape = None,
-                                GameRowAction::Edit => {
-                                    self.select_popup = Some(SelectPopup::game(
-                                        SelectTarget::TopShape,
-                                        program_id,
-                                        "Top Screen Aspect Ratio",
-                                        TopShape::ALL.iter().map(|s| s.name().to_string()).collect(),
-                                        TopShape::ALL.iter().position(|&s| s == shape_val).unwrap_or(0),
-                                    ));
-                                }
-                                GameRowAction::None => {}
-                            }
+                            game_setting_enum_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 8), "Top Screen Aspect", SelectTarget::TopShape, &mut game.top_shape, general.top_shape, &TopShape::ALL, |s| s.name(), program_id, &mut self.select_popup);
 
                             // 9: 3D Mode
-                            let st_val = game.stereo.unwrap_or(general.stereo);
-                            let (act, hov) = game_setting_row(ui, sel == 9, scroll, "Stereo 3D", game.stereo.is_some(), st_val.name(), general.stereo.name());
-                            if hov { new_sel = 9; }
-                            match act {
-                                GameRowAction::Reset => game.stereo = None,
-                                GameRowAction::Edit => {
-                                    self.select_popup = Some(SelectPopup::game(
-                                        SelectTarget::Stereo,
-                                        program_id,
-                                        "Stereo 3D Mode",
-                                        Stereo3d::ALL.iter().map(|s| s.name().to_string()).collect(),
-                                        Stereo3d::ALL.iter().position(|&s| s == st_val).unwrap_or(0),
-                                    ));
-                                }
-                                GameRowAction::None => {}
-                            }
+                            game_setting_enum_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 9), "Stereo 3D", SelectTarget::Stereo, &mut game.stereo, general.stereo, &Stereo3d::ALL, |s| s.name(), program_id, &mut self.select_popup);
 
                             // 10: 3D Depth
                             let dp_val = game.depth_3d.unwrap_or(general.depth_3d);
@@ -2508,48 +2513,10 @@ impl Menus {
                             let mut new_sel = sel;
 
                             // 0: Show Frame Rate
-                            let fps_val = game.show_fps.unwrap_or(general.show_fps);
-                            let (act, hov) = game_setting_row(
-                                ui,
-                                sel == 0,
-                                scroll,
-                                "Show Frame Rate",
-                                game.show_fps.is_some(),
-                                if fps_val { "Enabled" } else { "Disabled" },
-                                if general.show_fps { "Enabled" } else { "Disabled" },
-                            );
-                            if hov { new_sel = 0; }
-                            match act {
-                                GameRowAction::Reset => game.show_fps = None,
-                                GameRowAction::Edit => game.show_fps = Some(!fps_val),
-                                GameRowAction::None => {}
-                            }
+                            game_setting_toggle_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 0), "Show Frame Rate", &mut game.show_fps, general.show_fps);
 
                             // 1: Frame Rate Limit
-                            let limit_val = game.fps_limit.unwrap_or(general.fps_limit);
-                            let (act, hov) = game_setting_row(
-                                ui,
-                                sel == 1,
-                                scroll,
-                                "Frame Rate Limit",
-                                game.fps_limit.is_some(),
-                                limit_val.badge_name(),
-                                general.fps_limit.badge_name(),
-                            );
-                            if hov { new_sel = 1; }
-                            match act {
-                                GameRowAction::Reset => game.fps_limit = None,
-                                GameRowAction::Edit => {
-                                    self.select_popup = Some(SelectPopup::game(
-                                        SelectTarget::FpsLimit,
-                                        program_id,
-                                        "Frame Rate Limit",
-                                        FpsLimit::ALL.iter().map(|f| f.name().to_string()).collect(),
-                                        FpsLimit::ALL.iter().position(|&f| f == limit_val).unwrap_or(1),
-                                    ));
-                                }
-                                GameRowAction::None => {}
-                            }
+                            game_setting_enum_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 1), "Frame Rate Limit", SelectTarget::FpsLimit, &mut game.fps_limit, general.fps_limit, &FpsLimit::ALL, |f| f.badge_name(), program_id, &mut self.select_popup);
 
                             // 2: Toggle Fullscreen
                             let is_full_sel = sel == 2;
@@ -2567,58 +2534,13 @@ impl Menus {
                             }
 
                             // 3: Window Mode
-                            let win_val = game.window_mode.unwrap_or(general.window_mode);
-                            let (act, hov) = game_setting_row(
-                                ui,
-                                sel == 3,
-                                scroll,
-                                "Window Mode",
-                                game.window_mode.is_some(),
-                                win_val.name(),
-                                general.window_mode.name(),
-                            );
-                            if hov { new_sel = 3; }
-                            match act {
-                                GameRowAction::Reset => game.window_mode = None,
-                                GameRowAction::Edit => {
-                                    self.select_popup = Some(SelectPopup::game(
-                                        SelectTarget::WindowMode,
-                                        program_id,
-                                        "Window Mode",
-                                        WindowMode::ALL.iter().map(|w| w.name().to_string()).collect(),
-                                        WindowMode::ALL.iter().position(|&w| w == win_val).unwrap_or(0),
-                                    ));
-                                }
-                                GameRowAction::None => {}
-                            }
+                            game_setting_enum_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 3), "Window Mode", SelectTarget::WindowMode, &mut game.window_mode, general.window_mode, &WindowMode::ALL, |w| w.name(), program_id, &mut self.select_popup);
 
                             // 4: Language
-                            let lang_val = game.language.unwrap_or(general.language);
-                            let (act, hov) = game_setting_row(ui, sel == 4, scroll, "Console Language", game.language.is_some(), lang_val.name(), general.language.name());
-                            if hov { new_sel = 4; }
-                            match act {
-                                GameRowAction::Reset => game.language = None,
-                                GameRowAction::Edit => {
-                                    self.select_popup = Some(SelectPopup::game(
-                                        SelectTarget::Language,
-                                        program_id,
-                                        "Console Language",
-                                        Language::ALL.iter().map(|l| l.name().to_string()).collect(),
-                                        Language::ALL.iter().position(|&l| l == lang_val).unwrap_or(0),
-                                    ));
-                                }
-                                GameRowAction::None => {}
-                            }
+                            game_setting_enum_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 4), "Console Language", SelectTarget::Language, &mut game.language, general.language, &Language::ALL, |l| l.name(), program_id, &mut self.select_popup);
 
                             // 5: Recompiled code
-                            let recomp_val = game.recompiled.unwrap_or(general.recompiled);
-                            let (act, hov) = game_setting_row(ui, sel == 5, scroll, "Run Recompiled Code", game.recompiled.is_some(), if recomp_val { "Enabled" } else { "Disabled" }, if general.recompiled { "Enabled" } else { "Disabled" });
-                            if hov { new_sel = 5; }
-                            match act {
-                                GameRowAction::Reset => game.recompiled = None,
-                                GameRowAction::Edit => game.recompiled = Some(!recomp_val),
-                                GameRowAction::None => {}
-                            }
+                            game_setting_toggle_row(RowCtx::new(ui, sel, scroll, &mut new_sel, 5), "Run Recompiled Code", &mut game.recompiled, general.recompiled);
 
                             // 6: Reset all to Global Settings
                             let has_custom = game != GameSettings::default();
@@ -2804,31 +2726,33 @@ fn window_scale(ui: &mut egui::Ui, value: &mut u32) {
     ui.add(egui::Slider::new(value, 1..=6).text("Window scale"));
 }
 
-fn screens(ui: &mut egui::Ui, value: &mut Screens) {
-    egui::ComboBox::from_label("Screens").selected_text(value.name()).show_ui(ui, |ui| {
-        for layout in Screens::ALL {
-            ui.selectable_value(value, layout, layout.name());
-        }
-    });
-}
-
-fn rotation(ui: &mut egui::Ui, value: &mut Orientation) {
-    egui::ComboBox::from_label("Rotation").selected_text(value.name()).show_ui(ui, |ui| {
-        for orientation in Orientation::ALL {
-            ui.selectable_value(value, orientation, orientation.name());
-        }
-    });
-}
-
-fn filter(ui: &mut egui::Ui, value: &mut Filter) {
-    egui::ComboBox::from_label("Filter")
-        .selected_text(value.name())
+fn combo_enum<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut T,
+    all: &[T],
+    name_fn: impl Fn(T) -> &'static str,
+) -> egui::Response {
+    egui::ComboBox::from_label(label)
+        .selected_text(name_fn(*value))
         .show_ui(ui, |ui| {
-            for filter in Filter::ALL {
-                ui.selectable_value(value, filter, filter.name());
+            for &item in all {
+                ui.selectable_value(value, item, name_fn(item));
             }
         })
         .response
+}
+
+fn screens(ui: &mut egui::Ui, value: &mut Screens) {
+    combo_enum(ui, "Screens", value, &Screens::ALL, |s| s.name());
+}
+
+fn rotation(ui: &mut egui::Ui, value: &mut Orientation) {
+    combo_enum(ui, "Rotation", value, &Orientation::ALL, |o| o.name());
+}
+
+fn filter(ui: &mut egui::Ui, value: &mut Filter) {
+    combo_enum(ui, "Filter", value, &Filter::ALL, |f| f.name())
         .on_hover_text("How the screens' pixels look scaled up: smooth, sharp with soft edges, or plain squares.");
 }
 
@@ -2837,26 +2761,12 @@ fn integer_scale(ui: &mut egui::Ui, value: &mut bool) {
 }
 
 fn top_shape(ui: &mut egui::Ui, value: &mut TopShape) {
-    egui::ComboBox::from_label("Top screen shape")
-        .selected_text(value.name())
-        .show_ui(ui, |ui| {
-            for shape in TopShape::ALL {
-                ui.selectable_value(value, shape, shape.name());
-            }
-        })
-        .response
+    combo_enum(ui, "Top screen shape", value, &TopShape::ALL, |s| s.name())
         .on_hover_text("Shows the top screen wider than the console's. Games still draw it at the console's shape, so only turn this on with a widescreen code for the game, which draws a wider scene to match.");
 }
 
 fn stereo_3d(ui: &mut egui::Ui, value: &mut Stereo3d) {
-    egui::ComboBox::from_label("3D")
-        .selected_text(value.name())
-        .show_ui(ui, |ui| {
-            for stereo in Stereo3d::ALL {
-                ui.selectable_value(value, stereo, stereo.name());
-            }
-        })
-        .response
+    combo_enum(ui, "3D", value, &Stereo3d::ALL, |s| s.name())
         .on_hover_text("The top screen in 3D, for games that draw it: red and cyan for glasses of those colors, side by side for 3D TVs and headsets, alternate rows for passive 3D monitors. Off, games draw flat, as with the console's 3D slider down.");
 }
 
@@ -2865,14 +2775,7 @@ fn depth_3d(ui: &mut egui::Ui, value: &mut u32) {
 }
 
 fn language(ui: &mut egui::Ui, value: &mut Language) {
-    egui::ComboBox::from_label("Language")
-        .selected_text(value.name())
-        .show_ui(ui, |ui| {
-            for language in Language::ALL {
-                ui.selectable_value(value, language, language.name());
-            }
-        })
-        .response
+    combo_enum(ui, "Language", value, &Language::ALL, |l| l.name())
         .on_hover_text("The console's system language, which titles pick their localised text and files by. It changes with the next game started, or Reset.");
 }
 

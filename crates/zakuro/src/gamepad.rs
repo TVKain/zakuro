@@ -33,6 +33,34 @@ pub struct Gamepads {
     suppress_sticks: bool,
 }
 
+/// detects stick or axis flicks with hysteresis
+fn update_axis_flick(
+    val: f32,
+    state_pos: &mut bool,
+    state_neg: &mut bool,
+    btn_pos: Button,
+    btn_neg: Button,
+    pressed: &mut Vec<Button>,
+) {
+    if val > 0.55 {
+        if !*state_pos {
+            *state_pos = true;
+            pressed.push(btn_pos);
+        }
+    } else if val < 0.25 {
+        *state_pos = false;
+    }
+
+    if val < -0.55 {
+        if !*state_neg {
+            *state_neg = true;
+            pressed.push(btn_neg);
+        }
+    } else if val > -0.25 {
+        *state_neg = false;
+    }
+}
+
 /// whether gilrs's reading of a controller is left out, a Pro Controller's
 /// while one is read from its reports.
 fn left_out(pad: &Gamepad, reports: &[Report]) -> bool {
@@ -86,75 +114,10 @@ impl Gamepads {
                 if left_out(&pad, &reports) {
                     continue;
                 }
-                let ly = pad.value(Axis::LeftStickY);
-                let lx = pad.value(Axis::LeftStickX);
-                if ly > 0.55 {
-                    if !self.stick_up {
-                        self.stick_up = true;
-                        pressed.push(Button::DPadUp);
-                    }
-                } else if ly < 0.25 {
-                    self.stick_up = false;
-                }
-                if ly < -0.55 {
-                    if !self.stick_down {
-                        self.stick_down = true;
-                        pressed.push(Button::DPadDown);
-                    }
-                } else if ly > -0.25 {
-                    self.stick_down = false;
-                }
-                if lx > 0.55 {
-                    if !self.stick_right {
-                        self.stick_right = true;
-                        pressed.push(Button::DPadRight);
-                    }
-                } else if lx < 0.25 {
-                    self.stick_right = false;
-                }
-                if lx < -0.55 {
-                    if !self.stick_left {
-                        self.stick_left = true;
-                        pressed.push(Button::DPadLeft);
-                    }
-                } else if lx > -0.25 {
-                    self.stick_left = false;
-                }
-
-                let dy = pad.value(Axis::DPadY);
-                let dx = pad.value(Axis::DPadX);
-                if dy > 0.55 {
-                    if !self.dpad_axis_up {
-                        self.dpad_axis_up = true;
-                        pressed.push(Button::DPadUp);
-                    }
-                } else if dy < 0.25 {
-                    self.dpad_axis_up = false;
-                }
-                if dy < -0.55 {
-                    if !self.dpad_axis_down {
-                        self.dpad_axis_down = true;
-                        pressed.push(Button::DPadDown);
-                    }
-                } else if dy > -0.25 {
-                    self.dpad_axis_down = false;
-                }
-                if dx > 0.55 {
-                    if !self.dpad_axis_right {
-                        self.dpad_axis_right = true;
-                        pressed.push(Button::DPadRight);
-                    }
-                } else if dx < 0.25 {
-                    self.dpad_axis_right = false;
-                }
-                if dx < -0.55 {
-                    if !self.dpad_axis_left {
-                        self.dpad_axis_left = true;
-                        pressed.push(Button::DPadLeft);
-                    }
-                } else if dx > -0.25 {
-                    self.dpad_axis_left = false;
-                }
+                update_axis_flick(pad.value(Axis::LeftStickY), &mut self.stick_up, &mut self.stick_down, Button::DPadUp, Button::DPadDown, &mut pressed);
+                update_axis_flick(pad.value(Axis::LeftStickX), &mut self.stick_right, &mut self.stick_left, Button::DPadRight, Button::DPadLeft, &mut pressed);
+                update_axis_flick(pad.value(Axis::DPadY), &mut self.dpad_axis_up, &mut self.dpad_axis_down, Button::DPadUp, Button::DPadDown, &mut pressed);
+                update_axis_flick(pad.value(Axis::DPadX), &mut self.dpad_axis_right, &mut self.dpad_axis_left, Button::DPadRight, Button::DPadLeft, &mut pressed);
             }
         }
         let held: Vec<Button> = reports.iter().flat_map(|report| report.buttons.iter().copied()).collect();
@@ -339,5 +302,40 @@ mod tests {
         let state = InputState::default();
         let applied = gamepads.apply(state);
         assert_eq!(applied.buttons, PadState::default());
+    }
+
+    #[test]
+    fn test_update_axis_flick_hysteresis() {
+        let mut up = false;
+        let mut down = false;
+        let mut pressed = Vec::new();
+
+        // Below threshold - no activation
+        update_axis_flick(0.5, &mut up, &mut down, Button::DPadUp, Button::DPadDown, &mut pressed);
+        assert!(!up);
+        assert!(pressed.is_empty());
+
+        // Above 0.55 threshold - activates once
+        update_axis_flick(0.7, &mut up, &mut down, Button::DPadUp, Button::DPadDown, &mut pressed);
+        assert!(up);
+        assert_eq!(pressed, vec![Button::DPadUp]);
+
+        // Still above reset threshold (0.25) - does not re-trigger
+        update_axis_flick(0.4, &mut up, &mut down, Button::DPadUp, Button::DPadDown, &mut pressed);
+        assert!(up);
+        assert_eq!(pressed.len(), 1);
+
+        // Drops below 0.25 - resets
+        update_axis_flick(0.1, &mut up, &mut down, Button::DPadUp, Button::DPadDown, &mut pressed);
+        assert!(!up);
+
+        // Negative axis flick
+        update_axis_flick(-0.8, &mut up, &mut down, Button::DPadUp, Button::DPadDown, &mut pressed);
+        assert!(down);
+        assert_eq!(pressed, vec![Button::DPadUp, Button::DPadDown]);
+
+        // Resets when above -0.25
+        update_axis_flick(-0.1, &mut up, &mut down, Button::DPadUp, Button::DPadDown, &mut pressed);
+        assert!(!down);
     }
 }

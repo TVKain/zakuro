@@ -317,6 +317,7 @@ pub enum Shown {
 /// the screens a frame draws, where and from which picture. the 3D shows
 /// when the title drew a picture for the right eye, side by side shows the
 /// left one's twice otherwise, so a 3D TV keeps its halves.
+#[allow(clippy::too_many_arguments)]
 pub fn place(window_width: u32, window_height: u32, arrangement: ScreenLayout, orientation: ScreenOrientation, top_width: f32, integer: bool, stereo: Stereo, right: bool) -> Vec<(Viewport, Shown)> {
     let screens = |(top, bottom): (Option<Viewport>, Option<Viewport>), eye: Shown| {
         top.map(|viewport| (viewport, eye)).into_iter().chain(bottom.map(|viewport| (viewport, Shown::Bottom)))

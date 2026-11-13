@@ -882,7 +882,7 @@ pub(crate) fn hand_out<M: GpuMemory>(
     indexed: bool,
 ) -> Option<Handed> {
     let vertex_count = registers[REG_VERTEX_COUNT];
-    if vertex_count < HAND_OUT_FROM || vertex_count > 0x1_0000 {
+    if !(HAND_OUT_FROM..=0x1_0000).contains(&vertex_count) {
         return None;
     }
     let writes = memory.writes();
@@ -1908,7 +1908,7 @@ impl BoundTexture {
         let lod = self.lod;
         let level = (level + lod.bias as f32 / 256.0).clamp(lod.min as f32, lod.max as f32);
         // magnified, or no rate to tell
-        if !(level > 0.0) {
+        if level <= 0.0 {
             return self.sample(u, v);
         }
         if !lod.between {
@@ -2841,6 +2841,7 @@ impl Edge {
 
 /// executes a draw call, fetches vertices, shades them, assembles triangles
 /// and fills them. Returns the number of vertices processed.
+#[allow(clippy::too_many_arguments)]
 pub fn draw<M: GpuMemory>(
     registers: &[u32],
     vertex_shader: &ShaderUnit,

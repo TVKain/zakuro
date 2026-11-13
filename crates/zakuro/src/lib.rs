@@ -527,13 +527,13 @@ const FRAME_TIME: Duration =
 /// running fast to catch up, after a pause say.
 const CATCH_UP_LIMIT: Duration = Duration::from_millis(200);
 /// frames that may go unshown in a row while catching up.
-#[allow(dead_code)]
+#[cfg(test)]
 const MAX_SKIPPED: u32 = 4;
 
 /// whether a frame goes unshown, the game running behind the schedule with
 /// a presenter that waits for the display, and fewer than MAX_SKIPPED
 /// unshown before it.
-#[allow(dead_code)]
+#[cfg(test)]
 fn skips_showing(playing: bool, behind: bool, waits: bool, skipped: u32) -> bool {
     playing && behind && waits && skipped < MAX_SKIPPED
 }

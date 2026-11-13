@@ -172,23 +172,27 @@ fn test_unknown_fields_forward_compatibility() {
 
 #[test]
 fn test_per_game_settings_hierarchy_and_overrides() {
-    let mut settings = Settings::default();
-    settings.resolution = 3;
-    settings.fps_limit = FpsLimit::Fps60;
-    settings.filter = Filter::Smooth;
-    settings.show_fps = false;
-    settings.window_mode = WindowMode::Maximized;
+    let mut settings = Settings {
+        resolution: 3,
+        fps_limit: FpsLimit::Fps60,
+        filter: Filter::Smooth,
+        show_fps: false,
+        window_mode: WindowMode::Maximized,
+        ..Default::default()
+    };
 
     let title_id: u64 = 0x00040000001B5000; // Pokémon Ultra Sun
     let key = game_key(title_id);
     assert_eq!(key, "00040000001B5000");
 
-    let mut game_settings = GameSettings::default();
-    game_settings.resolution = Some(8);
-    game_settings.fps_limit = Some(FpsLimit::Fps120);
-    game_settings.filter = Some(Filter::Sharp);
-    game_settings.show_fps = Some(true);
-    game_settings.window_mode = Some(WindowMode::Fullscreen);
+    let game_settings = GameSettings {
+        resolution: Some(8),
+        fps_limit: Some(FpsLimit::Fps120),
+        filter: Some(Filter::Sharp),
+        show_fps: Some(true),
+        window_mode: Some(WindowMode::Fullscreen),
+        ..Default::default()
+    };
     // Notice frame_interpolation is left as None (should inherit global false)
     assert_eq!(game_settings.frame_interpolation, None);
 
@@ -220,14 +224,18 @@ fn test_per_game_settings_hierarchy_and_overrides() {
 
 #[test]
 fn test_per_game_round_trip_serialization() {
-    let mut settings = Settings::default();
-    settings.resolution = 4;
+    let mut settings = Settings {
+        resolution: 4,
+        ..Default::default()
+    };
 
     let title_id: u64 = 0x00040000001B5000;
-    let mut game_settings = GameSettings::default();
-    game_settings.resolution = Some(8);
-    game_settings.fps_limit = Some(FpsLimit::Fps120);
-    game_settings.filter = Some(Filter::XbrzLinear);
+    let game_settings = GameSettings {
+        resolution: Some(8),
+        fps_limit: Some(FpsLimit::Fps120),
+        filter: Some(Filter::XbrzLinear),
+        ..Default::default()
+    };
     settings.per_game.insert(game_key(title_id), game_settings);
 
     let serialized = toml::to_string(&settings).expect("failed to serialize full settings");
@@ -242,4 +250,39 @@ fn test_per_game_round_trip_serialization() {
     assert_eq!(active.resolution, 8);
     assert_eq!(active.fps_limit, FpsLimit::Fps120);
     assert_eq!(active.filter, Filter::XbrzLinear);
+}
+
+#[test]
+fn test_select_popup_enum_builder() {
+    use zakuro::menus::{SelectPopup, SelectTarget};
+
+    let popup = SelectPopup::global_enum(
+        SelectTarget::Filter,
+        "Texture Filter",
+        &Filter::ALL,
+        Filter::XbrzLinear,
+        |f| f.name(),
+    );
+
+    assert_eq!(popup.title, "Texture Filter");
+    assert_eq!(popup.for_game, None);
+    assert_eq!(popup.options.len(), 5);
+    assert_eq!(popup.options[4], "xBRZ + Linear");
+    assert_eq!(popup.selected, 4);
+
+    let program_id: u64 = 0x00040000001B5000;
+    let game_popup = SelectPopup::game_enum(
+        SelectTarget::WindowMode,
+        program_id,
+        "Window Mode",
+        &WindowMode::ALL,
+        WindowMode::Fullscreen,
+        |w| w.name(),
+    );
+
+    assert_eq!(game_popup.title, "Window Mode");
+    assert_eq!(game_popup.for_game, Some(program_id));
+    assert_eq!(game_popup.options.len(), 3);
+    assert_eq!(game_popup.options[1], "Fullscreen");
+    assert_eq!(game_popup.selected, 1);
 }

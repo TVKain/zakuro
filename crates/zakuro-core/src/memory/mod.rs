@@ -1076,7 +1076,8 @@ mod tests {
         memory.map(0x1400_0000, block.addr, 0x3000, Permission::RW, MemoryState::Private);
         memory.map(0x0800_0000, block.addr, 0x3000, Permission::RW, MemoryState::Alias);
         let texture = (block.addr + 0x1000, 0x1000);
-        let writes: [(&str, fn(&mut Memory, u32)); 6] = [
+        type WriteFn = fn(&mut Memory, u32);
+        let writes: [(&str, WriteFn); 6] = [
             ("the CPU", |memory, _| memory.write32(0x1400_1010, 1)),
             ("the CPU through an alias", |memory, _| memory.write8(0x0800_1FFF, 1)),
             ("a service", |memory, _| memory.write_bytes(0x1400_0FFE, &[1, 2, 3])),
