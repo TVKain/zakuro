@@ -77,6 +77,7 @@ impl Backend {
 
     /// whether showing a frame waits for the display, the OpenGL swap waits
     /// for the vertical blank.
+    #[allow(dead_code)]
     pub fn waits_for_display(&self) -> bool {
         match self {
             Backend::OpenGl { .. } => true,

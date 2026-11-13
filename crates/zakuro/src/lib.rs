@@ -129,7 +129,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         cursor: (0.0, 0.0),
         last_title_update: Instant::now(),
         next_frame: Instant::now(),
-        skipped: 0,
+        _skipped: 0,
         shown: 0,
         shown_fps: 60.0,
         spent: Spent::default(),
@@ -171,6 +171,16 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
 
     let event_loop = EventLoop::new().expect("create an event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
+
+    #[cfg(windows)]
+    unsafe {
+        #[link(name = "winmm")]
+        extern "system" {
+            fn timeBeginPeriod(uPeriod: u32) -> u32;
+        }
+        timeBeginPeriod(1);
+    }
+
     if let Err(error) = event_loop.run_app(&mut app) {
         eprintln!("zakuro: {error}");
     }
@@ -432,7 +442,7 @@ struct App {
     /// the sound, made as the console runs, keeps up.
     next_frame: Instant,
     /// frames in a row not shown while catching up.
-    skipped: u32,
+    _skipped: u32,
     /// frames shown since the title was last updated.
     shown: u32,
     /// measured presentation frame rate shown in the overlay.
@@ -512,11 +522,13 @@ const FRAME_TIME: Duration =
 /// running fast to catch up, after a pause say.
 const CATCH_UP_LIMIT: Duration = Duration::from_millis(200);
 /// frames that may go unshown in a row while catching up.
+#[allow(dead_code)]
 const MAX_SKIPPED: u32 = 4;
 
 /// whether a frame goes unshown, the game running behind the schedule with
 /// a presenter that waits for the display, and fewer than MAX_SKIPPED
 /// unshown before it.
+#[allow(dead_code)]
 fn skips_showing(playing: bool, behind: bool, waits: bool, skipped: u32) -> bool {
     playing && behind && waits && skipped < MAX_SKIPPED
 }
@@ -1892,31 +1904,16 @@ impl App {
         };
 
         if present_due {
-            let behind = match present_cadence {
-                Some(cadence) => now > self.next_shown + cadence,
-                None => false,
-            };
-            let waits = self.backend.as_ref().is_some_and(Backend::waits_for_display);
-            let unshown = if fast {
-                Instant::now() < self.next_shown
+            let start = Instant::now();
+            self.present(event_loop);
+            let finish = Instant::now();
+            if let Some(cadence) = present_cadence {
+                self.next_shown = (self.next_shown + cadence).max(finish.checked_sub(cadence).unwrap_or(finish));
             } else {
-                skips_showing(playing, behind, waits, self.skipped)
-            };
-
-            if unshown {
-                self.skipped += 1;
-            } else {
-                self.skipped = 0;
-                let start = Instant::now();
-                self.present(event_loop);
-                if let Some(cadence) = present_cadence {
-                    self.next_shown = (self.next_shown + cadence).max(Instant::now() - cadence);
-                } else {
-                    self.next_shown = Instant::now();
-                }
-                self.spent.showing.add(start.elapsed());
-                self.shown += 1;
+                self.next_shown = finish;
             }
+            self.spent.showing.add(start.elapsed());
+            self.shown += 1;
         }
 
         if self.last_title_update.elapsed() >= Duration::from_millis(500) {
@@ -1950,30 +1947,30 @@ impl App {
             let now = Instant::now();
             let sleep_emulate = if playing && self.next_frame > now {
                 Some(self.next_frame - now)
-            } else {
+            } else if !playing {
                 None
+            } else {
+                Some(Duration::ZERO)
             };
-            let sleep_present = if present_cadence.is_some() {
+            let sleep_present = if let Some(_cadence) = present_cadence {
                 if self.next_shown > now {
                     Some(self.next_shown - now)
                 } else {
-                    None
+                    Some(Duration::ZERO)
                 }
             } else {
-                None
+                Some(Duration::ZERO)
             };
 
             let sleep_duration = match (sleep_emulate, sleep_present) {
-                (Some(e), Some(p)) => Some(e.min(p)),
-                (Some(e), None) if present_cadence.is_some() => Some(e),
-                (None, Some(p)) => Some(p),
-                _ => None,
+                (Some(e), Some(p)) => e.min(p),
+                (Some(e), None) => e,
+                (None, Some(p)) => p,
+                (None, None) => Duration::ZERO,
             };
 
-            if let Some(dur) = sleep_duration {
-                if dur > Duration::from_micros(500) {
-                    std::thread::sleep(dur);
-                }
+            if sleep_duration > Duration::from_millis(1) {
+                std::thread::sleep(sleep_duration - Duration::from_micros(500));
             }
         }
     }

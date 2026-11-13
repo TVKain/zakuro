@@ -471,7 +471,13 @@ impl VulkanPresenter {
             Ok("fifo") => vec![vk::PresentModeKHR::FIFO],
             Ok("immediate") => vec![vk::PresentModeKHR::IMMEDIATE],
             Ok("mailbox") => vec![vk::PresentModeKHR::MAILBOX],
-            _ => vec![vk::PresentModeKHR::MAILBOX, vk::PresentModeKHR::FIFO],
+            Ok("fifo_relaxed") => vec![vk::PresentModeKHR::FIFO_RELAXED],
+            _ => vec![
+                vk::PresentModeKHR::MAILBOX,
+                vk::PresentModeKHR::IMMEDIATE,
+                vk::PresentModeKHR::FIFO_RELAXED,
+                vk::PresentModeKHR::FIFO,
+            ],
         };
         let present_mode = wanted.into_iter().find(|mode| present_modes.contains(mode)).unwrap_or(vk::PresentModeKHR::FIFO);
         self.waits = present_mode == vk::PresentModeKHR::FIFO;
