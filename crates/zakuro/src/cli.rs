@@ -28,6 +28,8 @@ pub struct Options {
     pub interpreter: bool,
     /// play no sound.
     pub mute: bool,
+    /// log debug output and attach or allocate a console on Windows.
+    pub debug: bool,
 }
 
 const USAGE: &str = "\
@@ -60,6 +62,7 @@ options:
   --interpreter                    interpret everything, even with recompiled
                                    code around
   --mute                           play no sound
+  -d, --debug                      log debug output and attach or allocate a console on Windows
   --data <dir>                     where saves live (default: the system's
                                    place for data, ~/.local/share/zakuro,
                                    ~/Library/Application Support/zakuro or
@@ -69,6 +72,58 @@ options:
 The system font cannot be generated: put a dump at sysdata/shared_font.bin, in
 the working directory or where saves live, for titles that render text with it.
 ";
+
+#[cfg(windows)]
+pub fn attach_console() {
+    extern "system" {
+        fn AttachConsole(dwProcessId: u32) -> i32;
+        fn AllocConsole() -> i32;
+        fn SetStdHandle(nStdHandle: u32, hHandle: isize) -> i32;
+        fn CreateFileW(
+            lpFileName: *const u16,
+            dwDesiredAccess: u32,
+            dwShareMode: u32,
+            lpSecurityAttributes: *const std::ffi::c_void,
+            dwCreationDisposition: u32,
+            dwFlagsAndAttributes: u32,
+            hTemplateFile: isize,
+        ) -> isize;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+    const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;
+    const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_WRITE: u32 = 2;
+    const OPEN_EXISTING: u32 = 3;
+
+    unsafe {
+        if AttachConsole(ATTACH_PARENT_PROCESS) != 0 || AllocConsole() != 0 {
+            let conout: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+            let handle = CreateFileW(
+                conout.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                0,
+            );
+            if handle != -1 {
+                SetStdHandle(STD_OUTPUT_HANDLE, handle);
+                SetStdHandle(STD_ERROR_HANDLE, handle);
+            }
+        }
+    }
+}
+
+pub fn print_console(text: &str) {
+    #[cfg(windows)]
+    attach_console();
+    print!("{text}");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+}
 
 pub fn parse() -> Result<Options, String> {
     let mut rom = None;
@@ -85,15 +140,17 @@ pub fn parse() -> Result<Options, String> {
         data: None,
         interpreter: false,
         mute: false,
+        debug: false,
     };
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                print!("{USAGE}");
+                print_console(USAGE);
                 std::process::exit(0);
             }
+            "-d" | "--debug" => options.debug = true,
             "--renderer" => {
                 let value = args.next().ok_or("--renderer needs a value")?;
                 options.renderer = Some(
@@ -142,7 +199,7 @@ pub fn parse() -> Result<Options, String> {
 
     options.rom = rom;
     if options.headless.is_some() && options.rom.is_none() && !options.test_pattern {
-        print!("{USAGE}");
+        print_console(USAGE);
         return Err("--headless needs a game".to_owned());
     }
     Ok(options)

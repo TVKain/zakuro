@@ -70,7 +70,12 @@ pub fn run(linked: Option<Linked>) {
 
 /// runs the emulator as run does, with an overlay over the game.
 pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
-    report::init();
+    let debug = std::env::args().any(|arg| arg == "--debug" || arg == "-d");
+    #[cfg(windows)]
+    if debug {
+        cli::attach_console();
+    }
+    report::init(debug);
 
     let options = match cli::parse() {
         Ok(options) => options,
@@ -546,6 +551,13 @@ impl ApplicationHandler for App {
 
         let size = self.window_size();
         let mut attributes = Window::default_attributes().with_title("Zakuro").with_inner_size(size);
+        if let Ok(image) = image::load_from_memory(include_bytes!("../../../packaging/zakuro.png")) {
+            let rgba = image.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            if let Ok(icon) = winit::window::Icon::from_rgba(rgba.into_raw(), w, h) {
+                attributes = attributes.with_window_icon(Some(icon));
+            }
+        }
         match self.settings.window_mode {
             WindowMode::Fullscreen => {
                 attributes = attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
