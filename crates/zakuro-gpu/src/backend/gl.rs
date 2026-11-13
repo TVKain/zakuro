@@ -208,12 +208,36 @@ vec3 xbrz_sample(sampler2D img, vec2 at, vec2 size, vec2 covered) {
         res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
     }
 
+    // Smart vibrance: boosts desaturated tones while protecting already saturated colors
+    float luma = dot(res, vec3(0.299, 0.587, 0.114));
+    float max_c = max(res.r, max(res.g, res.b));
+    float min_c = min(res.r, min(res.g, res.b));
+    float sat = (max_c - min_c) / max(max_c, 1e-4);
+    res = mix(vec3(luma), res, 1.0 + 0.16 * (1.0 - sat));
+
     return res;
 }
 
 vec3 shown(sampler2D image) {
     vec2 size = vec2(textureSize(image, 0));
     vec2 covered = fwidth(uv) * size;
+
+    if (mode == 3) {
+        vec3 xbrz_res = xbrz_sample(image, uv, size, covered);
+        if (max(covered.x, covered.y) <= 1.5) {
+            return xbrz_res;
+        }
+        // At 8x/extreme downscales, blend xBRZ edge smoothing with 4-tap box supersampling
+        vec2 px = fwidth(uv);
+        vec2 half_px = px * 0.25;
+        vec3 s0 = texture(image, uv + vec2(-half_px.x, -half_px.y)).rgb;
+        vec3 s1 = texture(image, uv + vec2( half_px.x, -half_px.y)).rgb;
+        vec3 s2 = texture(image, uv + vec2(-half_px.x,  half_px.y)).rgb;
+        vec3 s3 = texture(image, uv + vec2( half_px.x,  half_px.y)).rgb;
+        vec3 e = (s0 + s1 + s2 + s3) * 0.25;
+        return mix(xbrz_res, e, 0.35);
+    }
+
     if (max(covered.x, covered.y) <= 1.001) {
         vec2 texel = uv * size;
         vec2 at = uv;
@@ -224,8 +248,6 @@ vec3 shown(sampler2D image) {
             vec2 centred = texel - 0.5;
             vec2 blend = clamp((fract(centred) - 0.5) * scale + 0.5, 0.0, 1.0);
             at = (floor(centred) + 0.5 + blend) / size;
-        } else if (mode == 3) {
-            return xbrz_sample(image, uv, size, covered);
         }
         return texture(image, at).rgb;
     }

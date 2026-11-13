@@ -66,7 +66,7 @@ bool eq(vec3 a, vec3 b) { return all(equal(a, b)); }
 bool neq(vec3 a, vec3 b) { return any(notEqual(a, b)); }
 
 vec3 tap(sampler2D img, vec2 base, vec2 offset, vec2 size, vec4 bounds) {
-    return texture(img, clamp(base + offset / size, bounds.xy, bounds.zw)).rgb;
+    return textureLod(img, clamp(base + offset / size, bounds.xy, bounds.zw), 0.0).rgb;
 }
 
 vec3 xbrz_sample(sampler2D img, vec2 at, vec2 size, vec2 covered, vec4 bounds) {
@@ -201,6 +201,13 @@ vec3 xbrz_sample(sampler2D img, vec2 at, vec2 size, vec2 covered, vec4 bounds) {
         res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
     }
 
+    // Smart vibrance: boosts desaturated tones while protecting already saturated colors
+    float luma = dot(res, vec3(0.299, 0.587, 0.114));
+    float max_c = max(res.r, max(res.g, res.b));
+    float min_c = min(res.r, min(res.g, res.b));
+    float sat = (max_c - min_c) / max(max_c, 1e-4);
+    res = mix(vec3(luma), res, 1.0 + 0.16 * (1.0 - sat));
+
     return res;
 }
 
@@ -214,6 +221,23 @@ vec3 shown(sampler2D image, vec4 area, vec4 bounds) {
     vec2 at = area.xy + uv * area.zw;
     vec2 size = vec2(textureSize(image, 0));
     vec2 covered = fwidth(at) * size;
+
+    if (crop.mode == 3) {
+        vec3 xbrz_res = xbrz_sample(image, at, size, covered, bounds);
+        if (max(covered.x, covered.y) <= 1.5) {
+            return xbrz_res;
+        }
+        // At 8x/extreme downscales, blend xBRZ edge smoothing with 4-tap box supersampling
+        vec2 px = fwidth(at);
+        vec2 half_px = px * 0.25;
+        vec3 s0 = texture(image, clamp(at + vec2(-half_px.x, -half_px.y), bounds.xy, bounds.zw)).rgb;
+        vec3 s1 = texture(image, clamp(at + vec2( half_px.x, -half_px.y), bounds.xy, bounds.zw)).rgb;
+        vec3 s2 = texture(image, clamp(at + vec2(-half_px.x,  half_px.y), bounds.xy, bounds.zw)).rgb;
+        vec3 s3 = texture(image, clamp(at + vec2( half_px.x,  half_px.y), bounds.xy, bounds.zw)).rgb;
+        vec3 e = (s0 + s1 + s2 + s3) * 0.25;
+        return mix(xbrz_res, e, 0.35);
+    }
+
     if (max(covered.x, covered.y) <= 1.001) {
         vec2 texel = at * size;
         if (crop.mode == 1) {
@@ -226,8 +250,6 @@ vec3 shown(sampler2D image, vec4 area, vec4 bounds) {
             vec2 centred = texel - 0.5;
             vec2 blend = clamp((fract(centred) - 0.5) * scale + 0.5, 0.0, 1.0);
             at = (floor(centred) + 0.5 + blend) / size;
-        } else if (crop.mode == 3) {
-            return xbrz_sample(image, at, size, covered, bounds);
         }
         return texture(image, clamp(at, bounds.xy, bounds.zw)).rgb;
     }
