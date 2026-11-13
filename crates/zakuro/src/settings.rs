@@ -766,7 +766,7 @@ where
 
 impl GameSettings {
     /// the settings with these over them.
-    fn over(&self, settings: &mut Settings) {
+    pub fn over(&self, settings: &mut Settings) {
         settings.hardware_rasterizer = self.hardware_rasterizer.unwrap_or(settings.hardware_rasterizer);
         settings.resolution = self.resolution.unwrap_or(settings.resolution);
         settings.texture_packs = self.texture_packs.unwrap_or(settings.texture_packs);

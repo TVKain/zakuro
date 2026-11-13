@@ -2,21 +2,21 @@
 //! a menu over it, and the loop that drives the emulated console one frame
 //! at a time.
 
-mod audio;
-mod camera;
-mod cli;
-mod gamepad;
-mod gui;
-mod input;
-mod library;
-mod menus;
-mod microphone;
-mod present;
-mod pro_controller;
-mod recompile;
-mod report;
-mod settings;
-mod zig;
+pub mod audio;
+pub mod camera;
+pub mod cli;
+pub mod gamepad;
+pub mod gui;
+pub mod input;
+pub mod library;
+pub mod menus;
+pub mod microphone;
+pub mod present;
+pub mod pro_controller;
+pub mod recompile;
+pub mod report;
+pub mod settings;
+pub mod zig;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

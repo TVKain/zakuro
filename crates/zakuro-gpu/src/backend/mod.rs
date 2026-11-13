@@ -150,7 +150,7 @@ pub enum ScreenFilter {
 
 impl ScreenFilter {
     /// the number the present shaders know it by.
-    pub(crate) fn mode(self) -> i32 {
+    pub fn mode(self) -> i32 {
         match self {
             ScreenFilter::Smooth => 0,
             ScreenFilter::Pixels => 1,

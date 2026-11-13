@@ -126,6 +126,10 @@ pub fn print_console(text: &str) {
 }
 
 pub fn parse() -> Result<Options, String> {
+    parse_args(std::env::args().skip(1))
+}
+
+pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
     let mut rom = None;
     let mut options = Options {
         rom: None,
@@ -143,7 +147,7 @@ pub fn parse() -> Result<Options, String> {
         debug: false,
     };
 
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
