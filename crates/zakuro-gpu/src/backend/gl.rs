@@ -222,12 +222,22 @@ vec3 shown(sampler2D image) {
     vec2 size = vec2(textureSize(image, 0));
     vec2 covered = fwidth(uv) * size;
 
-    if (mode == 3) {
+    if (mode == 3 || mode == 4) {
         vec3 xbrz_res = xbrz_sample(image, uv, size, covered);
-        if (max(covered.x, covered.y) <= 1.5) {
-            return xbrz_res;
+        vec3 final_res = xbrz_res;
+        if (mode == 4) {
+            vec3 lin = texture(image, uv).rgb;
+            float luma = dot(lin, vec3(0.299, 0.587, 0.114));
+            float max_c = max(lin.r, max(lin.g, lin.b));
+            float min_c = min(lin.r, min(lin.g, lin.b));
+            float sat = (max_c - min_c) / max(max_c, 1e-4);
+            lin = mix(vec3(luma), lin, 1.0 + 0.16 * (1.0 - sat));
+            final_res = mix(xbrz_res, lin, 0.40);
         }
-        // At 8x/extreme downscales, blend xBRZ edge smoothing with 4-tap box supersampling
+        if (max(covered.x, covered.y) <= 1.5) {
+            return final_res;
+        }
+        // At 8x/extreme downscales, blend edge smoothing with 4-tap box supersampling
         vec2 px = fwidth(uv);
         vec2 half_px = px * 0.25;
         vec3 s0 = texture(image, uv + vec2(-half_px.x, -half_px.y)).rgb;
@@ -235,7 +245,7 @@ vec3 shown(sampler2D image) {
         vec3 s2 = texture(image, uv + vec2(-half_px.x,  half_px.y)).rgb;
         vec3 s3 = texture(image, uv + vec2( half_px.x,  half_px.y)).rgb;
         vec3 e = (s0 + s1 + s2 + s3) * 0.25;
-        return mix(xbrz_res, e, 0.35);
+        return mix(final_res, e, 0.35);
     }
 
     if (max(covered.x, covered.y) <= 1.001) {

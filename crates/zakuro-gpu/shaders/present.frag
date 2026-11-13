@@ -222,12 +222,22 @@ vec3 shown(sampler2D image, vec4 area, vec4 bounds) {
     vec2 size = vec2(textureSize(image, 0));
     vec2 covered = fwidth(at) * size;
 
-    if (crop.mode == 3) {
+    if (crop.mode == 3 || crop.mode == 4) {
         vec3 xbrz_res = xbrz_sample(image, at, size, covered, bounds);
-        if (max(covered.x, covered.y) <= 1.5) {
-            return xbrz_res;
+        vec3 final_res = xbrz_res;
+        if (crop.mode == 4) {
+            vec3 lin = texture(image, clamp(at, bounds.xy, bounds.zw)).rgb;
+            float luma = dot(lin, vec3(0.299, 0.587, 0.114));
+            float max_c = max(lin.r, max(lin.g, lin.b));
+            float min_c = min(lin.r, min(lin.g, lin.b));
+            float sat = (max_c - min_c) / max(max_c, 1e-4);
+            lin = mix(vec3(luma), lin, 1.0 + 0.16 * (1.0 - sat));
+            final_res = mix(xbrz_res, lin, 0.40);
         }
-        // At 8x/extreme downscales, blend xBRZ edge smoothing with 4-tap box supersampling
+        if (max(covered.x, covered.y) <= 1.5) {
+            return final_res;
+        }
+        // At 8x/extreme downscales, blend edge smoothing with 4-tap box supersampling
         vec2 px = fwidth(at);
         vec2 half_px = px * 0.25;
         vec3 s0 = texture(image, clamp(at + vec2(-half_px.x, -half_px.y), bounds.xy, bounds.zw)).rgb;
@@ -235,7 +245,7 @@ vec3 shown(sampler2D image, vec4 area, vec4 bounds) {
         vec3 s2 = texture(image, clamp(at + vec2(-half_px.x,  half_px.y), bounds.xy, bounds.zw)).rgb;
         vec3 s3 = texture(image, clamp(at + vec2( half_px.x,  half_px.y), bounds.xy, bounds.zw)).rgb;
         vec3 e = (s0 + s1 + s2 + s3) * 0.25;
-        return mix(xbrz_res, e, 0.35);
+        return mix(final_res, e, 0.35);
     }
 
     if (max(covered.x, covered.y) <= 1.001) {

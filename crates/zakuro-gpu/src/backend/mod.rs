@@ -144,6 +144,8 @@ pub enum ScreenFilter {
     Pixels,
     /// xBRZ edge-directed scaling with smooth diagonal interpolation.
     Xbrz,
+    /// xBRZ edge-directed scaling blended with linear (bilinear) filtering.
+    XbrzLinear,
 }
 
 impl ScreenFilter {
@@ -154,6 +156,7 @@ impl ScreenFilter {
             ScreenFilter::Pixels => 1,
             ScreenFilter::Sharp => 2,
             ScreenFilter::Xbrz => 3,
+            ScreenFilter::XbrzLinear => 4,
         }
     }
 }
