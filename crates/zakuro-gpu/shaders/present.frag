@@ -236,6 +236,34 @@ vec3 shown(sampler2D image, vec4 area, vec4 bounds) {
         return texture(image, clamp(texel, bounds.xy, bounds.zw)).rgb;
     }
 
+    if (crop.mode == 2) {
+        vec2 px = fwidth(at);
+        vec3 c = texture(image, clamp(at, bounds.xy, bounds.zw)).rgb;
+        vec3 l = texture(image, clamp(at - vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
+        vec3 r = texture(image, clamp(at + vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
+        vec3 t = texture(image, clamp(at - vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
+        vec3 b = texture(image, clamp(at + vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
+        vec3 min_c = min(c, min(min(l, r), min(t, b)));
+        vec3 max_c = max(c, max(max(l, r), max(t, b)));
+        vec3 cross = (l + r + t + b) * 0.25;
+        vec3 sharp = c + (c - cross) * 0.85;
+        return clamp(sharp, min_c, max_c);
+    }
+
+    if (crop.mode == 3) {
+        vec2 px = fwidth(at);
+        vec3 c = texture(image, clamp(at, bounds.xy, bounds.zw)).rgb;
+        vec3 l = texture(image, clamp(at - vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
+        vec3 r = texture(image, clamp(at + vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
+        vec3 t = texture(image, clamp(at - vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
+        vec3 b = texture(image, clamp(at + vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
+        vec3 min_c = min(c, min(min(l, r), min(t, b)));
+        vec3 max_c = max(c, max(max(l, r), max(t, b)));
+        vec3 cross = (l + r + t + b) * 0.25;
+        vec3 sharp = c + (c - cross) * 0.40;
+        return clamp(sharp, min_c, max_c);
+    }
+
     return texture(image, clamp(at, bounds.xy, bounds.zw)).rgb;
 }
 

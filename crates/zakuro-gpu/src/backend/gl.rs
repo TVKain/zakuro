@@ -235,6 +235,34 @@ vec3 shown(sampler2D image) {
         return texture(image, texel).rgb;
     }
 
+    if (mode == 2) {
+        vec2 px = fwidth(uv);
+        vec3 c = texture(image, uv).rgb;
+        vec3 l = texture(image, uv - vec2(px.x, 0.0)).rgb;
+        vec3 r = texture(image, uv + vec2(px.x, 0.0)).rgb;
+        vec3 t = texture(image, uv - vec2(0.0, px.y)).rgb;
+        vec3 b = texture(image, uv + vec2(0.0, px.y)).rgb;
+        vec3 min_c = min(c, min(min(l, r), min(t, b)));
+        vec3 max_c = max(c, max(max(l, r), max(t, b)));
+        vec3 cross = (l + r + t + b) * 0.25;
+        vec3 sharp = c + (c - cross) * 0.85;
+        return clamp(sharp, min_c, max_c);
+    }
+
+    if (mode == 3) {
+        vec2 px = fwidth(uv);
+        vec3 c = texture(image, uv).rgb;
+        vec3 l = texture(image, uv - vec2(px.x, 0.0)).rgb;
+        vec3 r = texture(image, uv + vec2(px.x, 0.0)).rgb;
+        vec3 t = texture(image, uv - vec2(0.0, px.y)).rgb;
+        vec3 b = texture(image, uv + vec2(0.0, px.y)).rgb;
+        vec3 min_c = min(c, min(min(l, r), min(t, b)));
+        vec3 max_c = max(c, max(max(l, r), max(t, b)));
+        vec3 cross = (l + r + t + b) * 0.25;
+        vec3 sharp = c + (c - cross) * 0.40;
+        return clamp(sharp, min_c, max_c);
+    }
+
     return texture(image, uv).rgb;
 }
 "#;
