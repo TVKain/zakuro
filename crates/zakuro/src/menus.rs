@@ -12,7 +12,7 @@ use crate::library::{Game, Library, ICON_SIZE};
 use crate::recompile::{Job, Stage, Wanted};
 use crate::gamepad::button_name;
 use crate::settings::{
-    game_key, CameraSource, Filter, GameSettings, Keys, Language, MicrophoneSource, Orientation, PadButtons, Renderer, Screens, Settings, Stereo3d, TopShape,
+    game_key, CameraSource, Filter, FpsLimit, GameSettings, Keys, Language, MicrophoneSource, Orientation, PadButtons, Renderer, Screens, Settings, Stereo3d, TopShape,
     WindowMode,
 };
 
@@ -152,6 +152,7 @@ pub enum SelectTarget {
     Stereo,
     Microphone,
     WindowMode,
+    FpsLimit,
     Language,
     Camera,
 }
@@ -539,7 +540,7 @@ impl Menus {
     pub fn game_settings_down(&mut self) {
         let max = match self.game_settings_tab {
             GameSettingsTab::Graphics => 12,
-            GameSettingsTab::System => 6,
+            GameSettingsTab::System => 7,
         };
         self.game_settings_selected = (self.game_settings_selected + 1).min(max - 1);
         self.game_settings_scroll_to_selected = true;
@@ -570,17 +571,22 @@ impl Menus {
                     entry.show_fps = Some(!cur);
                     Some(Action::Settings)
                 }
-                2 => {
+                1 => {
+                    let cur = entry.fps_limit.unwrap_or(settings.fps_limit);
+                    entry.fps_limit = Some(cycle(&FpsLimit::ALL, cur, delta));
+                    Some(Action::Settings)
+                }
+                3 => {
                     let cur = entry.window_mode.unwrap_or(settings.window_mode);
                     entry.window_mode = Some(cycle(&WindowMode::ALL, cur, delta));
                     Some(Action::Settings)
                 }
-                3 => {
+                4 => {
                     let cur = entry.language.unwrap_or(settings.language);
                     entry.language = Some(cycle(&Language::ALL, cur, delta));
                     Some(Action::Settings)
                 }
-                4 => {
+                5 => {
                     let cur = entry.recompiled.unwrap_or(settings.recompiled);
                     entry.recompiled = Some(!cur);
                     Some(Action::Settings)
@@ -612,11 +618,12 @@ impl Menus {
                 },
                 GameSettingsTab::System => match self.game_settings_selected {
                     0 => entry.show_fps = None,
-                    1 => {}
-                    2 => entry.window_mode = None,
-                    3 => entry.language = None,
-                    4 => entry.recompiled = None,
-                    5 => remove_all = true,
+                    1 => entry.fps_limit = None,
+                    2 => {}
+                    3 => entry.window_mode = None,
+                    4 => entry.language = None,
+                    5 => entry.recompiled = None,
+                    6 => remove_all = true,
                     _ => {}
                 },
             }
@@ -743,8 +750,19 @@ impl Menus {
                     entry.show_fps = Some(!cur);
                     Some(Action::Settings)
                 }
-                1 => Some(Action::Fullscreen),
-                2 => {
+                1 => {
+                    let cur = settings.per_game.get(&key).and_then(|g| g.fps_limit).unwrap_or(settings.fps_limit);
+                    self.select_popup = Some(SelectPopup::game(
+                        SelectTarget::FpsLimit,
+                        program_id,
+                        "Frame Rate Limit",
+                        FpsLimit::ALL.iter().map(|f| f.name().to_string()).collect(),
+                        FpsLimit::ALL.iter().position(|&f| f == cur).unwrap_or(1),
+                    ));
+                    None
+                }
+                2 => Some(Action::Fullscreen),
+                3 => {
                     let cur = settings.per_game.get(&key).and_then(|g| g.window_mode).unwrap_or(settings.window_mode);
                     self.select_popup = Some(SelectPopup::game(
                         SelectTarget::WindowMode,
@@ -755,7 +773,7 @@ impl Menus {
                     ));
                     None
                 }
-                3 => {
+                4 => {
                     let cur = settings.per_game.get(&key).and_then(|g| g.language).unwrap_or(settings.language);
                     self.select_popup = Some(SelectPopup::game(
                         SelectTarget::Language,
@@ -766,13 +784,13 @@ impl Menus {
                     ));
                     None
                 }
-                4 => {
+                5 => {
                     let entry = settings.per_game.entry(key).or_default();
                     let cur = entry.recompiled.unwrap_or(settings.recompiled);
                     entry.recompiled = Some(!cur);
                     Some(Action::Settings)
                 }
-                5 => {
+                6 => {
                     settings.per_game.remove(&key);
                     Some(Action::Settings)
                 }
@@ -786,7 +804,7 @@ impl Menus {
             SettingsTab::Graphics => 13,
             SettingsTab::Controller => 17,
             SettingsTab::Audio => 3,
-            SettingsTab::System => 10,
+            SettingsTab::System => 11,
         }
     }
 
@@ -832,13 +850,14 @@ impl Menus {
                 0 => settings.window_mode = cycle(&WindowMode::ALL, settings.window_mode, delta),
                 1 => settings.scale = (settings.scale as i32 + delta).clamp(1, 6) as u32,
                 2 => settings.show_fps = !settings.show_fps,
-                3 => {}
-                4 => settings.language = cycle(&Language::ALL, settings.language, delta),
-                5 => settings.recompiled = !settings.recompiled,
-                6 => settings.camera = cycle(&CameraSource::ALL, settings.camera, delta),
-                7 => {}
+                3 => settings.fps_limit = cycle(&FpsLimit::ALL, settings.fps_limit, delta),
+                4 => {}
+                5 => settings.language = cycle(&Language::ALL, settings.language, delta),
+                6 => settings.recompiled = !settings.recompiled,
+                7 => settings.camera = cycle(&CameraSource::ALL, settings.camera, delta),
                 8 => {}
-                9 => settings.background_opacity = (settings.background_opacity + (delta as f32 * 0.05)).clamp(0.0, 1.0),
+                9 => {}
+                10 => settings.background_opacity = (settings.background_opacity + (delta as f32 * 0.05)).clamp(0.0, 1.0),
                 _ => {}
             },
         }
@@ -984,8 +1003,17 @@ impl Menus {
                     settings.show_fps = !settings.show_fps;
                     None
                 }
-                3 => Some(Action::Fullscreen),
-                4 => {
+                3 => {
+                    self.select_popup = Some(SelectPopup::global(
+                        SelectTarget::FpsLimit,
+                        "Frame Rate Limit",
+                        FpsLimit::ALL.iter().map(|f| f.name().to_string()).collect(),
+                        FpsLimit::ALL.iter().position(|&f| f == settings.fps_limit).unwrap_or(1),
+                    ));
+                    None
+                }
+                4 => Some(Action::Fullscreen),
+                5 => {
                     self.select_popup = Some(SelectPopup::global(
                         SelectTarget::Language,
                         "System Language",
@@ -994,11 +1022,11 @@ impl Menus {
                     ));
                     None
                 }
-                5 => {
+                6 => {
                     settings.recompiled = !settings.recompiled;
                     None
                 }
-                6 => {
+                7 => {
                     self.select_popup = Some(SelectPopup::global(
                         SelectTarget::Camera,
                         "Camera Source",
@@ -1007,9 +1035,9 @@ impl Menus {
                     ));
                     None
                 }
-                7 => Some(Action::ChooseCameraPicture),
-                8 => Some(Action::CopyReport),
-                9 => None,
+                8 => Some(Action::ChooseCameraPicture),
+                9 => Some(Action::CopyReport),
+                10 => None,
                 _ => None,
             },
         }
@@ -1060,6 +1088,11 @@ impl Menus {
                         entry.window_mode = Some(w);
                     }
                 }
+                SelectTarget::FpsLimit => {
+                    if let Some(&f) = FpsLimit::ALL.get(idx) {
+                        entry.fps_limit = Some(f);
+                    }
+                }
                 _ => {}
             }
         } else {
@@ -1105,6 +1138,11 @@ impl Menus {
                 SelectTarget::WindowMode => {
                     if let Some(&w) = WindowMode::ALL.get(idx) {
                         settings.window_mode = w;
+                    }
+                }
+                SelectTarget::FpsLimit => {
+                    if let Some(&f) = FpsLimit::ALL.get(idx) {
+                        settings.fps_limit = f;
                     }
                 }
                 SelectTarget::Language => {
@@ -2111,20 +2149,29 @@ impl Menus {
                                 ui.checkbox(&mut settings.show_fps, "Show the frame rate");
                             }) { new_sel = 2; }
                             if setting_row(ui, sel == 3, scroll, |ui| {
+                                egui::ComboBox::from_label("Frame rate limit")
+                                    .selected_text(settings.fps_limit.name())
+                                    .show_ui(ui, |ui| {
+                                        for limit in FpsLimit::ALL {
+                                            ui.selectable_value(&mut settings.fps_limit, limit, limit.name());
+                                        }
+                                    });
+                            }) { new_sel = 3; }
+                            if setting_row(ui, sel == 4, scroll, |ui| {
                                 if ui.button("Toggle Fullscreen (F11)").clicked() {
                                     actions.push(Action::Fullscreen);
                                 }
-                            }) { new_sel = 3; }
+                            }) { new_sel = 4; }
 
                             ui.add_space(8.0);
                             ui.separator();
                             ui.heading("Emulation");
-                            if setting_row(ui, sel == 4, scroll, |ui| language(ui, &mut settings.language)) { new_sel = 4; }
-                            if setting_row(ui, sel == 5, scroll, |ui| {
+                            if setting_row(ui, sel == 5, scroll, |ui| language(ui, &mut settings.language)) { new_sel = 5; }
+                            if setting_row(ui, sel == 6, scroll, |ui| {
                                 code(ui, &mut settings.recompiled);
                                 ui.label(RichText::new("Recompiled code changes with the next game started, or Reset.").weak());
-                            }) { new_sel = 5; }
-                            if setting_row(ui, sel == 6, scroll, |ui| {
+                            }) { new_sel = 6; }
+                            if setting_row(ui, sel == 7, scroll, |ui| {
                                 egui::ComboBox::from_label("Cameras").selected_text(settings.camera.name()).show_ui(ui, |ui| {
                                     for source in CameraSource::ALL {
                                         ui.selectable_value(&mut settings.camera, source, source.name());
@@ -2132,8 +2179,8 @@ impl Menus {
                                 })
                                 .response
                                 .on_hover_text("What the console's cameras see. The computer's camera turns on only while a game takes pictures.");
-                            }) { new_sel = 6; }
-                            if setting_row(ui, sel == 7, scroll, |ui| {
+                            }) { new_sel = 7; }
+                            if setting_row(ui, sel == 8, scroll, |ui| {
                                 ui.horizontal(|ui| {
                                     if ui.button("Show camera picture…").on_hover_text("Pick a picture for the console's cameras to see, a QR code's say, in place of the computer's camera.").clicked() {
                                         actions.push(Action::ChooseCameraPicture);
@@ -2148,12 +2195,12 @@ impl Menus {
                                         }
                                     }
                                 });
-                            }) { new_sel = 7; }
-                            if setting_row(ui, sel == 8, scroll, |ui| {
+                            }) { new_sel = 8; }
+                            if setting_row(ui, sel == 9, scroll, |ui| {
                                 if ui.button("Copy report info").clicked() {
                                     actions.push(Action::CopyReport);
                                 }
-                            }) { new_sel = 8; }
+                            }) { new_sel = 9; }
 
                             ui.add_space(8.0);
                             ui.separator();
@@ -2478,8 +2525,34 @@ impl Menus {
                                 GameRowAction::None => {}
                             }
 
-                            // 1: Toggle Fullscreen
-                            let is_full_sel = sel == 1;
+                            // 1: Frame Rate Limit
+                            let limit_val = game.fps_limit.unwrap_or(general.fps_limit);
+                            let (act, hov) = game_setting_row(
+                                ui,
+                                sel == 1,
+                                scroll,
+                                "Frame Rate Limit",
+                                game.fps_limit.is_some(),
+                                limit_val.badge_name(),
+                                general.fps_limit.badge_name(),
+                            );
+                            if hov { new_sel = 1; }
+                            match act {
+                                GameRowAction::Reset => game.fps_limit = None,
+                                GameRowAction::Edit => {
+                                    self.select_popup = Some(SelectPopup::game(
+                                        SelectTarget::FpsLimit,
+                                        program_id,
+                                        "Frame Rate Limit",
+                                        FpsLimit::ALL.iter().map(|f| f.name().to_string()).collect(),
+                                        FpsLimit::ALL.iter().position(|&f| f == limit_val).unwrap_or(1),
+                                    ));
+                                }
+                                GameRowAction::None => {}
+                            }
+
+                            // 2: Toggle Fullscreen
+                            let is_full_sel = sel == 2;
                             if setting_row(ui, is_full_sel, scroll, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new("Toggle Fullscreen").strong().size(13.0).color(Color32::from_rgb(225, 232, 245)));
@@ -2490,21 +2563,21 @@ impl Menus {
                                     });
                                 });
                             }) {
-                                new_sel = 1;
+                                new_sel = 2;
                             }
 
-                            // 2: Window Mode
+                            // 3: Window Mode
                             let win_val = game.window_mode.unwrap_or(general.window_mode);
                             let (act, hov) = game_setting_row(
                                 ui,
-                                sel == 2,
+                                sel == 3,
                                 scroll,
                                 "Window Mode",
                                 game.window_mode.is_some(),
                                 win_val.name(),
                                 general.window_mode.name(),
                             );
-                            if hov { new_sel = 2; }
+                            if hov { new_sel = 3; }
                             match act {
                                 GameRowAction::Reset => game.window_mode = None,
                                 GameRowAction::Edit => {
@@ -2519,10 +2592,10 @@ impl Menus {
                                 GameRowAction::None => {}
                             }
 
-                            // 3: Language
+                            // 4: Language
                             let lang_val = game.language.unwrap_or(general.language);
-                            let (act, hov) = game_setting_row(ui, sel == 3, scroll, "Console Language", game.language.is_some(), lang_val.name(), general.language.name());
-                            if hov { new_sel = 3; }
+                            let (act, hov) = game_setting_row(ui, sel == 4, scroll, "Console Language", game.language.is_some(), lang_val.name(), general.language.name());
+                            if hov { new_sel = 4; }
                             match act {
                                 GameRowAction::Reset => game.language = None,
                                 GameRowAction::Edit => {
@@ -2537,19 +2610,19 @@ impl Menus {
                                 GameRowAction::None => {}
                             }
 
-                            // 4: Recompiled code
+                            // 5: Recompiled code
                             let recomp_val = game.recompiled.unwrap_or(general.recompiled);
-                            let (act, hov) = game_setting_row(ui, sel == 4, scroll, "Run Recompiled Code", game.recompiled.is_some(), if recomp_val { "Enabled" } else { "Disabled" }, if general.recompiled { "Enabled" } else { "Disabled" });
-                            if hov { new_sel = 4; }
+                            let (act, hov) = game_setting_row(ui, sel == 5, scroll, "Run Recompiled Code", game.recompiled.is_some(), if recomp_val { "Enabled" } else { "Disabled" }, if general.recompiled { "Enabled" } else { "Disabled" });
+                            if hov { new_sel = 5; }
                             match act {
                                 GameRowAction::Reset => game.recompiled = None,
                                 GameRowAction::Edit => game.recompiled = Some(!recomp_val),
                                 GameRowAction::None => {}
                             }
 
-                            // 5: Reset all to Global Settings
+                            // 6: Reset all to Global Settings
                             let has_custom = game != GameSettings::default();
-                            let is_reset_sel = sel == 5;
+                            let is_reset_sel = sel == 6;
                             if setting_row(ui, is_reset_sel, scroll, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new("Reset All to Global Settings").strong().size(13.0).color(if has_custom { Color32::WHITE } else { Color32::from_rgb(120, 130, 145) }));
@@ -2560,7 +2633,7 @@ impl Menus {
                                     });
                                 });
                             }) {
-                                new_sel = 5;
+                                new_sel = 6;
                             }
 
                             self.game_settings_selected = new_sel;

@@ -2,6 +2,7 @@
 //! settings.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use gilrs::Button;
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,76 @@ impl WindowMode {
             WindowMode::Maximized => "Maximized",
             WindowMode::Fullscreen => "Fullscreen",
             WindowMode::Windowed => "Windowed",
+        }
+    }
+}
+
+/// target frame rate limit or uncapped mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FpsLimit {
+    #[serde(rename = "30", alias = "fps_30", alias = "fps30")]
+    Fps30,
+    #[default]
+    #[serde(rename = "60", alias = "fps_60", alias = "fps60")]
+    Fps60,
+    #[serde(rename = "90", alias = "fps_90", alias = "fps90")]
+    Fps90,
+    #[serde(rename = "120", alias = "fps_120", alias = "fps120")]
+    Fps120,
+    #[serde(rename = "uncapped", alias = "unlimited", alias = "none", alias = "off")]
+    Uncapped,
+}
+
+impl FpsLimit {
+    pub const ALL: [FpsLimit; 5] = [
+        FpsLimit::Fps30,
+        FpsLimit::Fps60,
+        FpsLimit::Fps90,
+        FpsLimit::Fps120,
+        FpsLimit::Uncapped,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            FpsLimit::Fps30 => "30 FPS",
+            FpsLimit::Fps60 => "60 FPS (Default)",
+            FpsLimit::Fps90 => "90 FPS",
+            FpsLimit::Fps120 => "120 FPS",
+            FpsLimit::Uncapped => "Uncapped",
+        }
+    }
+
+    pub fn badge_name(self) -> &'static str {
+        match self {
+            FpsLimit::Fps30 => "30 FPS",
+            FpsLimit::Fps60 => "60 FPS",
+            FpsLimit::Fps90 => "90 FPS",
+            FpsLimit::Fps120 => "120 FPS",
+            FpsLimit::Uncapped => "Uncapped",
+        }
+    }
+
+    /// Target frame duration. None means uncapped (run as fast as possible).
+    pub fn frame_time(self) -> Option<Duration> {
+        let base_ns = zakuro_core::CYCLES_PER_FRAME as u128 * 1_000_000_000 / zakuro_core::kernel::thread::CPU_CLOCK_HZ as u128;
+        match self {
+            FpsLimit::Fps30 => Some(Duration::from_nanos((base_ns * 2) as u64)),
+            FpsLimit::Fps60 => Some(Duration::from_nanos(base_ns as u64)),
+            FpsLimit::Fps90 => Some(Duration::from_nanos((base_ns * 2 / 3) as u64)),
+            FpsLimit::Fps120 => Some(Duration::from_nanos((base_ns / 2) as u64)),
+            FpsLimit::Uncapped => None,
+        }
+    }
+
+    /// Relative speed ratio compared to native 3DS 60 FPS (~59.825 Hz).
+    pub fn speed_ratio(self) -> Option<f64> {
+        match self {
+            FpsLimit::Fps30 => Some(0.5),
+            FpsLimit::Fps60 => Some(1.0),
+            FpsLimit::Fps90 => Some(1.5),
+            FpsLimit::Fps120 => Some(2.0),
+            FpsLimit::Uncapped => None,
         }
     }
 }
@@ -565,6 +636,8 @@ pub struct GameSettings {
     pub show_fps: Option<bool>,
     #[serde(deserialize_with = "or_default")]
     pub window_mode: Option<WindowMode>,
+    #[serde(deserialize_with = "or_default")]
+    pub fps_limit: Option<FpsLimit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -594,6 +667,9 @@ pub struct Settings {
     /// how the window opens and displays.
     #[serde(deserialize_with = "or_default")]
     pub window_mode: WindowMode,
+    /// target frame rate limit or uncapped mode.
+    #[serde(deserialize_with = "or_default")]
+    pub fps_limit: FpsLimit,
     #[serde(deserialize_with = "or_default")]
     pub layout: Screens,
     #[serde(deserialize_with = "or_default")]
@@ -658,6 +734,7 @@ impl Default for Settings {
             recompiled: true,
             scale: 2,
             window_mode: WindowMode::Maximized,
+            fps_limit: FpsLimit::Fps60,
             layout: Screens::Stacked,
             orientation: Orientation::North,
             filter: Filter::Smooth,
@@ -718,6 +795,7 @@ impl GameSettings {
         settings.recompiled = self.recompiled.unwrap_or(settings.recompiled);
         settings.show_fps = self.show_fps.unwrap_or(settings.show_fps);
         settings.window_mode = self.window_mode.unwrap_or(settings.window_mode);
+        settings.fps_limit = self.fps_limit.unwrap_or(settings.fps_limit);
     }
 }
 
@@ -891,5 +969,25 @@ mod tests {
             layout = layout.next();
         }
         assert_eq!(layout, Screens::Stacked);
+    }
+
+    #[test]
+    fn fps_limit_parses_and_defaults() {
+        let default_s: Settings = toml::from_str("").unwrap();
+        assert_eq!(default_s.fps_limit, FpsLimit::Fps60);
+        assert_eq!(default_s.fps_limit.frame_time(), FpsLimit::Fps60.frame_time());
+
+        let s30: Settings = toml::from_str("fps_limit = \"30\"\n").unwrap();
+        assert_eq!(s30.fps_limit, FpsLimit::Fps30);
+        assert_eq!(s30.fps_limit.speed_ratio(), Some(0.5));
+
+        let s120: Settings = toml::from_str("fps_limit = \"120\"\n").unwrap();
+        assert_eq!(s120.fps_limit, FpsLimit::Fps120);
+        assert_eq!(s120.fps_limit.speed_ratio(), Some(2.0));
+
+        let suncapped: Settings = toml::from_str("fps_limit = \"uncapped\"\n").unwrap();
+        assert_eq!(suncapped.fps_limit, FpsLimit::Uncapped);
+        assert_eq!(suncapped.fps_limit.frame_time(), None);
+        assert_eq!(suncapped.fps_limit.speed_ratio(), None);
     }
 }

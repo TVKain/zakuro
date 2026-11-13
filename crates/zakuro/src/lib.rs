@@ -37,7 +37,7 @@ use library::Library;
 use menus::{Action, Menus};
 use present::Backend;
 use recompile::{Job, Stage, Toolchain, Wanted};
-use settings::{CameraSource, MicrophoneSource, Renderer, Screens, Settings, WindowMode};
+use settings::{CameraSource, FpsLimit, MicrophoneSource, Renderer, Screens, Settings, WindowMode};
 
 pub use zakuro_core::memory::Memory;
 pub use zakuro_core::recompiled::Linked;
@@ -166,6 +166,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         audio::Audio::open(zakuro_core::AUDIO_SAMPLE_RATE).inspect_err(|error| log::warn!("no sound, {error}")).ok()
     };
     app.apply_volume();
+    app.apply_audio_speed();
 
     let event_loop = EventLoop::new().expect("create an event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -723,6 +724,7 @@ impl App {
         }
         self.apply_layout();
         self.apply_window_mode();
+        self.apply_audio_speed();
         started
     }
 
@@ -1417,6 +1419,14 @@ impl App {
         }
     }
 
+    fn apply_audio_speed(&self) {
+        if let Some(audio) = &self.audio {
+            if let Some(speed) = self.active.fps_limit.speed_ratio() {
+                audio.set_speed(speed);
+            }
+        }
+    }
+
     /// saves the settings and puts to use what can change right away.
     fn apply_settings(&mut self) {
         self.settings.save();
@@ -1443,6 +1453,9 @@ impl App {
         self.apply_volume();
         self.apply_layout();
         self.apply_window_mode();
+        self.apply_audio_speed();
+        self.next_frame = Instant::now();
+        self.next_shown = Instant::now();
     }
 
     /// gives the running game's cameras what the settings say they see,
@@ -1845,6 +1858,7 @@ impl App {
                     audio.clear();
                 }
                 self.next_frame = Instant::now();
+                self.apply_audio_speed();
             }
         }
         if playing {
@@ -1856,11 +1870,14 @@ impl App {
             audio.hold();
         }
 
-        self.next_frame += FRAME_TIME;
-        if fast {
-            // nothing to wait for
+        let frame_time = if fast { None } else { self.active.fps_limit.frame_time() };
+        if let Some(dt) = frame_time {
+            self.next_frame += dt;
+        } else {
+            // uncapped or fast forward: nothing to wait for
             self.next_frame = Instant::now();
         }
+
         // behind the schedule, showing the frame would wait on the display,
         // so it goes unshown, a few at most. a presenter that does not wait,
         // in mailbox mode, shows them all, a game that could not keep up
@@ -1868,16 +1885,24 @@ impl App {
         // console's frame rate, waiting on the display for no more
         let behind = Instant::now() > self.next_frame;
         let waits = self.backend.as_ref().is_some_and(Backend::waits_for_display);
-        let unshown = if fast { Instant::now() < self.next_shown } else { skips_showing(playing, behind, waits, self.skipped) };
+        let unshown = if fast {
+            Instant::now() < self.next_shown
+        } else if frame_time.is_some() {
+            skips_showing(playing, behind, waits, self.skipped)
+        } else {
+            // uncapped: show as many frames as possible unless display presentation waits
+            skips_showing(playing, false, waits, self.skipped)
+        };
+
         if unshown {
             self.skipped += 1;
         } else {
             self.skipped = 0;
             let start = Instant::now();
             self.present(event_loop);
-            // the next one a frame later, or right away after falling
-            // behind, at the console's rate on average
-            self.next_shown = (self.next_shown + FRAME_TIME).max(Instant::now() - FRAME_TIME);
+            // presentation cadence: fast forward presents at 60 FPS to leave GPU free for emulation
+            let show_cadence = if fast { FRAME_TIME } else { frame_time.unwrap_or(Duration::from_millis(1)) };
+            self.next_shown = (self.next_shown + show_cadence).max(Instant::now() - show_cadence);
             self.spent.showing.add(start.elapsed());
             self.shown += 1;
         }
@@ -1893,6 +1918,12 @@ impl App {
                     "{:.1} frames emulated and {shown:.1} shown a second, emulating took {emulating}, showing {showing}",
                     game.fps
                 );
+                // in uncapped mode, continuously track audio speed so sound doesn't stutter or overrun
+                if !fast && self.active.fps_limit == FpsLimit::Uncapped && game.fps > 5.0 {
+                    if let Some(audio) = &self.audio {
+                        audio.set_speed((game.fps as f64 / 59.825).clamp(0.5, 4.0));
+                    }
+                }
             }
             if let Some(window) = &self.window {
                 let title = match &self.game {
@@ -1908,7 +1939,7 @@ impl App {
         }
 
         let now = Instant::now();
-        if now < self.next_frame {
+        if frame_time.is_some() && now < self.next_frame {
             std::thread::sleep(self.next_frame - now);
         }
     }

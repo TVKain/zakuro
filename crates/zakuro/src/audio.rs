@@ -23,8 +23,10 @@ struct Queue {
     samples: VecDeque<[f32; 2]>,
     /// how far the output is between the first two samples.
     fraction: f64,
-    /// console samples per output sample.
-    step: f64,
+    /// console samples per output sample at 1x speed.
+    base_step: f64,
+    /// speed multiplier for custom FPS limit / uncapped playback.
+    speed: f64,
     /// ran dry, and waits to fill up before it plays again.
     starved: bool,
     /// the last sample played, which fades out when the queue runs dry
@@ -57,7 +59,8 @@ impl Queue {
         self.last = out;
         // a longer queue plays a little faster, a shorter one slower
         let error = (self.samples.len() as f64 - TARGET as f64) / TARGET as f64;
-        self.fraction += self.step * (1.0 + error.clamp(-1.0, 1.0) * DRIFT);
+        let step = self.base_step * self.speed;
+        self.fraction += step * (1.0 + error.clamp(-1.0, 1.0) * DRIFT);
         while self.fraction >= 1.0 && self.samples.len() > 1 {
             self.samples.pop_front();
             self.fraction -= 1.0;
@@ -209,7 +212,8 @@ impl Audio {
         let queue = Arc::new(Mutex::new(Queue {
             samples: VecDeque::new(),
             fraction: 0.0,
-            step: rate / config.sample_rate.0 as f64,
+            base_step: rate / config.sample_rate.0 as f64,
+            speed: 1.0,
             starved: true,
             last: [0.0; 2],
             underruns: 0,
@@ -249,6 +253,13 @@ impl Audio {
 
     pub fn set_volume(&self, volume: f32) {
         self.volume.set(volume.clamp(0.0, 1.0));
+    }
+
+    /// sets the speed ratio for custom FPS limit / uncapped playback (e.g. 0.5 for 30 FPS, 2.0 for 120 FPS).
+    pub fn set_speed(&self, speed: f64) {
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.speed = speed.clamp(0.1, 10.0);
+        }
     }
 
     /// queues what the console played, stretched when the queue runs low
@@ -314,7 +325,8 @@ mod tests {
         Queue {
             samples: (0..samples).map(|i| [i as f32, -(i as f32)]).collect(),
             fraction: 0.0,
-            step,
+            base_step: step,
+            speed: 1.0,
             starved: false,
             last: [0.0; 2],
             underruns: 0,
