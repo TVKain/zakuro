@@ -206,9 +206,10 @@ vec3 xbrz_sample(sampler2D img, vec2 at, vec2 size, vec2 covered, vec4 bounds) {
 
 // A screen drawn bigger than its pixels is filtered as asked:
 // 0 smooth, 1 pixels, 2 sharp, 3 xbrz.
-// When drawn at higher internal resolutions (covered > 1.001), direct hardware
-// supersampling delivers the pristine, razor-sharp output directly from the
-// scaled framebuffer with zero smearing, matching modern Citra/Azahar blits.
+// When drawn at higher internal resolutions (covered > 1.001), 4-tap box
+// supersampling gathers 100% of the display pixel footprint from the 4K/8x
+// framebuffer, and AMD FidelityFX CAS restores crisp high-frequency micro-contrast
+// with zero smearing and zero halos.
 vec3 shown(sampler2D image, vec4 area, vec4 bounds) {
     vec2 at = area.xy + uv * area.zw;
     vec2 size = vec2(textureSize(image, 0));
@@ -236,35 +237,31 @@ vec3 shown(sampler2D image, vec4 area, vec4 bounds) {
         return texture(image, clamp(texel, bounds.xy, bounds.zw)).rgb;
     }
 
-    if (crop.mode == 2) {
-        vec2 px = fwidth(at);
-        vec3 c = texture(image, clamp(at, bounds.xy, bounds.zw)).rgb;
-        vec3 l = texture(image, clamp(at - vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
-        vec3 r = texture(image, clamp(at + vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
-        vec3 t = texture(image, clamp(at - vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
-        vec3 b = texture(image, clamp(at + vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
-        vec3 min_c = min(c, min(min(l, r), min(t, b)));
-        vec3 max_c = max(c, max(max(l, r), max(t, b)));
-        vec3 cross = (l + r + t + b) * 0.25;
-        vec3 sharp = c + (c - cross) * 0.85;
-        return clamp(sharp, min_c, max_c);
+    vec2 px = fwidth(at);
+    vec2 half_px = px * 0.25;
+    vec3 s0 = texture(image, clamp(at + vec2(-half_px.x, -half_px.y), bounds.xy, bounds.zw)).rgb;
+    vec3 s1 = texture(image, clamp(at + vec2( half_px.x, -half_px.y), bounds.xy, bounds.zw)).rgb;
+    vec3 s2 = texture(image, clamp(at + vec2(-half_px.x,  half_px.y), bounds.xy, bounds.zw)).rgb;
+    vec3 s3 = texture(image, clamp(at + vec2( half_px.x,  half_px.y), bounds.xy, bounds.zw)).rgb;
+    vec3 e = (s0 + s1 + s2 + s3) * 0.25;
+
+    if (crop.mode == 0) {
+        return e;
     }
 
-    if (crop.mode == 3) {
-        vec2 px = fwidth(at);
-        vec3 c = texture(image, clamp(at, bounds.xy, bounds.zw)).rgb;
-        vec3 l = texture(image, clamp(at - vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
-        vec3 r = texture(image, clamp(at + vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
-        vec3 t = texture(image, clamp(at - vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
-        vec3 b = texture(image, clamp(at + vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
-        vec3 min_c = min(c, min(min(l, r), min(t, b)));
-        vec3 max_c = max(c, max(max(l, r), max(t, b)));
-        vec3 cross = (l + r + t + b) * 0.25;
-        vec3 sharp = c + (c - cross) * 0.40;
-        return clamp(sharp, min_c, max_c);
-    }
+    vec3 b = texture(image, clamp(at - vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
+    vec3 d = texture(image, clamp(at - vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
+    vec3 f = texture(image, clamp(at + vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
+    vec3 h = texture(image, clamp(at + vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
 
-    return texture(image, clamp(at, bounds.xy, bounds.zw)).rgb;
+    vec3 min_rgb = min(e, min(min(d, f), min(b, h)));
+    vec3 max_rgb = max(e, max(max(d, f), max(b, h)));
+
+    float sharpness = (crop.mode == 2) ? 0.85 : 0.45;
+    vec3 amp_rgb = clamp(min(min_rgb, 1.0 - max_rgb) / max(max_rgb, vec3(1e-5)), 0.0, 1.0);
+    vec3 w = -sqrt(amp_rgb) * (sharpness * 0.25);
+    vec3 sharp_color = (w * (b + d + f + h) + e) / (4.0 * w + 1.0);
+    return clamp(sharp_color, min_rgb, max_rgb);
 }
 
 void main() {

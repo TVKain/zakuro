@@ -235,35 +235,31 @@ vec3 shown(sampler2D image) {
         return texture(image, texel).rgb;
     }
 
-    if (mode == 2) {
-        vec2 px = fwidth(uv);
-        vec3 c = texture(image, uv).rgb;
-        vec3 l = texture(image, uv - vec2(px.x, 0.0)).rgb;
-        vec3 r = texture(image, uv + vec2(px.x, 0.0)).rgb;
-        vec3 t = texture(image, uv - vec2(0.0, px.y)).rgb;
-        vec3 b = texture(image, uv + vec2(0.0, px.y)).rgb;
-        vec3 min_c = min(c, min(min(l, r), min(t, b)));
-        vec3 max_c = max(c, max(max(l, r), max(t, b)));
-        vec3 cross = (l + r + t + b) * 0.25;
-        vec3 sharp = c + (c - cross) * 0.85;
-        return clamp(sharp, min_c, max_c);
+    vec2 px = fwidth(uv);
+    vec2 half_px = px * 0.25;
+    vec3 s0 = texture(image, uv + vec2(-half_px.x, -half_px.y)).rgb;
+    vec3 s1 = texture(image, uv + vec2( half_px.x, -half_px.y)).rgb;
+    vec3 s2 = texture(image, uv + vec2(-half_px.x,  half_px.y)).rgb;
+    vec3 s3 = texture(image, uv + vec2( half_px.x,  half_px.y)).rgb;
+    vec3 e = (s0 + s1 + s2 + s3) * 0.25;
+
+    if (mode == 0) {
+        return e;
     }
 
-    if (mode == 3) {
-        vec2 px = fwidth(uv);
-        vec3 c = texture(image, uv).rgb;
-        vec3 l = texture(image, uv - vec2(px.x, 0.0)).rgb;
-        vec3 r = texture(image, uv + vec2(px.x, 0.0)).rgb;
-        vec3 t = texture(image, uv - vec2(0.0, px.y)).rgb;
-        vec3 b = texture(image, uv + vec2(0.0, px.y)).rgb;
-        vec3 min_c = min(c, min(min(l, r), min(t, b)));
-        vec3 max_c = max(c, max(max(l, r), max(t, b)));
-        vec3 cross = (l + r + t + b) * 0.25;
-        vec3 sharp = c + (c - cross) * 0.40;
-        return clamp(sharp, min_c, max_c);
-    }
+    vec3 b = texture(image, uv - vec2(0.0, px.y)).rgb;
+    vec3 d = texture(image, uv - vec2(px.x, 0.0)).rgb;
+    vec3 f = texture(image, uv + vec2(px.x, 0.0)).rgb;
+    vec3 h = texture(image, uv + vec2(0.0, px.y)).rgb;
 
-    return texture(image, uv).rgb;
+    vec3 min_rgb = min(e, min(min(d, f), min(b, h)));
+    vec3 max_rgb = max(e, max(max(d, f), max(b, h)));
+
+    float sharpness = (mode == 2) ? 0.85 : 0.45;
+    vec3 amp_rgb = clamp(min(min_rgb, 1.0 - max_rgb) / max(max_rgb, vec3(1e-5)), 0.0, 1.0);
+    vec3 w = -sqrt(amp_rgb) * (sharpness * 0.25);
+    vec3 sharp_color = (w * (b + d + f + h) + e) / (4.0 * w + 1.0);
+    return clamp(sharp_color, min_rgb, max_rgb);
 }
 "#;
 

@@ -1714,7 +1714,14 @@ impl Hardware {
                 shades: match (std::env::var_os("ZAKURO_CPU_SHADERS"), std::env::var_os("ZAKURO_GPU_SHADERS")) {
                     (Some(_), _) => false,
                     (None, Some(_)) => true,
-                    (None, None) => properties.device_type != vk::PhysicalDeviceType::INTEGRATED_GPU,
+                    (None, None) => {
+                        let name = std::ffi::CStr::from_ptr(properties.device_name.as_ptr()).to_string_lossy();
+                        properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU
+                            || name.contains("Arc")
+                            || name.contains("Iris")
+                            || name.contains("GeForce")
+                            || name.contains("Radeon")
+                    }
                 },
                 // interpreting them all instead, to tell the two apart
                 translates: std::env::var_os("ZAKURO_INTERPRET_SHADERS").is_none(),
