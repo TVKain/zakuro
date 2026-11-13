@@ -96,25 +96,13 @@ impl FpsLimit {
         }
     }
 
-    /// Target frame duration. None means uncapped (run as fast as possible).
-    pub fn frame_time(self) -> Option<Duration> {
-        let base_ns = zakuro_core::CYCLES_PER_FRAME as u128 * 1_000_000_000 / zakuro_core::kernel::thread::CPU_CLOCK_HZ as u128;
+    /// Target presentation duration. None means uncapped (present every frame).
+    pub fn presentation_time(self) -> Option<Duration> {
         match self {
-            FpsLimit::Fps30 => Some(Duration::from_nanos((base_ns * 2) as u64)),
-            FpsLimit::Fps60 => Some(Duration::from_nanos(base_ns as u64)),
-            FpsLimit::Fps90 => Some(Duration::from_nanos((base_ns * 2 / 3) as u64)),
-            FpsLimit::Fps120 => Some(Duration::from_nanos((base_ns / 2) as u64)),
-            FpsLimit::Uncapped => None,
-        }
-    }
-
-    /// Relative speed ratio compared to native 3DS 60 FPS (~59.825 Hz).
-    pub fn speed_ratio(self) -> Option<f64> {
-        match self {
-            FpsLimit::Fps30 => Some(0.5),
-            FpsLimit::Fps60 => Some(1.0),
-            FpsLimit::Fps90 => Some(1.5),
-            FpsLimit::Fps120 => Some(2.0),
+            FpsLimit::Fps30 => Some(Duration::from_nanos(1_000_000_000 / 30)),
+            FpsLimit::Fps60 => Some(Duration::from_nanos(1_000_000_000 / 60)),
+            FpsLimit::Fps90 => Some(Duration::from_nanos(1_000_000_000 / 90)),
+            FpsLimit::Fps120 => Some(Duration::from_nanos(1_000_000_000 / 120)),
             FpsLimit::Uncapped => None,
         }
     }
@@ -975,19 +963,18 @@ mod tests {
     fn fps_limit_parses_and_defaults() {
         let default_s: Settings = toml::from_str("").unwrap();
         assert_eq!(default_s.fps_limit, FpsLimit::Fps60);
-        assert_eq!(default_s.fps_limit.frame_time(), FpsLimit::Fps60.frame_time());
+        assert_eq!(default_s.fps_limit.presentation_time(), FpsLimit::Fps60.presentation_time());
 
         let s30: Settings = toml::from_str("fps_limit = \"30\"\n").unwrap();
         assert_eq!(s30.fps_limit, FpsLimit::Fps30);
-        assert_eq!(s30.fps_limit.speed_ratio(), Some(0.5));
+        assert_eq!(s30.fps_limit.presentation_time(), Some(Duration::from_nanos(1_000_000_000 / 30)));
 
         let s120: Settings = toml::from_str("fps_limit = \"120\"\n").unwrap();
         assert_eq!(s120.fps_limit, FpsLimit::Fps120);
-        assert_eq!(s120.fps_limit.speed_ratio(), Some(2.0));
+        assert_eq!(s120.fps_limit.presentation_time(), Some(Duration::from_nanos(1_000_000_000 / 120)));
 
         let suncapped: Settings = toml::from_str("fps_limit = \"uncapped\"\n").unwrap();
         assert_eq!(suncapped.fps_limit, FpsLimit::Uncapped);
-        assert_eq!(suncapped.fps_limit.frame_time(), None);
-        assert_eq!(suncapped.fps_limit.speed_ratio(), None);
+        assert_eq!(suncapped.fps_limit.presentation_time(), None);
     }
 }

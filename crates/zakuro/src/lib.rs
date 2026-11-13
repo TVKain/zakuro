@@ -37,7 +37,7 @@ use library::Library;
 use menus::{Action, Menus};
 use present::Backend;
 use recompile::{Job, Stage, Toolchain, Wanted};
-use settings::{CameraSource, FpsLimit, MicrophoneSource, Renderer, Screens, Settings, WindowMode};
+use settings::{CameraSource, MicrophoneSource, Renderer, Screens, Settings, WindowMode};
 
 pub use zakuro_core::memory::Memory;
 pub use zakuro_core::recompiled::Linked;
@@ -131,6 +131,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         next_frame: Instant::now(),
         skipped: 0,
         shown: 0,
+        shown_fps: 60.0,
         spent: Spent::default(),
         paused: false,
         fast_forward_key: false,
@@ -434,6 +435,8 @@ struct App {
     skipped: u32,
     /// frames shown since the title was last updated.
     shown: u32,
+    /// measured presentation frame rate shown in the overlay.
+    shown_fps: f32,
     /// how long emulating and showing frames took since the title was last
     /// updated, for the frame rate's log.
     spent: Spent,
@@ -1421,9 +1424,7 @@ impl App {
 
     fn apply_audio_speed(&self) {
         if let Some(audio) = &self.audio {
-            if let Some(speed) = self.active.fps_limit.speed_ratio() {
-                audio.set_speed(speed);
-            }
+            audio.set_speed(1.0);
         }
     }
 
@@ -1861,54 +1862,67 @@ impl App {
                 self.apply_audio_speed();
             }
         }
-        if playing {
+        let emulate_due = playing && (fast || now >= self.next_frame);
+        if emulate_due {
             let start = Instant::now();
             self.emulate();
             self.spent.emulating.add(start.elapsed());
-        } else if let Some(audio) = &self.audio {
-            // the sound stops with the game, which is not falling behind
-            audio.hold();
+            if fast {
+                self.next_frame = Instant::now();
+            } else {
+                self.next_frame += FRAME_TIME;
+            }
+        } else if !playing {
+            self.next_frame = now;
+            if let Some(audio) = &self.audio {
+                // the sound stops with the game, which is not falling behind
+                audio.hold();
+            }
         }
 
-        let frame_time = if fast { None } else { self.active.fps_limit.frame_time() };
-        if let Some(dt) = frame_time {
-            self.next_frame += dt;
+        let present_cadence = if fast {
+            Some(FRAME_TIME)
         } else {
-            // uncapped or fast forward: nothing to wait for
-            self.next_frame = Instant::now();
-        }
-
-        // behind the schedule, showing the frame would wait on the display,
-        // so it goes unshown, a few at most. a presenter that does not wait,
-        // in mailbox mode, shows them all, a game that could not keep up
-        // showed a fifth of its frames. fast forward shows them at the
-        // console's frame rate, waiting on the display for no more
-        let behind = Instant::now() > self.next_frame;
-        let waits = self.backend.as_ref().is_some_and(Backend::waits_for_display);
-        let unshown = if fast {
-            Instant::now() < self.next_shown
-        } else if frame_time.is_some() {
-            skips_showing(playing, behind, waits, self.skipped)
-        } else {
-            // uncapped: show as many frames as possible unless display presentation waits
-            skips_showing(playing, false, waits, self.skipped)
+            self.active.fps_limit.presentation_time()
         };
 
-        if unshown {
-            self.skipped += 1;
-        } else {
-            self.skipped = 0;
-            let start = Instant::now();
-            self.present(event_loop);
-            // presentation cadence: fast forward presents at 60 FPS to leave GPU free for emulation
-            let show_cadence = if fast { FRAME_TIME } else { frame_time.unwrap_or(Duration::from_millis(1)) };
-            self.next_shown = (self.next_shown + show_cadence).max(Instant::now() - show_cadence);
-            self.spent.showing.add(start.elapsed());
-            self.shown += 1;
+        let present_due = match present_cadence {
+            Some(_) => now >= self.next_shown,
+            None => true, // uncapped: present whenever step() runs
+        };
+
+        if present_due {
+            let behind = match present_cadence {
+                Some(cadence) => now > self.next_shown + cadence,
+                None => false,
+            };
+            let waits = self.backend.as_ref().is_some_and(Backend::waits_for_display);
+            let unshown = if fast {
+                Instant::now() < self.next_shown
+            } else {
+                skips_showing(playing, behind, waits, self.skipped)
+            };
+
+            if unshown {
+                self.skipped += 1;
+            } else {
+                self.skipped = 0;
+                let start = Instant::now();
+                self.present(event_loop);
+                if let Some(cadence) = present_cadence {
+                    self.next_shown = (self.next_shown + cadence).max(Instant::now() - cadence);
+                } else {
+                    self.next_shown = Instant::now();
+                }
+                self.spent.showing.add(start.elapsed());
+                self.shown += 1;
+            }
         }
 
         if self.last_title_update.elapsed() >= Duration::from_millis(500) {
-            let shown = self.shown as f32 / self.last_title_update.elapsed().as_secs_f32();
+            let elapsed_secs = self.last_title_update.elapsed().as_secs_f32();
+            let shown = self.shown as f32 / elapsed_secs;
+            self.shown_fps = shown;
             self.shown = 0;
             self.last_title_update = Instant::now();
             if let Some(game) = &self.game {
@@ -1918,12 +1932,6 @@ impl App {
                     "{:.1} frames emulated and {shown:.1} shown a second, emulating took {emulating}, showing {showing}",
                     game.fps
                 );
-                // in uncapped mode, continuously track audio speed so sound doesn't stutter or overrun
-                if !fast && self.active.fps_limit == FpsLimit::Uncapped && game.fps > 5.0 {
-                    if let Some(audio) = &self.audio {
-                        audio.set_speed((game.fps as f64 / 59.825).clamp(0.5, 4.0));
-                    }
-                }
             }
             if let Some(window) = &self.window {
                 let title = match &self.game {
@@ -1938,9 +1946,35 @@ impl App {
             }
         }
 
-        let now = Instant::now();
-        if frame_time.is_some() && now < self.next_frame {
-            std::thread::sleep(self.next_frame - now);
+        if !fast {
+            let now = Instant::now();
+            let sleep_emulate = if playing && self.next_frame > now {
+                Some(self.next_frame - now)
+            } else {
+                None
+            };
+            let sleep_present = if present_cadence.is_some() {
+                if self.next_shown > now {
+                    Some(self.next_shown - now)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let sleep_duration = match (sleep_emulate, sleep_present) {
+                (Some(e), Some(p)) => Some(e.min(p)),
+                (Some(e), None) if present_cadence.is_some() => Some(e),
+                (None, Some(p)) => Some(p),
+                _ => None,
+            };
+
+            if let Some(dur) = sleep_duration {
+                if dur > Duration::from_micros(500) {
+                    std::thread::sleep(dur);
+                }
+            }
         }
     }
 
@@ -2219,8 +2253,8 @@ impl App {
         let overlay = gui.frame(window, |ui| {
             ui.add_enabled_ui(!modal_open, |ui| {
                 match &game {
-                    Some((name, fps, recompiled)) => {
-                        actions.extend(menus.game(ui, name, program_id, show_fps.then_some(*fps), *recompiled, fast, jobs, waiting.len(), saved.as_deref()));
+                    Some((name, _fps, recompiled)) => {
+                        actions.extend(menus.game(ui, name, program_id, show_fps.then_some(self.shown_fps), *recompiled, fast, jobs, waiting.len(), saved.as_deref()));
                         if let Some(text) = &corner {
                             menus::corner(ui.ctx(), text);
                         }
