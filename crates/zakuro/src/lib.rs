@@ -1950,6 +1950,11 @@ impl App {
         let guest = self.dlp_guest.get_or_insert_with(|| zakuro_core::download_play::Guest::new(room.link()));
         guest.poll();
         match guest.end() {
+            Some(zakuro_core::download_play::Phase::Begun { .. }) if let Some(name) = recompile::blocking_play(&self.jobs, &self.waiting) => {
+                // like any other start, this one waits for the recompile
+                self.dlp_own = None;
+                self.menus.message = Some(format!("Download Play can start once {name} finishes recompiling, which takes the whole processor."));
+            }
             Some(zakuro_core::download_play::Phase::Begun { child, reboot }) => {
                 let own = self.dlp_own.take();
                 let path = match child {
@@ -1976,6 +1981,10 @@ impl App {
     /// takes part in the Download Play offer at index, with the player's own
     /// copy of the child when the folder has one.
     fn join_download_play(&mut self, index: usize) {
+        if let Some(name) = recompile::blocking_play(&self.jobs, &self.waiting) {
+            self.menus.message = Some(format!("Download Play can start once {name} finishes recompiling, which takes the whole processor."));
+            return;
+        }
         let node = zakuro_core::download_play::node(self.settings.console_id, &self.nickname());
         let Some(guest) = &mut self.dlp_guest else { return };
         let Some(heard) = guest.offers().get(index) else { return };
