@@ -4,7 +4,7 @@ use std::time::Duration;
 use gilrs::Button;
 use zakuro::settings::{
     game_key, Filter, FpsLimit, GameSettings, Orientation, Renderer, Screens,
-    Settings, Stereo3d, TopShape,
+    Settings, Stereo3d, Theme, TopShape,
 };
 
 #[test]
@@ -21,7 +21,7 @@ fn test_default_settings_invariants() {
     assert_eq!(settings.fps_limit, FpsLimit::Fps60);
     assert_eq!(settings.layout, Screens::Stacked);
     assert_eq!(settings.orientation, Orientation::North);
-    assert_eq!(settings.filter, Filter::Smooth);
+    assert_eq!(settings.filter, Filter::Sharp);
     assert!(!settings.integer_scale);
     assert_eq!(settings.top_shape, TopShape::Console);
     assert_eq!(settings.stereo, Stereo3d::Off);
@@ -68,11 +68,10 @@ fn test_fps_limit_serialization_and_presentation_time() {
 #[test]
 fn test_filter_serialization_and_display() {
     let cases = [
-        (Filter::Smooth, "smooth", "Smooth"),
-        (Filter::Pixels, "pixels", "Pixels"),
         (Filter::Sharp, "sharp", "Sharp"),
-        (Filter::Xbrz, "xbrz", "xBRZ"),
-        (Filter::XbrzLinear, "xbrz_linear", "xBRZ + Linear"),
+        (Filter::Soft, "soft", "Soft"),
+        (Filter::Pixelated, "pixelated", "Pixelated"),
+        (Filter::SmoothEdges, "smooth_edges", "Smooth edges"),
     ];
 
     for (filter, expected_str, expected_name) in cases {
@@ -92,18 +91,43 @@ fn test_filter_serialization_and_display() {
 }
 
 #[test]
-fn test_window_is_not_saved_and_old_games_folder_is_read_once() {
-    // older files kept a window mode and a games folder: the window always
-    // opens maximized now, and the folder is read to offer its games
+fn test_older_filter_names_still_load() {
+    for (old, filter) in [("smooth", Filter::Soft), ("pixels", Filter::Pixelated), ("xbrz", Filter::SmoothEdges), ("xbrz_linear", Filter::SmoothEdges)] {
+        let loaded: Wrap<Filter> = toml::from_str(&format!("val = \"{old}\"")).expect("an older filter name should load");
+        assert_eq!(loaded.val, filter);
+    }
+}
+
+#[test]
+fn test_theme_follows_the_system_by_default_and_round_trips() {
+    assert_eq!(Settings::default().theme, Theme::System);
+    // files from before themes existed follow the system
+    let old: Settings = toml::from_str("volume = 0.5").expect("an older file should load");
+    assert_eq!(old.theme, Theme::System);
+    for theme in Theme::ALL {
+        let settings = Settings { theme, ..Default::default() };
+        let text = toml::to_string(&settings).expect("settings should save");
+        let loaded: Settings = toml::from_str(&text).expect("saved settings should load");
+        assert_eq!(loaded.theme, theme);
+    }
+    let bad: Settings = toml::from_str("theme = \"sepia\"").expect("an unknown theme should not stop loading");
+    assert_eq!(bad.theme, Theme::System);
+}
+
+#[test]
+fn test_window_and_old_game_folders_are_not_kept() {
+    // older files kept a window mode, a games folder and a library folder:
+    // the window always opens maximized now, and games live in Zakuro's own
+    // library folder alone
     let old = r#"
         window_mode = "windowed"
         games = 'C:\Games'
+        library = 'D:\Zakuro'
     "#;
     let settings: Settings = toml::from_str(old).expect("older settings should still load");
     assert!(!settings.fullscreen);
-    assert_eq!(settings.games, Some(std::path::PathBuf::from(r"C:\Games")));
     let saved = toml::to_string(&Settings { fullscreen: true, ..settings }).expect("failed to serialize settings");
-    assert!(!saved.contains("window_mode") && !saved.contains("fullscreen") && !saved.contains("games ="));
+    assert!(!saved.contains("window_mode") && !saved.contains("fullscreen") && !saved.contains("games =") && !saved.contains("library ="));
 }
 
 #[test]
@@ -133,7 +157,7 @@ fn test_legacy_toml_backward_compatibility() {
 
     // Newly added fields must take their correct defaults
     assert_eq!(settings.fps_limit, FpsLimit::Fps60);
-    assert_eq!(settings.filter, Filter::Smooth);
+    assert_eq!(settings.filter, Filter::Sharp);
     assert!(!settings.show_fps);
     assert_eq!(settings.pad.menu, Button::Mode);
 }
@@ -154,7 +178,7 @@ fn test_unknown_fields_forward_compatibility() {
 
     assert_eq!(settings.resolution, 8);
     assert_eq!(settings.fps_limit, FpsLimit::Fps120);
-    assert_eq!(settings.filter, Filter::XbrzLinear);
+    assert_eq!(settings.filter, Filter::SmoothEdges);
 }
 
 #[test]
@@ -162,7 +186,7 @@ fn test_per_game_settings_hierarchy_and_overrides() {
     let mut settings = Settings {
         resolution: 3,
         fps_limit: FpsLimit::Fps60,
-        filter: Filter::Smooth,
+        filter: Filter::Soft,
         show_fps: false,
         ..Default::default()
     };
@@ -196,7 +220,7 @@ fn test_per_game_settings_hierarchy_and_overrides() {
     let other_active = settings.for_game(Some(other_title_id));
     assert_eq!(other_active.resolution, 3);
     assert_eq!(other_active.fps_limit, FpsLimit::Fps60);
-    assert_eq!(other_active.filter, Filter::Smooth);
+    assert_eq!(other_active.filter, Filter::Soft);
     assert!(!other_active.show_fps);
 
     // None title ID (main menu/library view)
@@ -216,7 +240,7 @@ fn test_per_game_round_trip_serialization() {
     let game_settings = GameSettings {
         resolution: Some(8),
         fps_limit: Some(FpsLimit::Fps120),
-        filter: Some(Filter::XbrzLinear),
+        filter: Some(Filter::SmoothEdges),
         ..Default::default()
     };
     settings.per_game.insert(game_key(title_id), game_settings);
@@ -225,14 +249,14 @@ fn test_per_game_round_trip_serialization() {
     assert!(serialized.contains("[per_game.00040000001B5000]"));
     assert!(serialized.contains("resolution = 8"));
     assert!(serialized.contains("fps_limit = \"120\""));
-    assert!(serialized.contains("filter = \"xbrz_linear\""));
+    assert!(serialized.contains("filter = \"smooth_edges\""));
 
     let reloaded: Settings =
         toml::from_str(&serialized).expect("failed to deserialize reloaded settings");
     let active = reloaded.for_game(Some(title_id));
     assert_eq!(active.resolution, 8);
     assert_eq!(active.fps_limit, FpsLimit::Fps120);
-    assert_eq!(active.filter, Filter::XbrzLinear);
+    assert_eq!(active.filter, Filter::SmoothEdges);
 }
 
 #[test]
@@ -240,7 +264,7 @@ fn test_per_game_options_drop_system_only_fields_and_empty_entries() {
     let mut settings = Settings::default();
     let id: u64 = 0x00040000001B5000;
     settings.game_mut(id).show_fps = Some(true);
-    settings.game_mut(0x0004000000055D00).filter = Some(Filter::Xbrz);
+    settings.game_mut(0x0004000000055D00).filter = Some(Filter::SmoothEdges);
     settings.migrate();
     // the window and frame counter are the system's alone now, and a game
     // left with nothing of its own goes from the file
@@ -248,7 +272,7 @@ fn test_per_game_options_drop_system_only_fields_and_empty_entries() {
     assert!(!settings.per_game.contains_key(&zakuro::settings::game_key(id)));
     // what a game keeps of its own stays
     assert!(settings.has_own(0x0004000000055D00));
-    assert_eq!(settings.for_game(Some(0x0004000000055D00)).filter, Filter::Xbrz);
+    assert_eq!(settings.for_game(Some(0x0004000000055D00)).filter, Filter::SmoothEdges);
 }
 
 #[test]

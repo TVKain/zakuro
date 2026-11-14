@@ -8,8 +8,6 @@ pub use result::{ResultCode, ResultValue};
 
 /// a virtual address inside an emulated process.
 pub type VAddr = u32;
-/// a physical address on the 3DS bus.
-pub type PAddr = u32;
 
 /// both 3DS screens, as the GPU and the presentation layer see them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

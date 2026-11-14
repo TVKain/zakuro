@@ -7,6 +7,7 @@ pub mod camera;
 pub mod cli;
 pub mod gamepad;
 pub mod gui;
+pub mod icons;
 pub mod input;
 pub mod library;
 pub mod menus;
@@ -18,6 +19,8 @@ pub mod report;
 pub mod nav;
 pub mod settings;
 pub mod store;
+pub mod timing;
+pub mod pacing;
 pub mod zig;
 
 use std::path::{Path, PathBuf};
@@ -114,6 +117,8 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         top_shape: settings.top_shape,
         options,
         active: settings.clone(),
+        started: settings.clone(),
+        presented_with: None,
         settings,
         linked,
         overlay,
@@ -138,7 +143,6 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         cursor_seen: false,
         last_title_update: Instant::now(),
         next_frame: Instant::now(),
-        _skipped: 0,
         shown: 0,
         shown_fps: 60.0,
         spent: Spent::default(),
@@ -146,6 +150,9 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         fast_forward_key: false,
         fast_forwarding: false,
         next_shown: Instant::now(),
+        refresh: timing::refresh().unwrap_or(UNKNOWN_REFRESH),
+        pacing: pacing::Pacing::default(),
+        timing: timing::Timing::from_env(),
         stop: false,
         camera: None,
         microphone: None,
@@ -173,17 +180,6 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
     }
 
     app.rescan();
-    // games are kept in Zakuro's library alone now: the games of a folder
-    // older versions listed from are offered for adding to it, once
-    if let Some(folder) = app.settings.games.take() {
-        let mut files = Vec::new();
-        library::game_files(&folder, 0, &mut files);
-        if !files.is_empty() {
-            app.dropped = files;
-            app.menus.toast("Games are kept in Zakuro's library now. Pick the ones to add from your old folder");
-        }
-        app.settings.save();
-    }
     app.audio = if app.options.mute {
         None
     } else {
@@ -422,6 +418,11 @@ struct App {
     /// the settings in force, what the running game has of its own over
     /// the general ones, which is all there is without a game.
     active: Settings,
+    /// the settings the running game started with, for what it reads only
+    /// as it starts.
+    started: Settings,
+    /// the graphics API the window was opened with, as the settings had it.
+    presented_with: Option<Renderer>,
     linked: Option<Linked>,
     /// what the program built on Zakuro shows over the game, and the line it
     /// keeps in the corner now.
@@ -465,8 +466,6 @@ struct App {
     /// after another, so that a slow one is made up by those after it and
     /// the sound, made as the console runs, keeps up.
     next_frame: Instant,
-    /// frames in a row not shown while catching up.
-    _skipped: u32,
     /// frames shown since the title was last updated.
     shown: u32,
     /// measured presentation frame rate shown in the overlay.
@@ -480,9 +479,16 @@ struct App {
     fast_forward_key: bool,
     /// the game runs as fast as it can, its sound left out.
     fast_forwarding: bool,
-    /// when fast forward shows its next frame, on a grid at the console's
-    /// frame rate.
+    /// when the next picture may show at the soonest, the frame rate
+    /// limit's period after the last.
     next_shown: Instant,
+    /// how often the display refreshes, which is as often as Uncapped shows
+    /// a picture: more often only repeats one the display never shows.
+    refresh: Duration,
+    /// lines frames up with the display's refreshes.
+    pacing: pacing::Pacing,
+    /// when frames were emulated and shown, for ZAKURO_TIMING.
+    timing: Option<timing::Timing>,
     stop: bool,
     /// what the running game's cameras were given to see, to give them
     /// another only when the settings change it.
@@ -554,32 +560,62 @@ impl std::fmt::Display for Times {
 /// one 3DS frame, about 16.71 ms.
 const FRAME_TIME: Duration =
     Duration::from_nanos(zakuro_core::CYCLES_PER_FRAME * 1_000_000_000 / zakuro_core::kernel::thread::CPU_CLOCK_HZ);
+/// how often to show pictures when Uncapped and the display's refresh is
+/// unknown.
+const UNKNOWN_REFRESH: Duration = Duration::from_nanos(1_000_000_000 / 240);
+
+/// how long a step may sleep: until the next frame is due, or the next
+/// picture when one in between will show before it.
+fn sleep_for(playing: bool, now: Instant, next_shown: Instant, next_frame: Instant, cadence: Duration) -> Duration {
+    let until = |at: Instant| at.saturating_duration_since(now);
+    if !playing {
+        return until(next_shown);
+    }
+    let between = cadence.as_secs_f64() < FRAME_TIME.as_secs_f64() * 0.9;
+    let shown = next_shown.max(now);
+    if between && next_frame.saturating_duration_since(shown) > cadence / 2 {
+        until(next_frame.min(shown))
+    } else {
+        until(next_frame)
+    }
+}
+
 /// how far behind the schedule may fall before it starts over instead of
 /// running fast to catch up, after a pause say.
 const CATCH_UP_LIMIT: Duration = Duration::from_millis(200);
-/// frames that may go unshown in a row while catching up.
-#[cfg(test)]
-const MAX_SKIPPED: u32 = 4;
-
-/// whether a frame goes unshown, the game running behind the schedule with
-/// a presenter that waits for the display, and fewer than MAX_SKIPPED
-/// unshown before it.
-#[cfg(test)]
-fn skips_showing(playing: bool, behind: bool, waits: bool, skipped: u32) -> bool {
-    playing && behind && waits && skipped < MAX_SKIPPED
+/// whether a step shows a picture now, cadence apart at most. a frame just
+/// emulated shows straight away, not at the next tick of a clock of the
+/// presenter's own, which would hold it back by up to a tick and, ticking
+/// against the console's 59.83 frames a second, show frames unevenly; it
+/// may come a quarter of a frame early, so that at 30 frames a second every
+/// other one shows. between frames the same picture, or one in between with
+/// frame interpolation, shows again only when the limit is above the game's
+/// rate and the next frame is not about to come anyway.
+fn shows_now(emulated: bool, playing: bool, now: Instant, next_shown: Instant, next_frame: Instant, cadence: Duration) -> bool {
+    let between = cadence.as_secs_f64() < FRAME_TIME.as_secs_f64() * 0.9;
+    if emulated {
+        // at the game's rate or above every frame shows, though a picture
+        // in between, or the limit's own clock, a little faster than the
+        // console's, says it is early
+        let keeps_up = cadence.as_secs_f64() <= FRAME_TIME.as_secs_f64() * 1.05;
+        return between || keeps_up || now + FRAME_TIME / 4 >= next_shown;
+    }
+    if !playing {
+        return now >= next_shown;
+    }
+    between && now >= next_shown && next_frame.saturating_duration_since(now) > cadence / 2
 }
 
 /// what the player is told when the 3D can't be drawn on the GPU.
 const GPU_FALLBACK: &str = "The 3D can't be drawn on the GPU, as Vulkan isn't working on this computer, so it's drawn in software. \
 Games run much slower that way, and texture packs are left out. Updating the graphics driver usually fixes it; the log says \
-what went wrong. To draw in software without this message, turn off \"Draw the 3D on the GPU\" in Settings, Graphics.";
+what went wrong. To draw in software without this message, set \"3D rendering\" to CPU in System Settings, Graphics.";
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
-        }
-
+impl App {
+    /// opens the window with the presenter the settings ask for, or OpenGL
+    /// when Vulkan won't start, and the interface in it, false when no
+    /// window could be opened.
+    fn open_window(&mut self, event_loop: &ActiveEventLoop) -> bool {
         let size = self.window_size();
         let mut attributes = Window::default_attributes().with_title("Zakuro").with_inner_size(size);
         if let Ok(image) = image::load_from_memory(include_bytes!("../../../packaging/zakuro.png")) {
@@ -591,10 +627,14 @@ impl ApplicationHandler for App {
         }
         // it always opens maximized, full screen is a toggle away
         attributes = attributes.with_maximized(true);
+        if self.settings.fullscreen {
+            attributes = attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
         let renderer = self.options.renderer.unwrap_or(match self.settings.renderer {
             Renderer::Vulkan => RendererKind::Vulkan,
             Renderer::OpenGl => RendererKind::OpenGl,
         });
+        self.presented_with = Some(self.settings.renderer);
 
         let backend = Backend::create(event_loop, attributes.clone(), renderer).or_else(|error| {
             if renderer != RendererKind::Vulkan {
@@ -615,14 +655,55 @@ impl ApplicationHandler for App {
                 self.gui = Some(Gui::new(&window));
                 self.window = Some(window);
                 self.backend = Some(backend);
-                // the game the command line names starts on the device the
-                // presenter may lend the renderer, once there is one
-                self.start();
+                true
             }
             Err(error) => {
                 eprintln!("zakuro: could not start the {renderer:?} backend: {error}");
-                event_loop.exit();
+                log::error!("could not start the {renderer:?} backend: {error}");
+                false
             }
+        }
+    }
+
+    /// opens the window again with the presenter the settings now ask for,
+    /// while no game runs, as a running game may draw with the presenter's
+    /// device. what the interface had on the old one is uploaded again.
+    fn switch_presenter(&mut self, event_loop: &ActiveEventLoop) {
+        let from = self.presented_with;
+        // the presenter goes before the window it draws into
+        self.gui = None;
+        self.backend = None;
+        self.window = None;
+        self.menus.forget_textures();
+        if self.open_window(event_loop) {
+            let name = if self.backend.as_ref().map(Backend::name) == Some("opengl") { "OpenGL" } else { "Vulkan" };
+            self.menus.toast(&format!("Now drawing with {name}"));
+            return;
+        }
+        // back to the one that worked
+        if let Some(from) = from {
+            self.settings.renderer = from;
+            self.settings.save();
+        }
+        if !self.open_window(event_loop) {
+            event_loop.exit();
+            return;
+        }
+        self.menus.message = Some("That graphics API couldn't start on this computer, so Zakuro kept the one it had.".into());
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        if self.open_window(event_loop) {
+            // the game the command line names starts on the device the
+            // presenter may lend the renderer, once there is one
+            self.start();
+        } else {
+            event_loop.exit();
         }
     }
 
@@ -649,6 +730,8 @@ impl ApplicationHandler for App {
                 self.blow(false);
                 self.keyboard.release();
             }
+            // games copied into the library folder by hand show up on coming back
+            WindowEvent::Focused(true) if self.game.is_none() && self.install.is_none() && !self.library.is_busy() => self.rescan(),
             WindowEvent::Resized(size) => {
                 if let Some(backend) = &mut self.backend {
                     backend.resize(size.width, size.height);
@@ -780,12 +863,12 @@ impl App {
         let running = self.program_id() == Some(program_id);
         let busy = self.jobs.iter().any(|job| job.program_id == program_id && !job.stage().finished());
         let Some(game) = self.library.games.iter().find(|game| game.program_id == program_id && game.problem.is_none()) else { return };
-        let Some(library) = store::library_dir(&self.settings, self.data_dir.as_deref()) else { return };
+        let Some(library) = store::library_dir(self.data_dir.as_deref()) else { return };
         if running || busy {
             return;
         }
         let name = game.name.clone();
-        let files = store::game_files(game, &store::sources(&self.settings, self.data_dir.as_deref()));
+        let files = store::game_files(game, &store::sources(self.data_dir.as_deref()));
         self.waiting.retain(|waiting| waiting.program_id != program_id);
         match store::remove_game(&files, &library) {
             Ok(_) => {
@@ -799,8 +882,8 @@ impl App {
 
     /// looks through the library's folders again.
     fn rescan(&mut self) {
-        let sources = store::sources(&self.settings, self.data_dir.as_deref());
-        if let Some(own) = sources.first().filter(|_| self.settings.library.is_none()) {
+        let sources = store::sources(self.data_dir.as_deref());
+        if let Some(own) = sources.first() {
             // Zakuro's own library is there from the start, to add to
             let _ = std::fs::create_dir_all(&own.folder);
         }
@@ -882,6 +965,8 @@ impl App {
         let started = self.start_game(path);
         if started.is_err() {
             self.active = self.settings.clone();
+        } else {
+            self.started = self.active.clone();
         }
         self.apply_layout();
         self.apply_audio_speed();
@@ -1245,7 +1330,8 @@ impl App {
 
     fn apply_audio_speed(&self) {
         if let Some(audio) = &self.audio {
-            audio.set_speed(1.0);
+            // lined up with the display, the game runs at its rate
+            audio.set_speed(pacing::speed(FRAME_TIME, self.refresh));
         }
     }
 
@@ -1257,6 +1343,10 @@ impl App {
             if game.system.config.resolution != self.active.resolution {
                 let actual = game.system.set_resolution(self.active.resolution);
                 log::info!("internal resolution changed to {actual}x");
+            }
+            if game.system.config.texture_packs != self.active.texture_packs {
+                let drawn = game.system.set_texture_packs(self.active.texture_packs);
+                log::info!("texture packs {}", if drawn { "on" } else { "off" });
             }
             if game.system.gpu.smooths_textures() != self.active.smooth_textures {
                 game.system.gpu.set_smooth_textures(self.active.smooth_textures);
@@ -1533,7 +1623,6 @@ impl App {
                     self.settings.save();
                 }
             }
-            Action::Rescan => self.rescan(),
             Action::AddContent(for_game) => {
                 let picked = rfd::FileDialog::new()
                     .set_title("Add games, updates, DLC, texture packs or cheats")
@@ -1548,27 +1637,7 @@ impl App {
                     self.identify(vec![folder], Some(program_id));
                 }
             }
-            Action::ChooseLibrary => {
-                let before = store::library_dir(&self.settings, self.data_dir.as_deref());
-                if let Some(folder) = rfd::FileDialog::new().set_title("Where Zakuro keeps your games").pick_folder() {
-                    self.settings.library = Some(folder.clone());
-                    self.settings.save();
-                    let mut left = Vec::new();
-                    if let Some(before) = before.filter(|before| *before != folder) {
-                        library::game_files(&before, 2, &mut left);
-                        if !left.is_empty() {
-                            self.menus.message = Some(format!(
-                                "New games will be kept in {}. The {} files already in {} stay there; move them across to keep them in your library.",
-                                folder.display(),
-                                left.len(),
-                                before.display()
-                            ));
-                        }
-                    }
-                    self.rescan();
-                }
-            }
-            Action::Install(choice) => match (&self.data_dir, store::library_dir(&self.settings, self.data_dir.as_deref())) {
+            Action::Install(choice) => match (&self.data_dir, store::library_dir(self.data_dir.as_deref())) {
                 (Some(data_dir), Some(library)) => {
                     let (steps, bytes) = store::plan(&choice, &library, data_dir);
                     if !steps.is_empty() {
@@ -1686,6 +1755,11 @@ impl App {
             event_loop.exit();
             return;
         }
+        // a graphics API chosen on Home opens the window again with it
+        if self.options.renderer.is_none() && self.game.is_none() && self.presented_with.is_some_and(|with| with != self.settings.renderer) {
+            self.switch_presenter(event_loop);
+            return;
+        }
         let now = Instant::now();
         if now > self.next_frame + CATCH_UP_LIMIT {
             self.next_frame = now;
@@ -1731,14 +1805,25 @@ impl App {
             }
         }
         let emulate_due = playing && (fast || now >= self.next_frame);
+        let mut emulated_at = None;
         if emulate_due {
             let start = Instant::now();
+            emulated_at = Some(start);
+            let started = timing::ticks();
+            let due = self.next_frame;
             self.emulate();
             self.spent.emulating.add(start.elapsed());
+            if let (Some(timing), Some(game)) = (&mut self.timing, &self.game) {
+                timing.emulated(started, due, game.frame);
+            }
             if fast {
                 self.next_frame = Instant::now();
+                self.pacing.clear();
             } else {
                 self.next_frame += FRAME_TIME;
+                if let Some((vblank, refresh)) = timing::vblank() {
+                    self.next_frame = self.pacing.align(self.next_frame, FRAME_TIME, vblank, refresh);
+                }
             }
         } else if !playing {
             self.next_frame = now;
@@ -1748,26 +1833,29 @@ impl App {
             }
         }
 
-        let present_cadence = if fast {
-            Some(FRAME_TIME)
-        } else {
-            self.active.fps_limit.presentation_time()
-        };
+        // fast forward shows at the console's rate whatever it runs at
+        let cadence = if fast { FRAME_TIME } else { self.active.fps_limit.presentation_time().unwrap_or(self.refresh) };
 
-        let present_due = match present_cadence {
-            Some(_) => now >= self.next_shown,
-            None => true, // uncapped: present whenever step() runs
+        let after = Instant::now();
+        let present_due = if fast {
+            after >= self.next_shown
+        } else {
+            shows_now(emulate_due, playing, after, self.next_shown, self.next_frame, cadence)
         };
 
         if present_due {
             let start = Instant::now();
+            let started = timing::ticks();
             self.present(event_loop);
-            let finish = Instant::now();
-            if let Some(cadence) = present_cadence {
-                self.next_shown = (self.next_shown + cadence).max(finish.checked_sub(cadence).unwrap_or(finish));
-            } else {
-                self.next_shown = finish;
+            if let (Some(timing), Some(game)) = (&mut self.timing, &self.game) {
+                timing.presented(started, game.frame);
             }
+            if let Some(emulated) = emulated_at.filter(|_| !fast) {
+                self.pacing.record(emulated.elapsed());
+            }
+            // counted from this present, so the ones in between a new
+            // frame's fall evenly between frames
+            self.next_shown = start + cadence;
             self.spent.showing.add(start.elapsed());
             self.shown += 1;
         }
@@ -1778,6 +1866,13 @@ impl App {
             self.shown_fps = shown;
             self.shown = 0;
             self.last_title_update = Instant::now();
+            let refresh = timing::refresh().unwrap_or(UNKNOWN_REFRESH);
+            if refresh != self.refresh {
+                self.refresh = refresh;
+                if !self.fast_forwarding {
+                    self.apply_audio_speed();
+                }
+            }
             if let Some(game) = &self.game {
                 let Spent { emulating, showing } = std::mem::take(&mut self.spent);
                 log::debug!(
@@ -1800,33 +1895,9 @@ impl App {
         }
 
         if !fast {
-            let now = Instant::now();
-            let sleep_emulate = if playing && self.next_frame > now {
-                Some(self.next_frame - now)
-            } else if !playing {
-                None
-            } else {
-                Some(Duration::ZERO)
-            };
-            let sleep_present = if let Some(_cadence) = present_cadence {
-                if self.next_shown > now {
-                    Some(self.next_shown - now)
-                } else {
-                    Some(Duration::ZERO)
-                }
-            } else {
-                Some(Duration::ZERO)
-            };
-
-            let sleep_duration = match (sleep_emulate, sleep_present) {
-                (Some(e), Some(p)) => e.min(p),
-                (Some(e), None) => e,
-                (None, Some(p)) => p,
-                (None, None) => Duration::ZERO,
-            };
-
-            if sleep_duration > Duration::from_millis(1) {
-                std::thread::sleep(sleep_duration - Duration::from_micros(500));
+            let sleep = sleep_for(playing, Instant::now(), self.next_shown, self.next_frame, cadence);
+            if sleep > Duration::from_millis(1) {
+                std::thread::sleep(sleep - Duration::from_micros(500));
             }
         }
     }
@@ -1858,7 +1929,10 @@ impl App {
         let sound = game.system.take_audio();
         // fast forward plays no sound, there is too much of it too soon
         if let (Some(audio), false) = (&self.audio, self.fast_forwarding) {
-            audio.push(&sound);
+            let heard = audio.push(&sound);
+            if let (Some(timing), Some(heard)) = (&mut self.timing, heard) {
+                timing.heard(heard, game.frame);
+            }
         }
         match outcome {
             FrameOutcome::Completed => {}
@@ -2125,6 +2199,7 @@ impl App {
             saved: saved.as_deref(),
             fps: self.active.show_fps.then_some(self.shown_fps),
             fast: self.fast_forwarding,
+            started: Some(&self.started),
         });
         let view = menus::View {
             library: &self.library,
@@ -2141,6 +2216,7 @@ impl App {
         };
         let (menus, settings) = (&mut self.menus, &mut self.settings);
         let modal_open = menus.modal_open();
+        gui.set_theme(window, settings.theme);
         let mut actions = Vec::new();
         let overlay = gui.frame(window, |ui| actions.extend(menus.show(ui, settings, &view)));
         drop(view);
@@ -2260,15 +2336,43 @@ const _: RendererKind = RendererKind::Software;
 mod tests {
     use super::*;
 
-    /// a frame goes unshown only while the game runs behind with a
-    /// presenter that waits for the display, a few in a row at most.
+    /// a new frame shows at once, and the pictures in between fall halfway
+    /// between frames, never just before one.
     #[test]
-    fn frames_go_unshown_only_when_showing_would_wait() {
-        assert!(skips_showing(true, true, true, 0));
-        assert!(skips_showing(true, true, true, MAX_SKIPPED - 1));
-        assert!(!skips_showing(true, true, true, MAX_SKIPPED), "a few in a row at most");
-        assert!(!skips_showing(true, true, false, 0), "mailbox shows every frame");
-        assert!(!skips_showing(true, false, true, 0), "on time");
-        assert!(!skips_showing(false, true, true, 0), "paused");
+    fn frames_show_as_soon_as_they_are_emulated() {
+        let t = Instant::now();
+        let at = |ms: f64| t + Duration::from_secs_f64(ms / 1000.0);
+        let fps = |n: u64| Duration::from_nanos(1_000_000_000 / n);
+        // 60: every frame, nothing in between, though the limit's tick,
+        // 16.67 ms, comes before the console's next frame, 16.71 ms
+        assert!(shows_now(true, true, at(16.71), at(16.67), at(33.4), fps(60)));
+        assert!(shows_now(true, true, at(10.0), at(16.67), at(26.71), fps(60)), "even when the limit's clock says early");
+        assert!(!shows_now(false, true, at(16.68), at(16.67), at(16.71), fps(60)));
+        // 120: the frame at once, and one more halfway to the next
+        assert!(shows_now(true, true, at(12.0), at(16.67), at(28.71), fps(120)), "a late frame right after one in between");
+        assert!(shows_now(false, true, at(8.4), at(8.33), at(16.71), fps(120)));
+        assert!(!shows_now(false, true, at(8.2), at(8.33), at(16.71), fps(120)), "not before its time");
+        assert!(!shows_now(false, true, at(14.0), at(8.33), at(16.71), fps(120)), "not just before the next frame");
+        // 30: every other frame
+        assert!(!shows_now(true, true, at(16.71), at(33.33), at(33.42), fps(30)));
+        assert!(shows_now(true, true, at(33.42), at(33.33), at(50.13), fps(30)));
+        // menus over a paused game keep to the limit
+        assert!(shows_now(false, false, at(16.7), at(16.67), at(0.0), fps(60)));
+    }
+
+    #[test]
+    fn steps_sleep_until_there_is_something_to_do() {
+        let t = Instant::now();
+        let at = |ms: f64| t + Duration::from_secs_f64(ms / 1000.0);
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        let fps = |n: u64| Duration::from_nanos(1_000_000_000 / n);
+        // 60: the limit's tick passed, but nothing shows until the next frame
+        assert!((ms(sleep_for(true, at(1.0), at(0.5), at(16.71), fps(60))) - 15.71).abs() < 0.01);
+        // 120: wakes for the picture halfway
+        assert!((ms(sleep_for(true, at(1.0), at(8.33), at(16.71), fps(120))) - 7.33).abs() < 0.01);
+        // but not for one that would come just before the frame
+        assert!((ms(sleep_for(true, at(1.0), at(14.0), at(16.71), fps(120))) - 15.71).abs() < 0.01);
+        // paused: the menus' own pace
+        assert!((ms(sleep_for(false, at(1.0), at(16.67), at(0.0), fps(60))) - 15.67).abs() < 0.01);
     }
 }

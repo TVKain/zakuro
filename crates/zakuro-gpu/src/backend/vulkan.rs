@@ -23,9 +23,10 @@ const VERT_CONSTANTS_OFFSET: u32 = 0;
 const FRAG_CONSTANTS_OFFSET: u32 = 16;
 
 /// the bytes of push constants the fragment shader reads: where the screen
-/// lies in its image, the bounds its samples keep in and the filter, and
-/// for 3D how the eyes show and the right eye's place in its image.
-const CONSTANTS: u32 = 36;
+/// lies in its image, the bounds its samples keep in, the filter and whether
+/// the window encodes sRGB itself, and for 3D how the eyes show and the
+/// right eye's place in its image.
+const CONSTANTS: u32 = 40;
 const STEREO_CONSTANTS: u32 = 80;
 
 /// how many frames may be recorded before waiting on the oldest.
@@ -110,8 +111,6 @@ pub struct VulkanPresenter {
     /// the device and instance, when the renderer draws on them too, which
     /// go with the last of the two rather than with this.
     shared: Option<Arc<SharedDevice>>,
-    /// whether a present waits for the display, as FIFO does.
-    waits: bool,
 
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -399,7 +398,6 @@ impl VulkanPresenter {
             sampler,
             gpu_sets,
             shared: ManuallyDrop::into_inner(shared),
-            waits: true,
             command_pool,
             command_buffers,
             image_available,
@@ -480,7 +478,6 @@ impl VulkanPresenter {
             ],
         };
         let present_mode = wanted.into_iter().find(|mode| present_modes.contains(mode)).unwrap_or(vk::PresentModeKHR::FIFO);
-        self.waits = present_mode == vk::PresentModeKHR::FIFO;
         if self.swapchain == vk::SwapchainKHR::null() {
             let name = |mode: vk::PresentModeKHR| match mode {
                 vk::PresentModeKHR::FIFO => "fifo".to_owned(),
@@ -612,12 +609,6 @@ impl VulkanPresenter {
     /// the device, for the renderer to draw on, when it can share it.
     pub fn shared_device(&self) -> Option<Arc<SharedDevice>> {
         self.shared.clone()
-    }
-
-    /// whether a present waits for the display, rather than handing the
-    /// frame over and going on.
-    pub fn waits_for_display(&self) -> bool {
-        self.waits
     }
 
     /// what a screen is drawn from this frame, pixels uploaded to its own
@@ -797,11 +788,13 @@ impl VulkanPresenter {
                 let Some((descriptor, area)) = crop(index) else { continue };
                 let mut constants: Vec<u8> = area.iter().flat_map(|c| c.to_le_bytes()).collect();
                 constants.extend_from_slice(&self.filter.mode().to_le_bytes());
+                let srgb_window = matches!(self.surface_format.format, vk::Format::B8G8R8A8_SRGB | vk::Format::R8G8B8A8_SRGB);
+                constants.extend_from_slice(&(srgb_window as i32).to_le_bytes());
                 let (pipeline, layout, set) = if shown == Shown::Both {
                     // then how the eyes show, and the right eye's place
                     let Some((_, right)) = crop(2) else { continue };
                     let stereo = if self.stereo.mode == StereoMode::Anaglyph { 1i32 } else { 2 };
-                    for word in [stereo, self.stereo.swap as i32, 0] {
+                    for word in [stereo, self.stereo.swap as i32] {
                         constants.extend_from_slice(&word.to_le_bytes());
                     }
                     constants.extend(right.iter().flat_map(|c| c.to_le_bytes()));
@@ -1422,7 +1415,7 @@ impl Screen {
             device.create_image(
                 &vk::ImageCreateInfo::default()
                     .image_type(vk::ImageType::TYPE_2D)
-                    .format(vk::Format::R8G8B8A8_UNORM)
+                    .format(vk::Format::R8G8B8A8_SRGB)
                     .extent(vk::Extent3D {
                         width,
                         height,
@@ -1464,7 +1457,7 @@ impl Screen {
                 &vk::ImageViewCreateInfo::default()
                     .image(image)
                     .view_type(vk::ImageViewType::TYPE_2D)
-                    .format(vk::Format::R8G8B8A8_UNORM)
+                    .format(vk::Format::R8G8B8A8_SRGB)
                     .subresource_range(
                         vk::ImageSubresourceRange::default()
                             .aspect_mask(vk::ImageAspectFlags::COLOR)

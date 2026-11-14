@@ -127,6 +127,7 @@ fn test_menus_over_game_input_isolation() {
         title: "Resolution".to_string(),
         options: vec!["1x".to_string(), "2x".to_string()],
         selected: 0,
+        current: Some(0),
     });
     assert!(menus.modal_open(), "SelectPopup must register as modal_open");
     assert!(menus.over_game(), "SelectPopup must trigger over_game");

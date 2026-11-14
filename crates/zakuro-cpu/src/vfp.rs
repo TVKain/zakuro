@@ -8,8 +8,6 @@ use crate::{Bus, Cpu, Exit};
 const FPSCR_FLAG_MASK: u32 = 0xF000_0000;
 /// flush-to-zero.
 const FPSCR_FZ: u32 = 1 << 24;
-/// default NaN mode.
-const FPSCR_DN: u32 = 1 << 25;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Vfp {
@@ -635,7 +633,3 @@ fn move_pair(cpu: &mut Cpu, op: u32, double: bool) -> Option<Exit> {
     }
     None
 }
-
-/// kept so the default-NaN bit is not silently dropped when we add strict
-/// NaN propagation.
-pub const _FPSCR_DN: u32 = FPSCR_DN;

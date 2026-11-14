@@ -666,6 +666,9 @@ fn pixel_offset(tiled: bool, x: u32, y: u32, width: u32, bpp: u32) -> usize {
 /// submitted before it, so no picture is drawn over while one shows it.
 struct Upright {
     image: Image,
+    /// the image seen as sRGB, which the presenter samples so the texture
+    /// unit decodes before it blends and filters work in linear light.
+    linear: vk::ImageView,
     batch: u64,
     /// nothing changed the surface since.
     current: bool,
@@ -1979,6 +1982,10 @@ impl Hardware {
         let surfaces = std::mem::take(&mut self.surfaces);
         for surface in surfaces {
             self.destroy_image(&surface.image);
+            for upright in [&surface.upright, &surface.twin_upright].into_iter().flatten() {
+                // SAFETY: the device is idle
+                unsafe { self.device.destroy_image_view(upright.linear, None) };
+            }
             let uprights = [&surface.upright, &surface.twin_upright].into_iter().flatten().map(|u| &u.image);
             for image in [&surface.native, &surface.twin].into_iter().flatten().chain(uprights) {
                 self.destroy_image(image);
@@ -2096,6 +2103,21 @@ impl Hardware {
         usage: vk::ImageUsageFlags,
         aspect: vk::ImageAspectFlags,
     ) -> Result<Image, String> {
+        self.image_flagged(vk::ImageCreateFlags::empty(), width, height, levels, format, usage, aspect)
+    }
+
+    /// the same made with flags, such as for views of other formats.
+    #[allow(clippy::too_many_arguments)]
+    fn image_flagged(
+        &self,
+        flags: vk::ImageCreateFlags,
+        width: u32,
+        height: u32,
+        levels: u32,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+        aspect: vk::ImageAspectFlags,
+    ) -> Result<Image, String> {
         // SAFETY: plain object creation on our device, and a barrier into
         // the command buffer being recorded
         unsafe {
@@ -2103,6 +2125,7 @@ impl Hardware {
                 .device
                 .create_image(
                     &vk::ImageCreateInfo::default()
+                        .flags(flags)
                         .image_type(vk::ImageType::TYPE_2D)
                         .format(format)
                         .extent(vk::Extent3D { width, height, depth: 1 })
@@ -4870,8 +4893,31 @@ impl Hardware {
         if !made {
             let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED;
             self.end_rendering();
-            let image = self.image(width, height, COLOR_FORMAT, usage, vk::ImageAspectFlags::COLOR)?;
-            let upright = Some(Upright { image, batch: 0, current: false });
+            let flags = vk::ImageCreateFlags::MUTABLE_FORMAT;
+            let image = self.image_flagged(flags, width, height, 1, COLOR_FORMAT, usage, vk::ImageAspectFlags::COLOR)?;
+            // sRGB can't be stored to, so this view is for sampling only
+            let mut sampled = vk::ImageViewUsageCreateInfo::default().usage(vk::ImageUsageFlags::SAMPLED);
+            let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+            // SAFETY: a view of the image just made on our device
+            let linear = unsafe {
+                self.device.create_image_view(
+                    &vk::ImageViewCreateInfo::default()
+                        .push_next(&mut sampled)
+                        .image(image.image)
+                        .view_type(vk::ImageViewType::TYPE_2D)
+                        .format(vk::Format::R8G8B8A8_SRGB)
+                        .subresource_range(range),
+                    None,
+                )
+            };
+            let linear = match linear {
+                Ok(view) => view,
+                Err(error) => {
+                    self.destroy_image(&image);
+                    return Err(vk_error("create an sRGB view")(error));
+                }
+            };
+            let upright = Some(Upright { image, linear, batch: 0, current: false });
             match twin {
                 true => self.surfaces[index].twin_upright = upright,
                 false => self.surfaces[index].upright = upright,
@@ -5005,7 +5051,7 @@ impl Hardware {
         let Some(upright) = upright.filter(|upright| upright.batch == screen.batch) else {
             return Ok(None);
         };
-        let view = upright.image.view;
+        let view = upright.linear;
         if screen.batch >= self.batch {
             self.submit()?;
         }
@@ -5707,6 +5753,9 @@ impl Drop for Hardware {
             }
             for surface in &self.surfaces {
                 self.destroy_image(&surface.image);
+                for upright in [&surface.upright, &surface.twin_upright].into_iter().flatten() {
+                    self.device.destroy_image_view(upright.linear, None);
+                }
                 let uprights = [&surface.upright, &surface.twin_upright].into_iter().flatten().map(|upright| &upright.image);
                 for image in [&surface.native, &surface.twin].into_iter().flatten().chain(uprights) {
                     self.destroy_image(image);

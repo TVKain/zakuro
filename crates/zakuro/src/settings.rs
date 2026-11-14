@@ -29,6 +29,28 @@ impl Renderer {
     }
 }
 
+/// how the interface looks: light, dark, or as the system is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::System, Theme::Dark, Theme::Light];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Theme::System => "Same as system",
+            Theme::Dark => "Dark",
+            Theme::Light => "Light",
+        }
+    }
+}
+
 /// target frame rate limit or uncapped mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -170,38 +192,52 @@ impl Orientation {
     }
 }
 
-/// how the screens' pixels look scaled up to the window.
+/// how the game's picture is fitted to the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Filter {
+    /// bicubic up, averaged down with a little sharpening.
     #[default]
-    Smooth,
     Sharp,
-    Pixels,
-    Xbrz,
-    XbrzLinear,
+    /// bilinear, soft like the console's own screen.
+    #[serde(alias = "smooth")]
+    Soft,
+    /// square pixels all the same size, their edges anti-aliased.
+    #[serde(alias = "pixels")]
+    Pixelated,
+    /// xBRZ: rounds off the steps of pixel art and text.
+    #[serde(alias = "xbrz", alias = "xbrz_linear")]
+    SmoothEdges,
 }
 
 impl Filter {
-    pub const ALL: [Filter; 5] = [Filter::Smooth, Filter::Sharp, Filter::Pixels, Filter::Xbrz, Filter::XbrzLinear];
+    pub const ALL: [Filter; 4] = [Filter::Sharp, Filter::Soft, Filter::Pixelated, Filter::SmoothEdges];
 
     pub fn name(self) -> &'static str {
         match self {
-            Filter::Smooth => "Smooth",
             Filter::Sharp => "Sharp",
-            Filter::Pixels => "Pixels",
-            Filter::Xbrz => "xBRZ",
-            Filter::XbrzLinear => "xBRZ + Linear",
+            Filter::Soft => "Soft",
+            Filter::Pixelated => "Pixelated",
+            Filter::SmoothEdges => "Smooth edges",
+        }
+    }
+
+    /// what it looks like, a line for the list it is picked from.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Filter::Sharp => "Crisp and detailed. Best for most games",
+            Filter::Soft => "Gently blurred, like the console's own screen",
+            Filter::Pixelated => "Square, even pixels for a retro look",
+            Filter::SmoothEdges => "Rounds off jagged pixel art, sprites and text",
         }
     }
 
     pub fn screens(self) -> zakuro_gpu::ScreenFilter {
         match self {
-            Filter::Smooth => zakuro_gpu::ScreenFilter::Smooth,
             Filter::Sharp => zakuro_gpu::ScreenFilter::Sharp,
-            Filter::Pixels => zakuro_gpu::ScreenFilter::Pixels,
-            Filter::Xbrz => zakuro_gpu::ScreenFilter::Xbrz,
-            Filter::XbrzLinear => zakuro_gpu::ScreenFilter::XbrzLinear,
+            Filter::Soft => zakuro_gpu::ScreenFilter::Smooth,
+            Filter::Pixelated => zakuro_gpu::ScreenFilter::Pixels,
+            Filter::SmoothEdges => zakuro_gpu::ScreenFilter::XbrzLinear,
         }
     }
 }
@@ -609,13 +645,6 @@ pub struct GameSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// a folder of games older versions listed from where it was. it is
-    /// read once, to offer adding its games to the library, and not saved.
-    #[serde(skip_serializing)]
-    pub games: Option<PathBuf>,
-    /// where Zakuro keeps the games added to it, its data folder's library
-    /// folder when none is set.
-    pub library: Option<PathBuf>,
     /// the games, by key, whose players said not to ask again about
     /// recompiling them before they play.
     #[serde(deserialize_with = "or_default")]
@@ -672,6 +701,9 @@ pub struct Settings {
     pub volume: f32,
     pub mute: bool,
     pub show_fps: bool,
+    /// how the interface looks.
+    #[serde(deserialize_with = "or_default")]
+    pub theme: Theme,
     /// a picture behind the library.
     pub background: Option<PathBuf>,
     /// how much of it shows, 0 to 1.
@@ -703,8 +735,6 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            games: None,
-            library: None,
             dont_ask_recompile: Vec::new(),
             language: Language::English,
             renderer: Renderer::Vulkan,
@@ -719,7 +749,7 @@ impl Default for Settings {
             fps_limit: FpsLimit::Fps60,
             layout: Screens::Stacked,
             orientation: Orientation::North,
-            filter: Filter::Smooth,
+            filter: Filter::Sharp,
             integer_scale: false,
             top_shape: TopShape::Console,
             stereo: Stereo3d::Off,
@@ -728,6 +758,7 @@ impl Default for Settings {
             volume: 1.0,
             mute: false,
             show_fps: false,
+            theme: Theme::System,
             background: None,
             background_opacity: 0.35,
             keys: Keys::default(),
@@ -923,7 +954,7 @@ mod tests {
     #[test]
     fn settings_come_back_as_they_were_saved() {
         let mut settings =
-            Settings { library: Some("/games".into()), show_fps: true, layout: Screens::TopOnly, language: Language::German, ..Settings::default() };
+            Settings { background: Some("/pictures/home.png".into()), show_fps: true, layout: Screens::TopOnly, language: Language::German, ..Settings::default() };
         settings.keys.a = KeyCode::KeyK;
         settings.pad.a = Button::South;
         let text = toml::to_string_pretty(&settings).unwrap();

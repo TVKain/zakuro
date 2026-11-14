@@ -2,7 +2,6 @@
 
 use crate::kernel::ipc::{CommandBuffer, Header};
 use crate::kernel::object::{ClientSession, KObject};
-use crate::kernel::sync::ResetType;
 use crate::System;
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -89,21 +88,3 @@ pub fn handle(system: &mut System, buffer: &CommandBuffer, header: Header) -> bo
         _ => false,
     }
 }
-
-/// queues a notification and bumps the semaphore, which is how the system
-/// tells a title about things like the home button being pressed.
-pub fn notify(system: &mut System, id: u32) {
-    system.services.srv.notifications.insert(0, id);
-    if let Some(handle) = system.services.srv.notification_semaphore {
-        if let Some(object) = system.kernel.handles.resolve(handle) {
-            if let Some(KObject::Semaphore(semaphore)) = system.kernel.objects.get_mut(object) {
-                semaphore.count = (semaphore.count + 1).min(semaphore.max_count);
-                system.kernel.reschedule_pending = true;
-            }
-        }
-    }
-}
-
-/// unused for now, kept so the reset-type import stays meaningful when
-/// notification events are added.
-pub const _NOTIFICATION_RESET: ResetType = ResetType::OneShot;

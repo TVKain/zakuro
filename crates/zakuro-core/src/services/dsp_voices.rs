@@ -111,7 +111,9 @@ enum Format {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Interpolation {
-    /// the firmware's polyphase filter, played as linear.
+    /// the firmware's polyphase filter, played as a Catmull-Rom cubic
+    /// through four samples, which keeps much more of the highs than a
+    /// straight line between two.
     Polyphase,
     Linear,
     None,
@@ -448,20 +450,25 @@ impl Voice {
                 // a whole rate from no fraction leaves none, nothing to
                 // interpolate
                 let whole = self.fraction == 0.0 && self.rate == (self.rate as u32) as f64;
-                return if self.interpolation == Interpolation::None || whole {
-                    self.play_steady::<STEREO, false>(output, last, read)
-                } else {
-                    self.play_steady::<STEREO, true>(output, last, read)
+                return match self.interpolation {
+                    Interpolation::None => self.play_steady::<STEREO, NEAREST>(output, last, read),
+                    _ if whole => self.play_steady::<STEREO, NEAREST>(output, last, read),
+                    Interpolation::Linear => self.play_steady::<STEREO, LINEAR>(output, last, read),
+                    Interpolation::Polyphase => self.play_steady::<STEREO, CUBIC>(output, last, read),
                 };
             }
             // a sample the long way, for a buffer that started spent, a
             // fraction of one or more or a rate past what u32 counts
             let at = self.length - self.remaining;
             let x0 = read(at.min(last));
-            self.frame[output] = if self.interpolation == Interpolation::None || self.fraction == 0.0 {
-                x0
-            } else {
-                lerp::<STEREO>(x0, read((at + 1).min(last)), self.fraction)
+            self.frame[output] = match self.interpolation {
+                Interpolation::None => x0,
+                _ if self.fraction == 0.0 => x0,
+                Interpolation::Linear => lerp::<STEREO>(x0, read((at + 1).min(last)), self.fraction),
+                Interpolation::Polyphase => {
+                    let around = [read(at.saturating_sub(1).min(last)), x0, read((at + 1).min(last)), read((at + 2).min(last))];
+                    cubic::<STEREO>(around, self.fraction)
+                }
             };
             output += 1;
             // each output sample consumes rate input samples
@@ -478,9 +485,9 @@ impl Voice {
     /// plays on as play_from does, with the fraction below one, which makes
     /// what each output sample consumes the whole of the rate or one more,
     /// and leaves the fraction to a subtraction rather than a trip through
-    /// integers. LERP interpolates, which at no fraction gives the input
-    /// sample as it is.
-    fn play_steady<const STEREO: bool, const LERP: bool>(
+    /// integers. HOW is NEAREST, LINEAR or CUBIC, the last two giving the
+    /// input sample as it is at no fraction.
+    fn play_steady<const STEREO: bool, const HOW: u8>(
         &mut self,
         mut output: usize,
         last: u32,
@@ -493,7 +500,14 @@ impl Voice {
         loop {
             let at = length - remaining;
             let x0 = read(at.min(last));
-            self.frame[output] = if LERP { lerp::<STEREO>(x0, read((at + 1).min(last)), fraction) } else { x0 };
+            self.frame[output] = match HOW {
+                LINEAR => lerp::<STEREO>(x0, read((at + 1).min(last)), fraction),
+                CUBIC => {
+                    let around = [read(at.saturating_sub(1).min(last)), x0, read((at + 1).min(last)), read((at + 2).min(last))];
+                    cubic::<STEREO>(around, fraction)
+                }
+                _ => x0,
+            };
             output += 1;
             let input = fraction + rate;
             let over = input >= above;
@@ -538,6 +552,24 @@ impl Voice {
             }
         }
     }
+}
+
+/// how play_steady finds a sample between two inputs.
+const NEAREST: u8 = 0;
+const LINEAR: u8 = 1;
+const CUBIC: u8 = 2;
+
+/// the sample a fraction of the way from the second of four inputs to the
+/// third, on the Catmull-Rom curve through them, both channels or, without
+/// STEREO, the first for both.
+fn cubic<const STEREO: bool>(around: [[i16; 2]; 4], fraction: f64) -> [i16; 2] {
+    let curve = |channel: usize| {
+        let [a, b, c, d] = around.map(|sample| sample[channel] as f64);
+        let t = fraction;
+        (b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a)))) as i16
+    };
+    let left = curve(0);
+    [left, if STEREO { curve(1) } else { left }]
 }
 
 /// the sample a fraction of the way from one input to the next, both
@@ -1023,9 +1055,27 @@ mod tests {
         let mut memory = Samples(bytes);
         let mut voice = voice_with(&[(1, 400)]);
         voice.rate = 0.5;
+        voice.interpolation = Interpolation::Linear;
+        let mut cubic = voice.clone();
+        cubic.interpolation = Interpolation::Polyphase;
         voice.play_frame(&mut memory); // starts the buffer
         voice.play_frame(&mut memory);
         assert_eq!(&voice.frame[..5], &[[0, 0], [50, 50], [100, 100], [150, 150], [200, 200]]);
+        // the cubic goes through a ramp as a ramp too, past the buffer's
+        // first sample, before which it has nothing to go on
+        cubic.play_frame(&mut memory);
+        cubic.play_frame(&mut memory);
+        assert_eq!(&cubic.frame[2..6], &[[100, 100], [150, 150], [200, 200], [250, 250]]);
+    }
+
+    /// a curve comes out as the Catmull-Rom cubic through its samples, not
+    /// cut straight across between them.
+    #[test]
+    fn polyphase_follows_the_curve() {
+        // the cubic's own values at a half, by hand
+        assert_eq!(cubic::<true>([[0, 0], [1000, 1000], [0, 0], [-1000, -1000]], 0.5), [625, 625]);
+        assert_eq!(cubic::<false>([[0, 9], [1000, 9], [0, 9], [-1000, 9]], 0.5), [625, 625]);
+        assert_eq!(cubic::<true>([[5, 1], [7, 2], [9, 3], [11, 4]], 0.0), [7, 2], "on a sample, the sample");
     }
 
     #[test]
@@ -1174,6 +1224,10 @@ mod tests {
                 return x0;
             }
             let x1 = input(voice, memory, at + 1);
+            if voice.interpolation == Interpolation::Polyphase {
+                let around = [input(voice, memory, at.saturating_sub(1)), x0, x1, input(voice, memory, at + 2)];
+                return cubic::<true>(around, voice.fraction);
+            }
             let between = |a: i16, b: i16| (a as f64 + (b as f64 - a as f64) * voice.fraction) as i16;
             [between(x0[0], x1[0]), between(x0[1], x1[1])]
         }

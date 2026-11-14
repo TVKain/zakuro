@@ -24,284 +24,36 @@ void main() {
 }
 "#;
 
-// a screen bigger than the window shows it is averaged over every texel a
-// pixel covers, the way the Vulkan presenter does it. shown samples one of
-// the pictures, the shaders put together from it draw one screen, or the
-// top screen's two pictures in one for 3D.
-const SAMPLE: &str = r#"#version 330 core
+// the screens' filters are present_common.glsl, which the Vulkan presenter's
+// shader includes too, after this header. the textures are sRGB, so samples
+// come in linear light, and what is written is encoded, the window's
+// framebuffer taking values as they are. shown samples one of the pictures,
+// the shaders put together from it draw one screen, or the top screen's two
+// pictures in one for 3D.
+const HEADER: &str = r#"#version 330 core
 in vec2 uv;
 out vec4 color;
 uniform sampler2D screen;
-// how a screen drawn bigger than its pixels is filtered: 0 smooth, 1
-// pixels, 2 sharp, 3 xbrz, as in the Vulkan presenter's shader.
+// how a screen is filtered, as in the Vulkan presenter's shader
 uniform int mode;
+"#;
 
-#define BLEND_NONE 0
-#define BLEND_NORMAL 1
-#define BLEND_DOMINANT 2
-#define LUMINANCE_WEIGHT 1.0
-#define EQUAL_COLOR_TOLERANCE (30.0 / 255.0)
-#define STEEP_DIRECTION_THRESHOLD 2.2
-#define DOMINANT_DIRECTION_THRESHOLD 3.6
+const COMMON: &str = include_str!("../../shaders/present_common.glsl");
 
-float dist_ycbcr(vec3 a, vec3 b) {
-    const vec3 w = vec3(0.2627, 0.6780, 0.0593);
-    const float scale_b = 0.5 / (1.0 - w.b);
-    const float scale_r = 0.5 / (1.0 - w.r);
-    vec3 diff = a - b;
-    float y = dot(diff, w);
-    float cb = scale_b * (diff.b - y);
-    float cr = scale_r * (diff.r - y);
-    return sqrt(((LUMINANCE_WEIGHT * y) * (LUMINANCE_WEIGHT * y)) + (cb * cb) + (cr * cr));
-}
-
-bool is_pix_equal(vec3 a, vec3 b) {
-    return dist_ycbcr(a, b) < EQUAL_COLOR_TOLERANCE;
-}
-
-float get_left_ratio(vec2 center, vec2 origin, vec2 direction, vec2 scale) {
-    vec2 p0 = center - origin;
-    vec2 proj = direction * (dot(p0, direction) / dot(direction, direction));
-    vec2 distv = p0 - proj;
-    vec2 orth = vec2(-direction.y, direction.x);
-    float side = sign(dot(p0, orth));
-    float v = side * length(distv * scale);
-    return smoothstep(-0.70710678, 0.70710678, v);
-}
-
-bool eq(vec3 a, vec3 b) { return all(equal(a, b)); }
-bool neq(vec3 a, vec3 b) { return any(notEqual(a, b)); }
-
-vec3 tap(sampler2D img, vec2 base, vec2 offset, vec2 size) {
-    return texture(img, clamp(base + offset / size, vec2(0.0), vec2(1.0))).rgb;
-}
-
-vec3 xbrz_sample(sampler2D img, vec2 at, vec2 size, vec2 covered) {
-    vec2 scale = 1.0 / max(covered, vec2(1e-6));
-    vec2 texel = at * size;
-    vec2 pos = fract(texel) - vec2(0.5, 0.5);
-    vec2 coord = (floor(texel) + 0.5) / size;
-
-    vec3 A = tap(img, coord, vec2(-1.0, -1.0), size);
-    vec3 B = tap(img, coord, vec2( 0.0, -1.0), size);
-    vec3 C = tap(img, coord, vec2( 1.0, -1.0), size);
-    vec3 D = tap(img, coord, vec2(-1.0,  0.0), size);
-    vec3 E = tap(img, coord, vec2( 0.0,  0.0), size);
-    vec3 F = tap(img, coord, vec2( 1.0,  0.0), size);
-    vec3 G = tap(img, coord, vec2(-1.0,  1.0), size);
-    vec3 H = tap(img, coord, vec2( 0.0,  1.0), size);
-    vec3 I = tap(img, coord, vec2( 1.0,  1.0), size);
-
-    ivec4 blend = ivec4(BLEND_NONE);
-
-    // Corner bottom-right
-    if (!((eq(E, F) && eq(H, I)) || (eq(E, H) && eq(F, I)))) {
-        float dist_H_F = dist_ycbcr(G, E) + dist_ycbcr(E, C) + dist_ycbcr(tap(img, coord, vec2(0.0, 2.0), size), I) + dist_ycbcr(I, tap(img, coord, vec2(2.0, 0.0), size)) + 4.0 * dist_ycbcr(H, F);
-        float dist_E_I = dist_ycbcr(D, H) + dist_ycbcr(H, tap(img, coord, vec2(1.0, 2.0), size)) + dist_ycbcr(B, F) + dist_ycbcr(F, tap(img, coord, vec2(2.0, 1.0), size)) + 4.0 * dist_ycbcr(E, I);
-        bool dominant = (DOMINANT_DIRECTION_THRESHOLD * dist_H_F) < dist_E_I;
-        blend.z = ((dist_H_F < dist_E_I) && neq(E, F) && neq(E, H)) ? ((dominant) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
-    }
-
-    // Corner bottom-left
-    if (!((eq(D, E) && eq(G, H)) || (eq(D, G) && eq(E, H)))) {
-        float dist_G_E = dist_ycbcr(tap(img, coord, vec2(-2.0, 1.0), size), D) + dist_ycbcr(D, B) + dist_ycbcr(tap(img, coord, vec2(-1.0, 2.0), size), H) + dist_ycbcr(H, F) + 4.0 * dist_ycbcr(G, E);
-        float dist_D_H = dist_ycbcr(tap(img, coord, vec2(-2.0, 0.0), size), G) + dist_ycbcr(G, tap(img, coord, vec2(0.0, 2.0), size)) + dist_ycbcr(A, E) + dist_ycbcr(E, I) + 4.0 * dist_ycbcr(D, H);
-        bool dominant = (DOMINANT_DIRECTION_THRESHOLD * dist_D_H) < dist_G_E;
-        blend.w = ((dist_G_E > dist_D_H) && neq(E, D) && neq(E, H)) ? ((dominant) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
-    }
-
-    // Corner top-right
-    if (!((eq(B, C) && eq(E, F)) || (eq(B, E) && eq(C, F)))) {
-        float dist_E_C = dist_ycbcr(D, B) + dist_ycbcr(B, tap(img, coord, vec2(1.0, -2.0), size)) + dist_ycbcr(H, F) + dist_ycbcr(F, tap(img, coord, vec2(2.0, -1.0), size)) + 4.0 * dist_ycbcr(E, C);
-        float dist_B_F = dist_ycbcr(A, E) + dist_ycbcr(E, I) + dist_ycbcr(tap(img, coord, vec2(0.0, -2.0), size), C) + dist_ycbcr(C, tap(img, coord, vec2(2.0, 0.0), size)) + 4.0 * dist_ycbcr(B, F);
-        bool dominant = (DOMINANT_DIRECTION_THRESHOLD * dist_B_F) < dist_E_C;
-        blend.y = ((dist_E_C > dist_B_F) && neq(E, B) && neq(E, F)) ? ((dominant) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
-    }
-
-    // Corner top-left
-    if (!((eq(A, B) && eq(D, E)) || (eq(A, D) && eq(B, E)))) {
-        float dist_D_B = dist_ycbcr(tap(img, coord, vec2(-2.0, 0.0), size), A) + dist_ycbcr(A, tap(img, coord, vec2(0.0, -2.0), size)) + dist_ycbcr(G, E) + dist_ycbcr(E, C) + 4.0 * dist_ycbcr(D, B);
-        float dist_A_E = dist_ycbcr(tap(img, coord, vec2(-2.0, -1.0), size), D) + dist_ycbcr(D, H) + dist_ycbcr(tap(img, coord, vec2(-1.0, -2.0), size), B) + dist_ycbcr(B, F) + 4.0 * dist_ycbcr(A, E);
-        bool dominant = (DOMINANT_DIRECTION_THRESHOLD * dist_D_B) < dist_A_E;
-        blend.x = ((dist_D_B < dist_A_E) && neq(E, D) && neq(E, B)) ? ((dominant) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
-    }
-
-    vec3 res = E;
-
-    // Blend bottom-right
-    if (blend.z != BLEND_NONE) {
-        float dist_F_G = dist_ycbcr(F, G);
-        float dist_H_C = dist_ycbcr(H, C);
-        bool doLineBlend = (blend.z == BLEND_DOMINANT ||
-            !((blend.y != BLEND_NONE && !is_pix_equal(E, G)) || (blend.w != BLEND_NONE && !is_pix_equal(E, C)) ||
-              (is_pix_equal(G, H) && is_pix_equal(H, I) && is_pix_equal(I, F) && is_pix_equal(F, C) && !is_pix_equal(E, I))));
-        vec2 origin = vec2(0.0, 0.70710678);
-        vec2 direction = vec2(1.0, -1.0);
-        if (doLineBlend) {
-            bool haveShallow = (STEEP_DIRECTION_THRESHOLD * dist_F_G <= dist_H_C) && neq(E, G) && neq(D, G);
-            bool haveSteep = (STEEP_DIRECTION_THRESHOLD * dist_H_C <= dist_F_G) && neq(E, C) && neq(B, C);
-            origin = haveShallow ? vec2(0.0, 0.25) : vec2(0.0, 0.5);
-            direction.x += haveShallow ? 1.0 : 0.0;
-            direction.y -= haveSteep ? 1.0 : 0.0;
-        }
-        vec3 blendPix = mix(H, F, step(dist_ycbcr(E, F), dist_ycbcr(E, H)));
-        res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
-    }
-
-    // Blend bottom-left
-    if (blend.w != BLEND_NONE) {
-        float dist_H_A = dist_ycbcr(H, A);
-        float dist_D_I = dist_ycbcr(D, I);
-        bool doLineBlend = (blend.w == BLEND_DOMINANT ||
-            !((blend.z != BLEND_NONE && !is_pix_equal(E, A)) || (blend.x != BLEND_NONE && !is_pix_equal(E, I)) ||
-              (is_pix_equal(A, D) && is_pix_equal(D, G) && is_pix_equal(G, H) && is_pix_equal(H, I) && !is_pix_equal(E, G))));
-        vec2 origin = vec2(-0.70710678, 0.0);
-        vec2 direction = vec2(1.0, 1.0);
-        if (doLineBlend) {
-            bool haveShallow = (STEEP_DIRECTION_THRESHOLD * dist_H_A <= dist_D_I) && neq(E, A) && neq(B, A);
-            bool haveSteep = (STEEP_DIRECTION_THRESHOLD * dist_D_I <= dist_H_A) && neq(E, I) && neq(F, I);
-            origin = haveShallow ? vec2(-0.25, 0.0) : vec2(-0.5, 0.0);
-            direction.y += haveShallow ? 1.0 : 0.0;
-            direction.x += haveSteep ? 1.0 : 0.0;
-        }
-        vec3 blendPix = mix(H, D, step(dist_ycbcr(E, D), dist_ycbcr(E, H)));
-        res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
-    }
-
-    // Blend top-right
-    if (blend.y != BLEND_NONE) {
-        float dist_B_I = dist_ycbcr(B, I);
-        float dist_F_A = dist_ycbcr(F, A);
-        bool doLineBlend = (blend.y == BLEND_DOMINANT ||
-            !((blend.x != BLEND_NONE && !is_pix_equal(E, I)) || (blend.z != BLEND_NONE && !is_pix_equal(E, A)) ||
-              (is_pix_equal(I, F) && is_pix_equal(F, C) && is_pix_equal(C, B) && is_pix_equal(B, A) && !is_pix_equal(E, C))));
-        vec2 origin = vec2(0.70710678, 0.0);
-        vec2 direction = vec2(-1.0, -1.0);
-        if (doLineBlend) {
-            bool haveShallow = (STEEP_DIRECTION_THRESHOLD * dist_B_I <= dist_F_A) && neq(E, I) && neq(H, I);
-            bool haveSteep = (STEEP_DIRECTION_THRESHOLD * dist_F_A <= dist_B_I) && neq(E, A) && neq(D, A);
-            origin = haveShallow ? vec2(0.25, 0.0) : vec2(0.5, 0.0);
-            direction.y -= haveShallow ? 1.0 : 0.0;
-            direction.x += haveSteep ? 1.0 : 0.0;
-        }
-        vec3 blendPix = mix(F, B, step(dist_ycbcr(E, B), dist_ycbcr(E, F)));
-        res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
-    }
-
-    // Blend top-left
-    if (blend.x != BLEND_NONE) {
-        float dist_D_C = dist_ycbcr(D, C);
-        float dist_B_G = dist_ycbcr(B, G);
-        bool doLineBlend = (blend.x == BLEND_DOMINANT ||
-            !((blend.w != BLEND_NONE && !is_pix_equal(E, C)) || (blend.y != BLEND_NONE && !is_pix_equal(E, G)) ||
-              (is_pix_equal(C, B) && is_pix_equal(B, A) && is_pix_equal(A, D) && is_pix_equal(D, G) && !is_pix_equal(E, A))));
-        vec2 origin = vec2(0.0, -0.70710678);
-        vec2 direction = vec2(-1.0, 1.0);
-        if (doLineBlend) {
-            bool haveShallow = (STEEP_DIRECTION_THRESHOLD * dist_D_C <= dist_B_G) && neq(E, C) && neq(F, C);
-            bool haveSteep = (STEEP_DIRECTION_THRESHOLD * dist_B_G <= dist_D_C) && neq(E, G) && neq(H, G);
-            origin = haveShallow ? vec2(0.0, -0.25) : vec2(0.0, -0.5);
-            direction.y -= haveShallow ? 1.0 : 0.0;
-            direction.x += haveSteep ? 1.0 : 0.0;
-        }
-        vec3 blendPix = mix(D, B, step(dist_ycbcr(E, B), dist_ycbcr(E, D)));
-        res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
-    }
-
-    // Smart vibrance: boosts desaturated tones while protecting already saturated colors
-    float luma = dot(res, vec3(0.299, 0.587, 0.114));
-    float max_c = max(res.r, max(res.g, res.b));
-    float min_c = min(res.r, min(res.g, res.b));
-    float sat = (max_c - min_c) / max(max_c, 1e-4);
-    res = mix(vec3(luma), res, 1.0 + 0.16 * (1.0 - sat));
-
-    return res;
-}
-
-// what a window pixel covers of a screen drawn bigger than it, averaged in
-// roughly linear light, as present.frag has it
-vec3 footprint(sampler2D image, vec2 at, vec2 px, vec2 covered) {
-    ivec2 n = clamp(ivec2(ceil(covered - 0.01)), ivec2(1), ivec2(8));
-    vec2 step = px / vec2(n);
-    vec2 start = at - 0.5 * px + 0.5 * step;
-    vec3 sum = vec3(0.0);
-    for (int y = 0; y < n.y; y++) {
-        for (int x = 0; x < n.x; x++) {
-            vec3 c = texture(image, start + vec2(x, y) * step).rgb;
-            sum += c * c;
-        }
-    }
-    return sqrt(sum / float(n.x * n.y));
-}
-
+const WHOLE: &str = r#"
+// the whole image, its samples kept half a texel in
 vec3 shown(sampler2D image) {
     vec2 size = vec2(textureSize(image, 0));
-    vec2 px = fwidth(uv);
-    vec2 covered = px * size;
-    bool smaller = max(covered.x, covered.y) > 1.001;
-
-    if (!smaller && (mode == 3 || mode == 4)) {
-        vec3 xbrz_res = xbrz_sample(image, uv, size, covered);
-        if (mode == 3) {
-            return xbrz_res;
-        }
-        vec3 lin = texture(image, uv).rgb;
-        float luma = dot(lin, vec3(0.299, 0.587, 0.114));
-        float max_c = max(lin.r, max(lin.g, lin.b));
-        float min_c = min(lin.r, min(lin.g, lin.b));
-        float sat = (max_c - min_c) / max(max_c, 1e-4);
-        lin = mix(vec3(luma), lin, 1.0 + 0.16 * (1.0 - sat));
-        return mix(xbrz_res, lin, 0.40);
-    }
-
-    if (!smaller) {
-        vec2 texel = uv * size;
-        vec2 at = uv;
-        if (mode == 1) {
-            at = (floor(texel) + 0.5) / size;
-        } else if (mode == 2) {
-            vec2 scale = 1.0 / max(covered, vec2(1e-6));
-            vec2 centred = texel - 0.5;
-            vec2 blend = clamp((fract(centred) - 0.5) * scale + 0.5, 0.0, 1.0);
-            at = (floor(centred) + 0.5 + blend) / size;
-        }
-        return texture(image, at).rgb;
-    }
-
-    if (mode == 1) {
-        vec2 texel = (floor(uv * size) + 0.5) / size;
-        return texture(image, texel).rgb;
-    }
-
-    vec3 e = footprint(image, uv, px, covered);
-    if (mode == 0) {
-        return e;
-    }
-
-    vec3 b = footprint(image, uv - vec2(0.0, px.y), px, min(covered, vec2(2.0)));
-    vec3 d = footprint(image, uv - vec2(px.x, 0.0), px, min(covered, vec2(2.0)));
-    vec3 f = footprint(image, uv + vec2(px.x, 0.0), px, min(covered, vec2(2.0)));
-    vec3 h = footprint(image, uv + vec2(0.0, px.y), px, min(covered, vec2(2.0)));
-
-    vec3 min_rgb = min(e, min(min(d, f), min(b, h)));
-    vec3 max_rgb = max(e, max(max(d, f), max(b, h)));
-
-    float sharpness = (mode == 2) ? 0.6 : 0.35;
-    vec3 amp_rgb = clamp(min(min_rgb, 1.0 - max_rgb) / max(max_rgb, vec3(1e-5)), 0.0, 1.0);
-    vec3 w = -sqrt(amp_rgb) * (sharpness * 0.25);
-    vec3 sharp_color = (w * (b + d + f + h) + e) / (4.0 * w + 1.0);
-    return clamp(sharp_color, min_rgb, max_rgb);
+    return shown(image, uv, vec4(0.5 / size, 1.0 - 0.5 / size), mode);
 }
 "#;
 
 const SCREEN_MAIN: &str = r#"
 void main() {
-    color = vec4(shown(screen), 1.0);
+    color = vec4(encode_srgb(shown(screen)), 1.0);
 }
 "#;
 
-// as the Vulkan presenter's shader does it, with rows counted from the top
-// of the window, which OpenGL counts from the bottom.
 const STEREO_MAIN: &str = r#"
 uniform sampler2D right_eye;
 // 1 red and cyan, 2 alternate rows, whether the eyes swap, and the
@@ -309,9 +61,11 @@ uniform sampler2D right_eye;
 uniform int stereo;
 uniform int swap;
 uniform float height;
+// the eyes encoded, as the window takes them and Dubois fitted his
+// projection to
 void main() {
-    vec3 left = shown(screen);
-    vec3 right = shown(right_eye);
+    vec3 left = encode_srgb(shown(screen));
+    vec3 right = encode_srgb(shown(right_eye));
     if (swap != 0) {
         vec3 other = left;
         left = right;
@@ -400,8 +154,8 @@ impl GlPresenter {
         let renderer = unsafe { gl.get_parameter_string(glow::RENDERER) };
         log::info!("OpenGL {version} on {renderer}");
 
-        let program = unsafe { link_program(&gl, VERTEX_SHADER, &format!("{SAMPLE}{SCREEN_MAIN}"))? };
-        let stereo_program = unsafe { link_program(&gl, VERTEX_SHADER, &format!("{SAMPLE}{STEREO_MAIN}"))? };
+        let program = unsafe { link_program(&gl, VERTEX_SHADER, &format!("{HEADER}{COMMON}{WHOLE}{SCREEN_MAIN}"))? };
+        let stereo_program = unsafe { link_program(&gl, VERTEX_SHADER, &format!("{HEADER}{COMMON}{WHOLE}{STEREO_MAIN}"))? };
         let vertex_array = unsafe { gl.create_vertex_array() }
             .map_err(PresentError::Backend)?;
 
@@ -463,7 +217,7 @@ impl GlPresenter {
                 gl.tex_image_2d(
                     glow::TEXTURE_2D,
                     0,
-                    glow::RGBA8 as i32,
+                    glow::SRGB8_ALPHA8 as i32,
                     image.width as i32,
                     image.height as i32,
                     0,

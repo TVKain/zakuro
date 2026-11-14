@@ -1,51 +1,31 @@
 //! Integration regression tests for resolution scaling, presentation pipeline, and screen layout geometry.
 
-use zakuro::menus::{resolution_badge_label, resolution_label};
+use zakuro::menus::{resolution_label, resolution_size};
 use zakuro::settings::Filter;
 use zakuro_gpu::{place, ScreenFilter, ScreenLayout, ScreenOrientation, Shown, Stereo};
 
 #[test]
 fn test_resolution_label_mappings() {
     let expected = [
-        (1, "1x (400x240 - Native 3DS)"),
-        (2, "2x (800x480 - 480p)"),
-        (3, "3x (1200x720 - 720p HD)"),
-        (4, "4x (1600x960)"),
-        (5, "5x (2000x1200 - 1080p FHD)"),
-        (6, "6x (2400x1440 - 1440p 2K)"),
-        (7, "7x (2800x1680)"),
-        (8, "8x (3200x1920 - 4K UHD)"),
+        (1, "1x · Native", "400 × 240"),
+        (2, "2x · 480p", "800 × 480"),
+        (3, "3x · 720p", "1200 × 720"),
+        (4, "4x · 960p", "1600 × 960"),
+        (5, "5x · 1200p", "2000 × 1200"),
+        (6, "6x · 1440p", "2400 × 1440"),
+        (7, "7x · 1680p", "2800 × 1680"),
+        (8, "8x · 4K", "3200 × 1920"),
     ];
 
-    for (scale, label) in expected {
+    for (scale, label, size) in expected {
         assert_eq!(resolution_label(scale), label);
+        assert_eq!(resolution_size(scale), size);
     }
 
     // Out of range fallbacks
     assert_eq!(resolution_label(0), "Custom");
     assert_eq!(resolution_label(9), "Custom");
     assert_eq!(resolution_label(16), "Custom");
-}
-
-#[test]
-fn test_resolution_badge_label_mappings() {
-    let expected = [
-        (1, "1x (400x240)"),
-        (2, "2x (800x480)"),
-        (3, "3x (1200x720 720p)"),
-        (4, "4x (1600x960)"),
-        (5, "5x (2000x1200 1080p)"),
-        (6, "6x (2400x1440 2K)"),
-        (7, "7x (2800x1680)"),
-        (8, "8x (3200x1920 4K)"),
-    ];
-
-    for (scale, label) in expected {
-        assert_eq!(resolution_badge_label(scale), label);
-    }
-
-    assert_eq!(resolution_badge_label(0), "Custom");
-    assert_eq!(resolution_badge_label(10), "Custom");
 }
 
 #[test]
@@ -58,11 +38,10 @@ fn test_screen_filter_mode_ids() {
     assert_eq!(ScreenFilter::XbrzLinear.mode(), 4);
 
     // Verify Settings::Filter mapping to ScreenFilter
-    assert_eq!(Filter::Smooth.screens().mode(), 0);
-    assert_eq!(Filter::Pixels.screens().mode(), 1);
+    assert_eq!(Filter::Soft.screens().mode(), 0);
+    assert_eq!(Filter::Pixelated.screens().mode(), 1);
     assert_eq!(Filter::Sharp.screens().mode(), 2);
-    assert_eq!(Filter::Xbrz.screens().mode(), 3);
-    assert_eq!(Filter::XbrzLinear.screens().mode(), 4);
+    assert_eq!(Filter::SmoothEdges.screens().mode(), 4);
 }
 
 #[test]

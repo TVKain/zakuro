@@ -6,25 +6,105 @@ use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 
-/// how much sound to keep waiting, in the console's samples, about 125 ms.
-/// more rides out uneven frames, less answers sooner.
-const TARGET: usize = 4096;
+/// how much sound to keep waiting, in the console's samples, about 39 ms,
+/// which is how far the sound comes after the picture, less the output's
+/// own delay. more rides out uneven frames, less answers sooner: with
+/// frames paced to the display 1024 ran dry now and then while playing and
+/// 768 often, and 4096, 125 ms, put the sound well behind the picture.
+const TARGET: usize = 1280;
 /// how much a queue that ran dry waits for before it plays again.
 const RESUME: usize = TARGET / 4;
-/// the queue stretches sound only once it is down to this, about 63 ms.
+/// the queue stretches sound only once it is down to this, about 20 ms.
 /// every stretch splices the sound, so smaller shortfalls are left to DRIFT.
 const STRETCH_BELOW: usize = TARGET / 2;
 /// how much faster or slower than the rates say playback may go to keep
 /// the queue near its target, too little to hear.
 const DRIFT: f64 = 0.005;
 
+/// how many of the console's samples go into each output sample, half of
+/// them before it and half after.
+const TAPS: usize = 64;
+/// how many fractions between two samples the filter is worked out for,
+/// the rest found between the nearest two.
+const PHASES: usize = 256;
+/// the Kaiser window's beta, which puts what folds back below the
+/// passband at about -90 dB.
+const BETA: f64 = 9.0;
+
+/// a windowed sinc filter, the band-limited curve through the console's
+/// samples, from which the output takes its samples wherever they fall.
+/// a straight line between two samples, as before, dulls the highs and
+/// mirrors them back down as a faint hiss; this keeps the band flat to
+/// about 15.7 kHz and what lies past it 90 dB down.
+struct Kernel {
+    /// the weights of the TAPS samples for each of PHASES + 1 fractions,
+    /// the output TAPS / 2 - 1 samples in and that fraction on.
+    table: Vec<[f32; TAPS]>,
+}
+
+impl Kernel {
+    /// for step console samples to each output sample.
+    fn new(step: f64) -> Kernel {
+        // half the slower rate, less a little for the window to fall in,
+        // in cycles per console sample
+        let cutoff = 0.5 * step.recip().min(1.0) * 0.96;
+        let bessel = |x: f64| {
+            // I0, the modified Bessel function the window is made of
+            let (mut sum, mut term, mut k) = (1.0, 1.0, 1.0);
+            while term > sum * 1e-12 {
+                term *= (x / 2.0 / k).powi(2);
+                sum += term;
+                k += 1.0;
+            }
+            sum
+        };
+        let table = (0..=PHASES)
+            .map(|phase| {
+                let fraction = phase as f64 / PHASES as f64;
+                let mut row = [0f64; TAPS];
+                for (k, weight) in row.iter_mut().enumerate() {
+                    let t = k as f64 - (TAPS / 2 - 1) as f64 - fraction;
+                    let x = (t / (TAPS / 2) as f64).clamp(-1.0, 1.0);
+                    let window = bessel(BETA * (1.0 - x * x).sqrt()) / bessel(BETA);
+                    let arg = std::f64::consts::PI * 2.0 * cutoff * t;
+                    let sinc = if arg == 0.0 { 1.0 } else { arg.sin() / arg };
+                    *weight = 2.0 * cutoff * sinc * window;
+                }
+                // the weights add up to one, so a steady level stays
+                let sum: f64 = row.iter().sum();
+                row.map(|weight| (weight / sum) as f32)
+            })
+            .collect();
+        Kernel { table }
+    }
+
+    /// the output fraction of the way from sample TAPS / 2 - 1 to the next.
+    fn sample(&self, samples: &VecDeque<[f32; 2]>, fraction: f64) -> [f32; 2] {
+        let at = fraction.clamp(0.0, 1.0) * PHASES as f64;
+        let phase = (at as usize).min(PHASES - 1);
+        let between = (at - phase as f64) as f32;
+        let (a, b) = (&self.table[phase], &self.table[phase + 1]);
+        let mut out = [0f32; 2];
+        for ((sample, wa), wb) in samples.range(..TAPS).zip(a).zip(b) {
+            let weight = wa + (wb - wa) * between;
+            out[0] += sample[0] * weight;
+            out[1] += sample[1] * weight;
+        }
+        out
+    }
+}
+
 /// the console's samples waiting to be played.
 struct Queue {
     samples: VecDeque<[f32; 2]>,
-    /// how far the output is between the first two samples.
+    /// how far the output is past sample TAPS / 2 - 1 toward the next, the
+    /// samples before it there for the filter to look back over.
     fraction: f64,
+    kernel: Kernel,
     /// console samples per output sample at 1x speed.
     base_step: f64,
+    /// the console's samples a second.
+    rate: f64,
     /// speed multiplier for custom FPS limit / uncapped playback.
     speed: f64,
     /// ran dry, and waits to fill up before it plays again.
@@ -36,32 +116,33 @@ struct Queue {
     underruns: u64,
     /// how much a queue that ran dry waits for before it plays again.
     refill: usize,
+    /// when the output last asked for sound, how long after that what it
+    /// was given starts playing, and how long that lasts.
+    output: Option<(std::time::Instant, std::time::Duration, std::time::Duration)>,
 }
 
 impl Queue {
     /// the next output sample, between two of the console's.
     fn next(&mut self) -> [f32; 2] {
-        if !self.starved && self.samples.len() < 2 {
+        if !self.starved && self.samples.len() < TAPS {
             self.starved = true;
             self.underruns += 1;
         }
         if self.starved {
-            if self.samples.len() < self.refill {
+            if self.samples.len() < self.refill.max(TAPS) {
                 self.last = self.last.map(|v| v * 0.995);
                 return self.last;
             }
             self.starved = false;
             self.refill = RESUME;
         }
-        let (a, b) = (self.samples[0], self.samples[1]);
-        let t = self.fraction as f32;
-        let out = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        let out = self.kernel.sample(&self.samples, self.fraction);
         self.last = out;
         // a longer queue plays a little faster, a shorter one slower
         let error = (self.samples.len() as f64 - TARGET as f64) / TARGET as f64;
         let step = self.base_step * self.speed;
         self.fraction += step * (1.0 + error.clamp(-1.0, 1.0) * DRIFT);
-        while self.fraction >= 1.0 && self.samples.len() > 1 {
+        while self.fraction >= 1.0 && self.samples.len() > TAPS {
             self.samples.pop_front();
             self.fraction -= 1.0;
         }
@@ -110,6 +191,9 @@ struct Stretch {
     tail: Vec<[f32; 2]>,
     /// how much longer sound comes out, eased toward what the queue asks.
     factor: f64,
+    /// not stretching, sound goes straight through, input keeping only
+    /// what a stretch starting next would search back over.
+    idle: bool,
     window: Vec<f32>,
 }
 
@@ -117,7 +201,15 @@ impl Stretch {
     fn new() -> Stretch {
         // a periodic Hann window, whose halves add up to one
         let window = (0..GRAIN).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / GRAIN as f32).cos()).collect();
-        Stretch { input: Vec::new(), position: 0.0, last: None, tail: vec![[0.0; 2]; HOP], factor: 1.0, window }
+        Stretch { input: Vec::new(), position: 0.0, last: None, tail: vec![[0.0; 2]; HOP], factor: 1.0, idle: true, window }
+    }
+
+    /// how many samples came in that have not gone out yet.
+    fn waiting(&self) -> usize {
+        if self.idle {
+            return 0;
+        }
+        self.input.len().saturating_sub(self.last.map_or(0, |last| last + HOP))
     }
 
     /// forgets what came in, to start over on other sound.
@@ -127,11 +219,40 @@ impl Stretch {
         self.last = None;
         self.tail.fill([0.0; 2]);
         self.factor = 1.0;
+        self.idle = true;
+    }
+
+    /// keeps of what went out only what a stretch would search back over.
+    fn keep_history(&mut self) {
+        let excess = self.input.len().saturating_sub(HOP + 2 * SEARCH);
+        self.input.drain(..excess);
     }
 
     /// stretches samples by about factor, passing out what is ready.
     fn process(&mut self, samples: &[[f32; 2]], factor: f64, out: &mut Vec<[f32; 2]>) {
-        self.input.extend_from_slice(samples);
+        if self.idle {
+            let gone = self.input.len();
+            self.input.extend_from_slice(samples);
+            // a stretch starts from what went out last, which needs some of
+            // it to search over and a piece's worth of what is new
+            if factor == 1.0 || gone < HOP + SEARCH || samples.len() < HOP {
+                out.extend_from_slice(samples);
+                self.keep_history();
+                return;
+            }
+            // as if a piece had started a hop before the new sound: its
+            // second half, the new sound fading out, goes under the next
+            // one's first, so the stretch starts with no dip
+            self.idle = false;
+            self.last = Some(gone - HOP);
+            self.position = gone as f64;
+            self.factor = 1.0;
+            for ((tail, sample), w) in self.tail.iter_mut().zip(&self.input[gone..gone + HOP]).zip(&self.window[HOP..]) {
+                *tail = [sample[0] * w, sample[1] * w];
+            }
+        } else {
+            self.input.extend_from_slice(samples);
+        }
         self.factor += (factor - self.factor) * 0.2;
         // close to not stretching any more, it stops
         if factor == 1.0 && self.factor < 1.001 {
@@ -183,6 +304,20 @@ impl Stretch {
             self.last = Some(start);
             self.position += HOP as f64 / self.factor;
         }
+        // done stretching, the last piece's second half and what follows
+        // go straight out, which with no stretch is the sound as it came
+        if let (1.0, Some(last)) = (self.factor, self.last) {
+            let rising = &self.window[..HOP];
+            for ((tail, sample), w) in self.tail.iter().zip(&self.input[last + HOP..last + GRAIN]).zip(rising) {
+                out.push([tail[0] + sample[0] * w, tail[1] + sample[1] * w]);
+            }
+            out.extend_from_slice(&self.input[last + GRAIN..]);
+            self.idle = true;
+            self.last = None;
+            self.tail.fill([0.0; 2]);
+            self.keep_history();
+            return;
+        }
         // what no piece can reach any more goes
         let used = (self.position as usize).min(self.last.unwrap_or(0)).saturating_sub(SEARCH);
         if used > 0 {
@@ -213,11 +348,14 @@ impl Audio {
             samples: VecDeque::new(),
             fraction: 0.0,
             base_step: rate / config.sample_rate.0 as f64,
+            kernel: Kernel::new(rate / config.sample_rate.0 as f64),
+            rate,
             speed: 1.0,
             starved: true,
             last: [0.0; 2],
             underruns: 0,
             refill: RESUME,
+            output: None,
         }));
         let stream = match format {
             SampleFormat::F32 => stream::<f32>(&device, &config, queue.clone()),
@@ -255,7 +393,9 @@ impl Audio {
         self.volume.set(volume.clamp(0.0, 1.0));
     }
 
-    /// sets the speed ratio for custom FPS limit / uncapped playback (e.g. 0.5 for 30 FPS, 2.0 for 120 FPS).
+    /// how fast the game runs against the console's own rate, slightly
+    /// above 1 when its frames are lined up with the display, so the sound
+    /// is played as fast as it is made.
     pub fn set_speed(&self, speed: f64) {
         if let Ok(mut queue) = self.queue.lock() {
             queue.speed = speed.clamp(0.1, 10.0);
@@ -264,11 +404,16 @@ impl Audio {
 
     /// queues what the console played, stretched when the queue runs low
     /// so that it plays on rather than stops.
-    pub fn push(&self, samples: &[[i16; 2]]) {
+    /// returns when the first of them will be heard, as far as the output
+    /// says.
+    pub fn push(&self, samples: &[[i16; 2]]) -> Option<std::time::Instant> {
         let scale = self.volume.get() / 32768.0;
         let samples: Vec<[f32; 2]> = samples.iter().map(|s| s.map(|v| v as f32 * scale)).collect();
-        let Ok(mut queue) = self.queue.lock() else { return };
-        enqueue(&mut queue, &mut self.stretch.borrow_mut(), &samples);
+        let Ok(mut queue) = self.queue.lock() else { return None };
+        let mut stretch = self.stretch.borrow_mut();
+        let heard = heard_at(&queue, &stretch);
+        enqueue(&mut queue, &mut stretch, &samples);
+        heard
     }
 }
 
@@ -287,17 +432,33 @@ fn enqueue(queue: &mut Queue, stretch: &mut Stretch, samples: &[[f32; 2]]) {
     }
 }
 
+/// when sound added now will be heard: after what the output was last
+/// given, and then what waits in the queue and in the stretcher.
+fn heard_at(queue: &Queue, stretch: &Stretch) -> Option<std::time::Instant> {
+    let (asked, delay, lasts) = queue.output?;
+    let now = std::time::Instant::now();
+    let waiting = queue.samples.len() as f64 + stretch.waiting() as f64 - queue.fraction - (TAPS / 2 - 1) as f64;
+    // the output goes through the console's rate times speed a second
+    let queued = std::time::Duration::from_secs_f64(waiting.max(0.0) / (queue.rate * queue.speed));
+    Some((asked + delay + lasts).max(now) + queued)
+}
+
 fn stream<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     queue: Arc<Mutex<Queue>>,
 ) -> Result<cpal::Stream, String> {
     let channels = config.channels as usize;
+    let rate = config.sample_rate.0 as f64;
     device
         .build_output_stream(
             config,
-            move |out: &mut [T], _| {
+            move |out: &mut [T], info: &cpal::OutputCallbackInfo| {
                 let Ok(mut queue) = queue.lock() else { return };
+                let stamp = info.timestamp();
+                let delay = stamp.playback.duration_since(&stamp.callback).unwrap_or_default();
+                let lasts = std::time::Duration::from_secs_f64((out.len() / channels.max(1)) as f64 / rate);
+                queue.output = Some((std::time::Instant::now(), delay, lasts));
                 for frame in out.chunks_mut(channels) {
                     let [left, right] = queue.next();
                     match frame {
@@ -326,11 +487,14 @@ mod tests {
             samples: (0..samples).map(|i| [i as f32, -(i as f32)]).collect(),
             fraction: 0.0,
             base_step: step,
+            kernel: Kernel::new(step),
+            rate: 32728.0,
             speed: 1.0,
             starved: false,
             last: [0.0; 2],
             underruns: 0,
             refill: RESUME,
+            output: None,
         }
     }
 
@@ -381,7 +545,7 @@ mod tests {
     /// in as it came, with no splice.
     #[test]
     fn a_queue_a_little_short_is_not_stretched() {
-        let mut queue = queue(TARGET - 1000, 1.0);
+        let mut queue = queue(TARGET - TARGET / 4, 1.0);
         let mut stretch = Stretch::new();
         let input = noise_with_a_pause(20_000);
         let mut out = Vec::new();
@@ -412,7 +576,7 @@ mod tests {
         // where the last of it came from, found in noise, which matches in
         // one place only
         let end = &out[out.len() - 10_000..];
-        let from = (0..input.len() - end.len())
+        let from = (0..=input.len() - end.len())
             .find(|&at| end.iter().zip(&input[at..]).take(64).all(|(a, b)| (a[0] - b[0]).abs() < 1e-4))
             .expect("the end is somewhere in the input");
         // and the input in a row back from there, through the end of the pause
@@ -421,6 +585,28 @@ mod tests {
         assert!(start < 33_000, "it covers the pause");
         for (a, b) in tail.iter().zip(&input[start..]) {
             assert!((a[0] - b[0]).abs() < 1e-4, "spliced");
+        }
+    }
+
+    /// sound going straight through, then stretched, then straight
+    /// through again, keeps its level all the way: no dip where a stretch
+    /// starts or stops.
+    #[test]
+    fn stretches_start_and_stop_without_a_dip() {
+        let input = vec![[0.5f32, 0.5]; 546 * 60];
+        let mut stretch = Stretch::new();
+        let mut out = Vec::new();
+        for (i, chunk) in input.chunks(546).enumerate() {
+            let factor = if (5..15).contains(&i) { 1.5 } else { 1.0 };
+            stretch.process(chunk, factor, &mut out);
+            if i == 4 {
+                assert_eq!(out.len(), 546 * 5, "nothing held back while not stretching");
+            }
+        }
+        assert!(stretch.idle, "back to going straight through");
+        assert!(out.len() > input.len(), "it did stretch");
+        for (i, sample) in out.iter().enumerate() {
+            assert!((sample[0] - 0.5).abs() < 1e-4, "{} at {i}", sample[0]);
         }
     }
 
@@ -441,10 +627,43 @@ mod tests {
 
     #[test]
     fn output_falls_between_the_consoles_samples() {
+        // a ramp comes out a ramp, the filter looking TAPS / 2 - 1 back
         let mut queue = queue(TARGET, 0.5);
-        assert_eq!(queue.next(), [0.0, 0.0]);
-        assert_eq!(queue.next(), [0.5, -0.5]);
-        assert_eq!(queue.next(), [1.0, -1.0]);
+        let start = (TAPS / 2 - 1) as f32;
+        for expected in [start, start + 0.5, start + 1.0, start + 1.5] {
+            let [left, right] = queue.next();
+            assert!((left - expected).abs() < 0.01 && (right + expected).abs() < 0.01, "{left} for {expected}");
+        }
+    }
+
+    /// how far off a tone at frequency comes out of the console's rate at
+    /// 48 kHz, against the exact curve, in dB below the tone.
+    fn resampling_error(frequency: f64) -> f64 {
+        const CONSOLE: f64 = 32728.0;
+        let step = CONSOLE / 48000.0;
+        let wave = |at: f64| (std::f64::consts::TAU * frequency * at / CONSOLE).sin() * 0.5;
+        let mut queue = queue(0, step);
+        queue.samples.extend((0..20_000).map(|i| [wave(i as f64) as f32; 2]));
+        let (mut signal, mut error) = (0.0, 0.0);
+        for _ in 0..20_000 {
+            // where the output falls, TAPS / 2 - 1 past what was played
+            // through, which drift control moves a little off the step
+            let at = (20_000 - queue.samples.len() + TAPS / 2 - 1) as f64 + queue.fraction;
+            let out = queue.next()[0] as f64;
+            let exact = wave(at);
+            signal += exact * exact;
+            error += (out - exact) * (out - exact);
+        }
+        10.0 * (signal / error).log10()
+    }
+
+    #[test]
+    fn tones_come_through_clean() {
+        for (frequency, least) in [(440.0, 95.0), (3000.0, 95.0), (10_000.0, 95.0), (14_000.0, 80.0)] {
+            let db = resampling_error(frequency);
+            eprintln!("{frequency} Hz: {db:.1} dB");
+            assert!(db > least, "{frequency} Hz is {db:.1} dB clean, wanted {least}");
+        }
     }
 
     #[test]
@@ -455,8 +674,8 @@ mod tests {
         assert!(queue.starved);
         assert_eq!(queue.underruns, 1);
         assert!(faded[0] < 0.5 && faded[0] > 0.4, "it fades out rather than stopping short");
-        queue.samples.extend((0..RESUME).map(|_| [1.0, 1.0]));
-        assert_eq!(queue.next(), [0.0, -0.0], "it starts again from where it stopped");
+        queue.samples.extend((0..RESUME.max(TAPS)).map(|_| [1.0, 1.0]));
+        assert!((queue.next()[0] - 1.0).abs() < 0.01, "it plays again once there is enough");
     }
 
     /// stopped while the game is, it does not count running dry, and plays

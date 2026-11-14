@@ -1,6 +1,6 @@
 //! gsp::Gpu, the GPU service.
 
-use zakuro_common::memory_map::{FCRAM_PADDR, PAGE_SIZE};
+use zakuro_common::memory_map::FCRAM_PADDR;
 use zakuro_cpu::Bus;
 
 use crate::kernel::ipc::{CommandBuffer, Descriptor, Header};
@@ -646,11 +646,6 @@ pub fn physical_to_virtual(system: &System, paddr: u32) -> u32 {
     } else {
         paddr
     }
-}
-
-/// rounds a size up to whole pages, used when mapping the shared block.
-pub const fn page_align(size: u32) -> u32 {
-    (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
 }
 
 #[cfg(test)]
