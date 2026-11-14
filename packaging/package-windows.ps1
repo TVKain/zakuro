@@ -85,6 +85,7 @@ Copy-Item (Join-Path $Root "crates\zakuro\fonts\Inter-LICENSE.txt") $Stage
 $Out = Join-Path $OutDir "$Name.zip"
 Remove-Item $Out -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Out -CompressionLevel Optimal
+Remove-Item -Recurse -Force $Stage
 
 Write-Host ("Packed {0} ({1:N0} MB)" -f $SetupOut, ((Get-Item $SetupOut).Length / 1MB))
 Write-Host ("Packed {0} ({1:N0} MB)" -f $Out, ((Get-Item $Out).Length / 1MB))
