@@ -196,6 +196,9 @@ struct Setup {
     pad: pad::Pad,
     /// the last input was a controller's or the keyboard's, not the pointer's.
     directional: bool,
+    /// what a controller can reach, in the order it goes through them: the
+    /// last frame's, top to bottom and left to right.
+    order: Vec<egui::Id>,
 }
 
 impl Setup {
@@ -226,6 +229,7 @@ impl Setup {
             cancel: Arc::new(AtomicBool::new(false)),
             pad: pad::Pad::new(),
             directional: false,
+            order: Vec::new(),
         }
     }
 
@@ -275,6 +279,7 @@ impl Setup {
         if self.page == Page::Working || self.measuring.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
+        self.order = ui.ctx().data_mut(|data| data.remove_temp::<Vec<egui::Id>>(egui::Id::new(ORDER))).unwrap_or_default();
         let mut close = self.controller(ui.ctx(), presses);
         egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BASE).inner_margin(Margin::same(28))).show(ui, |ui| {
             header(ui, self.mode);
@@ -327,13 +332,13 @@ impl Setup {
             return false;
         }
         let mut close = false;
+        // focus asked for shows next frame, and presses can come several to one
+        let mut focused = ctx.memory(|memory| memory.focused());
         for &press in presses {
-            let focused = ctx.memory(|memory| memory.focused());
+            // up and left go back through the controls, down and right on
             let direction = match press {
-                pad::Press::Up => Some(egui::FocusDirection::Up),
-                pad::Press::Down => Some(egui::FocusDirection::Down),
-                pad::Press::Left => Some(egui::FocusDirection::Left),
-                pad::Press::Right => Some(egui::FocusDirection::Right),
+                pad::Press::Up | pad::Press::Left => Some(-1),
+                pad::Press::Down | pad::Press::Right => Some(1),
                 _ => None,
             };
             match (press, direction) {
@@ -341,7 +346,19 @@ impl Setup {
                     // the first press finds the main button
                     ctx.data_mut(|data| data.insert_temp(egui::Id::new(FOCUS_MAIN), true));
                 }
-                (_, Some(direction)) => ctx.memory_mut(|memory| memory.move_focus(direction)),
+                (_, Some(step)) => {
+                    let at = self.order.iter().position(|id| Some(*id) == focused);
+                    let next = at.and_then(|at| at.checked_add_signed(step)).and_then(|next| self.order.get(next));
+                    match (at, next) {
+                        (_, Some(&id)) => {
+                            ctx.memory_mut(|memory| memory.request_focus(id));
+                            focused = Some(id);
+                        }
+                        // off the end it stays; lost, it finds the main button
+                        (Some(_), None) => {}
+                        (None, _) => ctx.data_mut(|data| { data.insert_temp(egui::Id::new(FOCUS_MAIN), true); }),
+                    }
+                }
                 (pad::Press::Accept, _) if focused == Some(egui::Id::new(DIR_FIELD)) => self.pick_folder(),
                 (pad::Press::Accept, _) => {
                     // a focused button or checkbox takes Enter as a click
@@ -385,6 +402,17 @@ fn header(ui: &mut egui::Ui, mode: Mode) {
     ui.label(RichText::new(line).color(color::MUTED));
 }
 
+/// the order a controller goes through the controls in, as this frame draws
+/// them.
+const ORDER: &str = "controller-order";
+
+/// puts a control drawn in the controller's order, unless it is disabled.
+fn reachable(ui: &egui::Ui, response: &egui::Response) {
+    if response.enabled() {
+        ui.ctx().data_mut(|data| data.get_temp_mut_or_default::<Vec<egui::Id>>(egui::Id::new(ORDER)).push(response.id));
+    }
+}
+
 /// a box grouping some choices.
 fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new().fill(color::CARD).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(16)).show(ui, |ui| {
@@ -403,6 +431,7 @@ fn buttons(ui: &mut egui::Ui, labels: &[(&str, bool)]) -> Option<usize> {
     let mut clicked = None;
     // down at the bottom, however much is above them
     ui.add_space((ui.available_height() - 40.0).max(0.0));
+    let mut drawn = Vec::new();
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         for (index, (label, enabled)) in labels.iter().enumerate().rev() {
             let text = RichText::new(*label).size(15.0);
@@ -414,8 +443,13 @@ fn buttons(ui: &mut egui::Ui, labels: &[(&str, bool)]) -> Option<usize> {
             if response.clicked() {
                 clicked = Some(index);
             }
+            drawn.push(response);
         }
     });
+    // drawn from the right, they are gone through from the left
+    for response in drawn.iter().rev() {
+        reachable(ui, response);
+    }
     clicked
 }
 
@@ -428,8 +462,11 @@ impl Setup {
                     .id(egui::Id::new(DIR_FIELD))
                     .desired_width(ui.available_width() - 100.0)
                     .margin(Margin::symmetric(8, 7));
-                ui.add(field);
-                if ui.button("Change…").clicked() {
+                let field = ui.add(field);
+                reachable(ui, &field);
+                let change = ui.button("Change…");
+                reachable(ui, &change);
+                if change.clicked() {
                     self.pick_folder();
                 }
             });
@@ -443,7 +480,8 @@ impl Setup {
         card(ui, |ui| {
             let zig_there = work::zig_in(&PathBuf::from(self.dir.trim())).is_file();
             ui.add_enabled_ui(!zig_there, |ui| {
-                ui.checkbox(&mut self.zig, RichText::new("Set up recompiling").strong());
+                let zig = ui.checkbox(&mut self.zig, RichText::new("Set up recompiling").strong());
+                reachable(ui, &zig);
             });
             let text = if zig_there {
                 format!("The Zig {} compiler it uses is there already.", work::ZIG_VERSION)
@@ -456,7 +494,8 @@ impl Setup {
             };
             note(ui, text);
             ui.add_space(4.0);
-            ui.checkbox(&mut self.desktop, "Add a desktop shortcut");
+            let ticked = ui.checkbox(&mut self.desktop, "Add a desktop shortcut");
+            reachable(ui, &ticked);
         });
         let ready = !self.dir.trim().is_empty() && work::carries_zakuro();
         if !work::carries_zakuro() {
@@ -483,12 +522,15 @@ impl Setup {
         let size = |pick: fn(&DataSizes) -> u64| sizes.as_ref().map_or("measuring…".to_owned(), |sizes| system::human(pick(sizes)));
         card(ui, |ui| {
             ui.label(RichText::new("Also delete").strong());
-            ui.checkbox(&mut self.games, format!("My games and their recompiled code ({})", size(|s| s.games)));
+            let ticked = ui.checkbox(&mut self.games, format!("My games and their recompiled code ({})", size(|s| s.games)));
+            reachable(ui, &ticked);
             if let Some(library) = sizes.as_ref().and_then(|sizes| sizes.library.as_ref()) {
                 note(ui, format!("    In {}", library.display()));
             }
-            ui.checkbox(&mut self.saves, format!("My saves and save states ({})", size(|s| s.saves)));
-            ui.checkbox(&mut self.settings, format!("My settings, cheats, mods and texture packs ({})", size(|s| s.settings)));
+            let ticked = ui.checkbox(&mut self.saves, format!("My saves and save states ({})", size(|s| s.saves)));
+            reachable(ui, &ticked);
+            let ticked = ui.checkbox(&mut self.settings, format!("My settings, cheats, mods and texture packs ({})", size(|s| s.settings)));
+            reachable(ui, &ticked);
             ui.add_space(2.0);
             if self.games || self.saves || self.settings {
                 ui.label(RichText::new("What is ticked can't be brought back.").size(12.5).color(color::DANGER));
@@ -588,11 +630,25 @@ mod tests {
         frame(&ctx, &mut setup, &[]);
         assert_ne!(ctx.memory(|memory| memory.focused()), Some(main));
         frame(&ctx, &mut setup, &[Press::Accept]);
-        assert_eq!([setup.games, setup.saves, setup.settings].iter().filter(|&&ticked| ticked).count(), 1, "{} {} {}", setup.games, setup.saves, setup.settings);
+        // the choice just above the buttons
+        assert!(setup.settings && !setup.saves && !setup.games);
         assert_eq!(setup.page, Page::Choose);
         // B closes it, uninstalling nothing
         assert!(frame(&ctx, &mut setup, &[Press::Back]));
         assert_eq!(setup.page, Page::Choose);
+    }
+
+    #[test]
+    fn presses_in_one_frame_each_move() {
+        let ctx = egui::Context::default();
+        let mut setup = Setup::new(Mode::Uninstall, None);
+        frame(&ctx, &mut setup, &[]);
+        frame(&ctx, &mut setup, &[Press::Down]);
+        frame(&ctx, &mut setup, &[]);
+        // from Uninstall, two up is the saves
+        frame(&ctx, &mut setup, &[Press::Up, Press::Up]);
+        frame(&ctx, &mut setup, &[Press::Accept]);
+        assert!(setup.saves && !setup.settings && !setup.games);
     }
 
     #[test]
