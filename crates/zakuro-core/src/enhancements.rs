@@ -16,6 +16,8 @@ pub struct Enhancement {
     pub author: String,
     /// what a player should know before turning it on, empty if nothing.
     pub note: String,
+    /// taken from a cheat database without being tried in Zakuro.
+    pub untested: bool,
     pub lines: Vec<String>,
 }
 
@@ -46,6 +48,7 @@ pub fn for_title(program_id: u64, build: &str) -> Vec<Enhancement> {
                     name: name.trim().to_owned(),
                     author: fields.next().unwrap_or_default().to_owned(),
                     note: fields.next().unwrap_or_default().to_owned(),
+                    untested: fields.next() == Some("untested"),
                     lines: Vec::new(),
                 });
             }
@@ -64,8 +67,9 @@ pub fn cheats(program_id: u64, build: &str, on: &[String]) -> Vec<Cheat> {
     for_title(program_id, build)
         .into_iter()
         .map(|enhancement| {
-            let credit = format!("Code by {}, from the 60 FPS thread on GBAtemp.", enhancement.author);
-            let notes = [enhancement.note, credit].into_iter().filter(|line| !line.is_empty()).collect();
+            let credit = format!("Code from {}.", enhancement.author);
+            let untested = if enhancement.untested { "Not tested in Zakuro yet, so it may do nothing or cause glitches." } else { "" };
+            let notes = [enhancement.note, untested.to_owned(), credit].into_iter().filter(|line| !line.is_empty()).collect();
             let mut cheat = Cheat::new(&enhancement.name, enhancement.lines, notes);
             cheat.builtin = true;
             cheat.enabled = on.contains(&enhancement.name);
@@ -85,7 +89,7 @@ mod tests {
         let enhancements = for_title(0x0004_0000_0008_C300, "rev2");
         assert_eq!(enhancements.len(), 1);
         let fps = &enhancements[0];
-        assert_eq!((fps.name.as_str(), fps.author.as_str()), ("60 FPS", "Hazerou"));
+        assert_eq!((fps.name.as_str(), fps.author.as_str()), ("60 FPS", "Hazerou, 60 FPS thread on GBAtemp"));
         assert!(!fps.note.is_empty());
         assert_eq!(fps.lines, ["D3000000 08000000", "2020A748 0000003C", "D2000000 00000000"]);
         assert!(for_title(0x0004_0000_0008_C300, "rev0").is_empty());
@@ -94,6 +98,25 @@ mod tests {
         let cheats = cheats(0x0004_0000_0008_C300, "rev2", &["60 FPS".to_owned()]);
         assert!(cheats[0].enabled && cheats[0].builtin);
         assert_eq!(cheats[0].notes.len(), 2);
+    }
+
+    /// each build of a game gets its own version of a code, and a code from a
+    /// cheat database says it was not tried in Zakuro.
+    #[test]
+    fn untested_codes_say_so_and_follow_the_build() {
+        let ultra_sun = 0x0004_0000_001B_5000;
+        let outlines = |build: &str| for_title(ultra_sun, build).into_iter().find(|e| e.name == "No Outlines").unwrap();
+        assert_eq!(outlines("rev0").lines, ["0042E2B8 E320F000"]);
+        assert_eq!(outlines("update 1.1").lines, ["0042FBA0 E320F000"]);
+        let tested = outlines("update 2.2");
+        assert_eq!((tested.lines.as_slice(), tested.untested), (&["0042FBA4 E320F000".to_owned()][..], false));
+        assert!(outlines("rev0").untested);
+
+        let moon = cheats(0x0004_0000_0017_5E00, "update 2.2", &[]);
+        assert_eq!(moon.len(), 1);
+        assert!(!moon[0].enabled && moon[0].builtin);
+        assert!(moon[0].notes.iter().any(|note| note.starts_with("Not tested in Zakuro")));
+        assert!(moon[0].notes.iter().any(|note| note == "Code from Sharkive cheat database."));
     }
 
     #[test]

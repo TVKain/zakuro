@@ -1,10 +1,11 @@
 # enhancements, one game after another:
 # = <title id> <name>
-# <enhancement> | <build> | <who made it> | <what to know about it>
+# <enhancement> | <build> | <where it comes from> | <what to know about it> [| untested]
 # <code lines>
 # the build is any, rev<remaster version> for a cartridge without an update,
-# or update <major>.<minor> for a game with that update. each code here was
-# tested on its build in Zakuro, where it doubled the frames the game draws.
+# or update <major>.<minor> for a game with that update. a code marked untested
+# comes from a cheat database and was not tried in Zakuro; the others were
+# tested on their build in Zakuro.
 # the 60 FPS codes come from the 60 FPS cheat thread on GBAtemp and Reshiban's
 # collection of them. most of these games count time in frames, so they run
 # faster too, which the note says where the code's author said so or where
@@ -12,75 +13,106 @@
 # changed, so a game goes back to its own frame rate.
 
 = 0004000000054000 Super Mario 3D Land (USA)
-60 FPS | rev0 | Hazerou | The whole game runs twice as fast with it.
+60 FPS | rev0 | Hazerou, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 D3000000 15000000
 2091621C 00000001
 D2000000 00000000
 
 = 0004000000055D00 Pokémon X (USA)
-60 FPS | rev0 | Reshiban | The whole game runs twice as fast with it.
+60 FPS | rev0 | Reshiban, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 28C61A85 00000000
 
 = 0004000000055E00 Pokémon Y (USA)
-60 FPS | rev0 | Reshiban | The whole game runs twice as fast with it.
+60 FPS | rev0 | Reshiban, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 28C61A85 00000000
 
 = 000400000008C300 Tomodachi Life (USA)
-60 FPS | rev2 | Hazerou | The game runs faster with it.
+60 FPS | rev2 | Hazerou, 60 FPS thread on GBAtemp | The game runs faster with it.
 D3000000 08000000
 2020A748 0000003C
 D2000000 00000000
 
 = 00040000000E5C00 Shin Megami Tensei IV (USA)
-60 FPS | rev0 | lucky | The whole game runs twice as fast with it.
+60 FPS | rev0 | lucky, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 204E3BA0 00000000
 
 = 000400000011C400 Pokémon Omega Ruby (USA)
-60 FPS | rev3 | Reshiban | The whole game runs twice as fast with it.
+60 FPS | rev3 | Reshiban, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 28C650C1 00000000
+No Outlines | update 7.4 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0037A140 00000000
+0037A144 00000000
 
 = 000400000011C500 Pokémon Alpha Sapphire (USA)
-60 FPS | rev3 | Reshiban | The whole game runs twice as fast with it.
+60 FPS | rev3 | Reshiban, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 28C650C1 00000000
 
 = 0004000000125500 The Legend of Zelda: Majora's Mask 3D (USA)
-60 FPS | rev2 | NanashiFinal13 | The whole game runs twice as fast with it.
+60 FPS | rev2 | NanashiFinal13, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 206A3A14 00000001
 
 = 0004000000136D00 Inazuma Eleven GO: Chrono Stones Thunderflash (EUR)
-60 FPS | rev0 | lucky | Some things may run faster with it.
+60 FPS | rev0 | lucky, 60 FPS thread on GBAtemp | Some things may run faster with it.
 2062C929 00000001
 
 = 0004000000164800 Pokémon Sun (USA)
-60 FPS | rev0 | Reshiban | The whole game runs twice as fast with it.
+60 FPS | rev0 | Reshiban, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 D3000000 30000000
 2417E569 00000000
 D2000000 00000000
+No Outlines | rev0 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0041B748 E320F000
+D2000000 00000000
+No Outlines | update 1.1 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0041CFCC E320F000
+D2000000 00000000
+No Outlines | update 2.2 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0041CFCC E320F000
+
+= 0004000000175E00 Pokémon Moon (USA)
+No Outlines | rev0 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0041B748 E320F000
+D2000000 00000000
+No Outlines | update 1.1 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0041CFCC E320F000
+D2000000 00000000
+No Outlines | update 2.2 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0041CFCC E320F000
 
 = 00040000001B5000 Pokémon Ultra Sun (USA)
-60 FPS | rev0 | Reshiban | The whole game runs twice as fast with it.
+60 FPS | rev0 | Reshiban, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 D3000000 30000000
 23F67FE9 00000000
 D2000000 00000000
-No Outlines | update 2.2 | community | Removes the black outlines drawn around characters, which look heavy at high resolutions.
+No Outlines | update 2.2 | Citra community | Removes the black outlines drawn around characters, which look heavy at high resolutions.
 0042FBA4 E320F000
-No Ghosting | update 2.2 | community | Removes the blurred double image behind moving characters.
+No Ghosting | update 2.2 | Citra community | Removes the blurred double image behind moving characters.
 0042F33C EA000000
+No Outlines | rev0 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0042E2B8 E320F000
+No Outlines | update 1.1 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0042FBA0 E320F000
 
 = 00040000001B5100 Pokémon Ultra Moon (USA)
-60 FPS | rev0 | Reshiban | The whole game runs twice as fast with it.
+60 FPS | rev0 | Reshiban, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 D3000000 30000000
 23F67FE9 00000000
 D2000000 00000000
+No Outlines | rev0 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0042E2B8 E320F000
+No Outlines | update 1.1 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0042FBA0 E320F000
+No Outlines | update 2.2 | Sharkive cheat database | Removes the black outlines drawn around characters and Pokémon, which look heavy at high resolutions. | untested
+0042FBA8 E320F000
 
 = 0004000000167800 Yo-kai Watch (EUR)
-60 FPS | rev0 | lucky | The game runs faster with it.
+60 FPS | rev0 | lucky, 60 FPS thread on GBAtemp | The game runs faster with it.
 20601951 00000001
 
 = 000400000016E700 Final Fantasy Explorers (EUR)
-60 FPS | rev0 | lucky | The whole game runs twice as fast with it.
+60 FPS | rev0 | lucky, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 280927E8 00000001
 
 = 00040000001B2900 Yo-kai Watch 2: Psychic Specters (EUR)
-60 FPS | rev0 | lucky | Some things may run faster with it.
+60 FPS | rev0 | lucky, 60 FPS thread on GBAtemp | Some things may run faster with it.
 2086128D 00000001
