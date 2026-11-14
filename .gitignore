@@ -4,3 +4,7 @@
 /dump
 /user/
 /sysdata/
+# tools build on their own, outside the workspace
+/tools/*/target
+# a local glslang for tools/test_regressions.ps1 (docs/getting-started.md)
+/tools/glslang/

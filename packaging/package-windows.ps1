@@ -3,7 +3,7 @@
 #                                     downloads Zig for recompiling while it installs
 #   zakuro-v<version>-windows-x64.zip zakuro.exe alone, for those who don't install
 #
-#   .\packaging\package-windows.ps1                 # build, then pack into release\
+#   .\packaging\package-windows.ps1                 # build, then pack into target\dist
 #   .\packaging\package-windows.ps1 -NoBuild        # pack the programs already built
 #   .\packaging\package-windows.ps1 -ToolsOnly      # only put Zig next to target\release\zakuro.exe
 param(
@@ -14,7 +14,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $PSScriptRoot
-if ($OutDir -eq "") { $OutDir = Join-Path (Split-Path -Parent $Root) "release" }
+if ($OutDir -eq "") { $OutDir = Join-Path $Root "target\dist" }
 
 $Version = (Select-String -Path (Join-Path $Root "Cargo.toml") -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
 $Exe = Join-Path $Root "target\release\zakuro.exe"

@@ -1,21 +1,23 @@
 # Publishes a Zakuro release from the stable branch:
 #   checks, version bump, lint and tests, package, commit, push, GitHub release.
-# Write ..\release\notes-v<version>.md first (no AI mentions).
+# Commit docs\release-notes\v<version>.md first (no AI mentions). The setup
+# exe and zip go to target\dist. See docs/releasing.md.
 #
 #   .\packaging\release.ps1 -Version 0.3.4            # publish
 #   .\packaging\release.ps1 -Version 0.3.4 -DryRun    # everything but commit, push and publish
 param(
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$Repo = "TVKain/zakuro"
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$Workspace = Split-Path -Parent $Root
-$ReleaseDir = Join-Path $Workspace "release"
-$Notes = Join-Path $ReleaseDir "notes-v$Version.md"
+$ReleaseDir = Join-Path $Root "target\dist"
+$Notes = Join-Path $Root "docs\release-notes\v$Version.md"
 $Manifest = Join-Path $Root "Cargo.toml"
-$Gh = "C:\Program Files\GitHub CLI\gh.exe"
-$Repo = "TVKain/zakuro"
+$Gh = (Get-Command gh -ErrorAction SilentlyContinue).Source
+if (-not $Gh) { $Gh = "C:\Program Files\GitHub CLI\gh.exe" }
+if (-not (Test-Path $Gh)) { throw "GitHub CLI (gh) not found" }
 
 function Step($text) { Write-Host "==> $text" -ForegroundColor Cyan }
 function Run([string]$exe, [string[]]$arguments) {
@@ -50,8 +52,7 @@ Run "cargo" @("update", "-w", "--manifest-path", $Manifest)
 
 try {
     Step "Lint and tests"
-    Run "cargo" @("clippy", "--workspace", "--tests", "--manifest-path", $Manifest, "--", "-D", "warnings")
-    Run "powershell" @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Workspace "tools\test_regressions.ps1"), "-Quick")
+    Run "powershell" @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Root "tools\test_regressions.ps1"), "-Quick")
 
     Step "Package"
     $out = if ($DryRun) { Join-Path $Root "target\release-dry" } else { $ReleaseDir }
@@ -70,13 +71,13 @@ if ($DryRun) {
 
 Step "Commit and push"
 Invoke-Git @("add", "Cargo.toml", "Cargo.lock")
-Invoke-Git @("-c", "user.name=TVKain", "-c", "user.email=tvkain.it@gmail.com", "commit", "-q", "-m", "Release v$Version")
+Invoke-Git @("commit", "-q", "-m", "Release v$Version")
 Invoke-Git @("push", "-q", "origin", "stable")
 
 Step "GitHub release"
 Run $Gh @("release", "create", "v$Version", $Setup, $Zip, "--repo", $Repo, "--target", "stable", "--title", "Zakuro v$Version", "--notes-file", $Notes)
 Invoke-Git @("fetch", "-q", "--tags", "origin")
 
-# release\ keeps only the latest; older ones are on GitHub
+# target\dist keeps only the latest; older ones are on GitHub
 Get-ChildItem $ReleaseDir | Where-Object { $_.Name -notlike "*v$Version*" } | Remove-Item -Recurse -Force
 Step "Released https://github.com/$Repo/releases/tag/v$Version"

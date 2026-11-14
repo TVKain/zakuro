@@ -77,4 +77,6 @@ Keys and controller buttons can be changed in the settings. Xbox, PlayStation, S
 
 Contributions are welcome. Using AI is fine sometimes, but the code must always be reviewed by a human. Code that is entirely vibecoded will be discarded.
 
+The developer docs (building, architecture, testing, how to make a change) are in [docs/](docs/README.md), and the rules for contributing are in [AGENTS.md](AGENTS.md).
+
 MIT license.

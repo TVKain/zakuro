@@ -1,0 +1,10 @@
+[package]
+name = "imgbench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ash = "=0.38.0"
+image = { version = "=0.25.10", default-features = false, features = ["png", "pnm"] }
+
+[workspace]
