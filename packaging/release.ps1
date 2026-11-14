@@ -34,7 +34,9 @@ if ((git.exe -C $Root branch --show-current) -ne "stable") { throw "not on stabl
 if (git.exe -C $Root status --porcelain) { throw "uncommitted changes in $Root" }
 if (git.exe -C $Root tag --list "v$Version") { throw "tag v$Version exists" }
 if (-not $DryRun) {
+    $ErrorActionPreference = "Continue"
     & $Gh release view "v$Version" --repo $Repo *> $null
+    $ErrorActionPreference = "Stop"
     if ($LASTEXITCODE -eq 0) { throw "release v$Version exists on GitHub" }
 }
 $busy = Get-Process zakuro, zakuro-setup -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$Root\target\release\*" }
