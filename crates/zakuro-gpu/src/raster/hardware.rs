@@ -48,6 +48,8 @@ const FRAGMENT_DEPTH_SPIRV: &[u8] = include_bytes!("../../shaders/raster_depth.f
 const TRANSFER_SPIRV: &[u8] = include_bytes!("../../shaders/transfer.comp.spv");
 const DEPTH_SPIRV: &[u8] = include_bytes!("../../shaders/depth.comp.spv");
 const UPRIGHT_SPIRV: &[u8] = include_bytes!("../../shaders/upright.comp.spv");
+/// scale.comp, which makes a texture bigger with xBRZ.
+const SCALE_SPIRV: &[u8] = include_bytes!("../../shaders/scale.comp.spv");
 /// upright.comp built with TO_IMAGE, for a presenter sharing the device.
 const UPRIGHT_IMAGE_SPIRV: &[u8] = include_bytes!("../../shaders/upright_image.comp.spv");
 
@@ -805,6 +807,11 @@ struct Texture {
     /// holds the decoded texels the key points at, so the key stays theirs.
     _texels: Arc<[[u8; 4]]>,
     used: u64,
+    /// how many times bigger than the texture the image is, made so with
+    /// xBRZ, see scale.comp. 1 when it is the texture as it is.
+    times: u32,
+    /// the largest size alone, which the shader making it bigger writes.
+    largest: Option<vk::ImageView>,
 }
 
 /// a texture pack's picture, drawn with for every texture it replaces.
@@ -870,6 +877,24 @@ impl Filtering {
         }
     }
 
+    /// bilinear both ways, and between sizes when there are some, whatever
+    /// the title asked for. a texture sampled point by point shows its
+    /// texels as blocks, which at the console's resolution are a pixel or
+    /// two and drawn at a multiple of it become stair steps along every
+    /// edge in it.
+    fn smoothed(self) -> Filtering {
+        Filtering { magnify: true, minify: true, between: self.between || self.levels.1 > self.levels.0, ..self }
+    }
+
+    /// for a texture made times bigger: its sizes are as many levels on,
+    /// and the bigger ones are there to draw with however close the title
+    /// keeps its level of detail.
+    fn scaled(self, times: u32) -> Filtering {
+        let extra = times.max(1).ilog2() as u8;
+        let least = if self.levels.0 == 0 { 0 } else { self.levels.0 + extra };
+        Filtering { levels: (least, self.levels.1 + extra), ..self }
+    }
+
     /// the unit's magnifying filter and wrapping, one size of its texture.
     fn wrapping(bound: &BoundTexture) -> Filtering {
         Filtering { s: bound.wrap_s, t: bound.wrap_t, magnify: bound.linear, ..Filtering::OFF }
@@ -886,6 +911,10 @@ impl Filtering {
 /// one up. each costs most of a millisecond however small.
 const REPLACING_TIME: std::time::Duration = std::time::Duration::from_millis(2);
 const REPLACING_BYTES: u64 = 64 << 20;
+
+/// batches within which a texture uploading again at the same address and
+/// size counts as one the title keeps rewriting, see Hardware::uploaded_at.
+const STREAMED_WITHIN: u64 = 300;
 
 /// pictures up to this size are staged in the ring rather than a buffer
 /// of their own, which takes a while to make.
@@ -1416,6 +1445,9 @@ pub struct Hardware {
     direct: bool,
     /// whether anisotropic filtering is supported on this device.
     anisotropy: bool,
+    /// whether textures a game samples point by point are filtered, see
+    /// Filtering::smoothed.
+    smooth_textures: bool,
     device: ash::Device,
     push: ash::khr::push_descriptor::Device,
     queue: vk::Queue,
@@ -1482,6 +1514,8 @@ pub struct Hardware {
     upright: Option<Compute>,
     /// the same writing an image, made the first time it is needed.
     upright_image: Option<Compute>,
+    /// made the first time a texture is made bigger, see scale.comp.
+    scale_texture: Option<Compute>,
     samples: Option<Local>,
     samplers: QuickMap<Filtering, vk::Sampler>,
     /// the furthest a sampler's bias reaches, past which a unit's is cut.
@@ -1492,6 +1526,10 @@ pub struct Hardware {
     surfaces: Vec<Surface>,
     /// by the address of the decoded texels.
     textures: HashMap<usize, Texture>,
+    /// the batch a texture last uploaded at each address and size, which
+    /// tells textures a title keeps rewriting, a video's frames, from ones it
+    /// loads once.
+    uploaded_at: HashMap<(u32, u32, u32), u64>,
     /// textures copied from surfaces, by what they are.
     copies: HashMap<DrawnTexture, Copied>,
     /// texture pack pictures, by the hash of the textures they replace.
@@ -1691,6 +1729,7 @@ impl Hardware {
                 _shared: shared,
                 direct,
                 anisotropy,
+                smooth_textures: false,
                 device,
                 push,
                 queue,
@@ -1747,6 +1786,7 @@ impl Hardware {
                 depth: None,
                 upright: None,
                 upright_image: None,
+                scale_texture: None,
                 samples: None,
                 samplers: QuickMap::default(),
                 max_bias: properties.limits.max_sampler_lod_bias,
@@ -1754,6 +1794,7 @@ impl Hardware {
                 readback: None,
                 surfaces: Vec::new(),
                 textures: HashMap::new(),
+                uploaded_at: HashMap::new(),
                 copies: HashMap::new(),
                 replaced: HashMap::new(),
                 replaced_bytes: 0,
@@ -1854,6 +1895,69 @@ impl Hardware {
         self.scale
     }
 
+    /// whether it filters textures the title samples point by point.
+    pub fn smooths_textures(&self) -> bool {
+        self.smooth_textures
+    }
+
+    /// filters textures the title samples point by point, or samples them
+    /// as it asks. samplers are kept by how they filter, so the next draw
+    /// takes it up.
+    pub fn set_smooth_textures(&mut self, on: bool) {
+        if self.smooth_textures == on {
+            return;
+        }
+        self.smooth_textures = on;
+        // textures are made bigger or not as they upload, so they go to
+        // upload again
+        if self.recording {
+            let _ = self.submit();
+        } else {
+            self.end_rendering();
+        }
+        // SAFETY: waits for the GPU, nothing else
+        unsafe { self.device.device_wait_idle() }.ok();
+        let textures: Vec<_> = std::mem::take(&mut self.textures).into_values().collect();
+        for texture in textures {
+            self.destroy_texture(&texture);
+        }
+    }
+
+    /// how many times bigger a texture is made with xBRZ as it uploads: 4
+    /// times, or 2 when the GPU draws at only 2 or 3 times the console's
+    /// resolution, or the texture is a big one, and 1, as it is, when
+    /// textures aren't smoothed, the GPU draws at the console's resolution,
+    /// or the texture is a sliver or so small it is likely a table of
+    /// values rather than a picture.
+    fn texture_times(&self, width: u32, height: u32) -> u32 {
+        if !self.smooth_textures || self.scale < 2 || width < 8 || height < 8 {
+            return 1;
+        }
+        let mut times = if self.scale >= 4 { 4 } else { 2 };
+        while times > 1 && (width * height * times * times > 2048 * 2048 || width.max(height) * times > self.max_image_size) {
+            times /= 2;
+        }
+        times
+    }
+
+    fn destroy_texture(&self, texture: &Texture) {
+        if let Some(view) = texture.largest {
+            // SAFETY: only called once the GPU is done with the texture
+            unsafe { self.device.destroy_image_view(view, None) };
+        }
+        self.destroy_image(&texture.image);
+    }
+
+    /// the pipeline textures are made bigger with, made the first time.
+    fn scale_pipeline(&mut self) -> Result<(vk::PipelineLayout, vk::Pipeline), String> {
+        if self.scale_texture.is_none() {
+            let bindings = [vk::DescriptorType::STORAGE_BUFFER, vk::DescriptorType::STORAGE_IMAGE];
+            self.scale_texture = Some(self.compute(SCALE_SPIRV, &bindings, 5 * 4)?);
+        }
+        let scale = self.scale_texture.as_ref().expect("made above");
+        Ok((scale.layout, scale.pipeline))
+    }
+
     /// draws at a multiple of the console's resolution, when the GPU can scale surfaces,
     /// and says the one it took. Safely recreates cached surfaces if changed at runtime.
     pub fn set_scale(&mut self, scale: u32) -> u32 {
@@ -1898,7 +2002,7 @@ impl Hardware {
         }
         let textures: Vec<_> = std::mem::take(&mut self.textures).into_values().collect();
         for texture in textures {
-            self.destroy_image(&texture.image);
+            self.destroy_texture(&texture);
         }
         let samplers = std::mem::take(&mut self.samplers);
         for &sampler in samplers.values() {
@@ -2770,18 +2874,36 @@ impl Hardware {
     /// the texture's image, uploaded the first time it is drawn with, all
     /// its sizes, or a texture pack's picture in its place once it has been
     /// read, with the smallest of the picture's sizes to draw with.
-    fn texture(&mut self, bound: &BoundTexture) -> Result<(vk::ImageView, Option<u32>), String> {
+    /// a texture's image, with the smallest size to draw with when it is a
+    /// texture pack's picture, and how many times bigger than the texture
+    /// it is.
+    fn texture(&mut self, bound: &BoundTexture) -> Result<(vk::ImageView, Option<u32>, u32), String> {
         let size = (bound.width, bound.height);
         if let Some((view, smallest)) = bound.replacement.as_ref().and_then(|material| self.replacement(material, size)) {
-            return Ok((view, Some(smallest)));
+            return Ok((view, Some(smallest), 1));
         }
         let key = Arc::as_ptr(&bound.texels) as *const u8 as usize;
         if let Some(texture) = self.textures.get_mut(&key) {
             texture.used = self.batch;
-            return Ok((texture.image.view, None));
+            return Ok((texture.image.view, None, texture.times));
         }
         self.mark(Work::Upload, false);
         self.end_rendering();
+        // one rewritten within a few seconds of the last is likely rewritten
+        // every frame, too often to make bigger each time
+        let spot = (bound.addr, bound.width, bound.height);
+        let rewritten = self.uploaded_at.insert(spot, self.batch).is_some_and(|last| self.batch - last < STREAMED_WITHIN);
+        let times = if rewritten { 1 } else { self.texture_times(bound.width, bound.height) };
+        if times > 1 {
+            match self.upload_scaled(bound, times) {
+                Ok(texture) => {
+                    let view = texture.image.view;
+                    self.textures.insert(key, texture);
+                    return Ok((view, None, times));
+                }
+                Err(error) => log::warn!("a texture could not be made bigger, {error}"),
+            }
+        }
         let image = self.image_levels(
             bound.width,
             bound.height,
@@ -2817,8 +2939,103 @@ impl Hardware {
         };
         self.uploads = true;
         let view = image.view;
-        self.textures.insert(key, Texture { image, _texels: bound.texels.clone(), used: self.batch });
-        Ok((view, None))
+        self.textures.insert(key, Texture { image, _texels: bound.texels.clone(), used: self.batch, times: 1, largest: None });
+        Ok((view, None, 1))
+    }
+
+    /// uploads a texture's largest size and has scale.comp make it times
+    /// bigger with xBRZ, then makes the smaller sizes from that, as many as
+    /// take it down to the texture's own smallest.
+    fn upload_scaled(&mut self, bound: &BoundTexture, times: u32) -> Result<Texture, String> {
+        let (width, height) = (bound.width, bound.height);
+        let levels = bound.levels.max(1) + times.ilog2();
+        let usage = vk::ImageUsageFlags::SAMPLED
+            | vk::ImageUsageFlags::STORAGE
+            | vk::ImageUsageFlags::TRANSFER_DST
+            | vk::ImageUsageFlags::TRANSFER_SRC;
+        let (layout, pipeline) = self.scale_pipeline()?;
+        let image = self.image_levels(width * times, height * times, levels, COLOR_FORMAT, usage, vk::ImageAspectFlags::COLOR)?;
+        let range = vk::ImageSubresourceRange::default().aspect_mask(vk::ImageAspectFlags::COLOR).level_count(1).layer_count(1);
+        // SAFETY: plain object creation on our device
+        let largest = unsafe {
+            self.device.create_image_view(
+                &vk::ImageViewCreateInfo::default()
+                    .image(image.image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(COLOR_FORMAT)
+                    .subresource_range(range),
+                None,
+            )
+        };
+        let largest = match largest {
+            Ok(view) => view,
+            Err(error) => {
+                self.destroy_image(&image);
+                return Err(vk_error("create an image view")(error));
+            }
+        };
+        let texture = Texture { image, _texels: bound.texels.clone(), used: self.batch, times, largest: Some(largest) };
+        let size = (width * height) as u64 * 4;
+        let offset = match self.stage(size, self.storage_alignment) {
+            Ok(offset) => offset,
+            Err(error) => {
+                self.destroy_texture(&texture);
+                return Err(error);
+            }
+        };
+        let staging = self.ring(offset, size);
+        for (out, texel) in staging.as_chunks_mut::<4>().0.iter_mut().zip(bound.texels.iter()) {
+            *out = *texel;
+        }
+        let texels = [vk::DescriptorBufferInfo::default().buffer(self.ring.buffer).offset(offset).range(size)];
+        let target = [vk::DescriptorImageInfo::default().image_view(largest).image_layout(vk::ImageLayout::GENERAL)];
+        let writes = [
+            vk::WriteDescriptorSet::default().dst_binding(0).descriptor_type(vk::DescriptorType::STORAGE_BUFFER).buffer_info(&texels),
+            vk::WriteDescriptorSet::default().dst_binding(1).descriptor_type(vk::DescriptorType::STORAGE_IMAGE).image_info(&target),
+        ];
+        let repeats = |wrap: Wrap| matches!(wrap, Wrap::Repeat | Wrap::MirroredRepeat) as i32;
+        let constants = [width as i32, height as i32, times as i32, repeats(bound.wrap_s), repeats(bound.wrap_t)];
+        let constants: Vec<u8> = constants.iter().flat_map(|c| c.to_le_bytes()).collect();
+        let (big_width, big_height) = (width * times, height * times);
+        // SAFETY: recording, outside rendering, the shader reading the ring
+        // where the texels were staged and writing the image's largest size,
+        // then each smaller size blitted from the one before, all in the
+        // general layout, a barrier between each step
+        unsafe {
+            self.device.cmd_bind_pipeline(self.commands, vk::PipelineBindPoint::COMPUTE, pipeline);
+            self.push.cmd_push_descriptor_set(self.commands, vk::PipelineBindPoint::COMPUTE, layout, 0, &writes);
+            self.device.cmd_push_constants(self.commands, layout, vk::ShaderStageFlags::COMPUTE, 0, &constants);
+            self.unfenced = true;
+            self.device.cmd_dispatch(self.commands, big_width.div_ceil(8), big_height.div_ceil(8), 1);
+            for level in 1..levels {
+                self.barrier();
+                let corner = |level: u32| vk::Offset3D {
+                    x: (big_width >> level).max(1) as i32,
+                    y: (big_height >> level).max(1) as i32,
+                    z: 1,
+                };
+                let layers = |level: u32| {
+                    vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).mip_level(level).layer_count(1)
+                };
+                let region = [vk::ImageBlit::default()
+                    .src_subresource(layers(level - 1))
+                    .src_offsets([vk::Offset3D::default(), corner(level - 1)])
+                    .dst_subresource(layers(level))
+                    .dst_offsets([vk::Offset3D::default(), corner(level)])];
+                self.unfenced = true;
+                self.device.cmd_blit_image(
+                    self.commands,
+                    texture.image.image,
+                    vk::ImageLayout::GENERAL,
+                    texture.image.image,
+                    vk::ImageLayout::GENERAL,
+                    &region,
+                    vk::Filter::LINEAR,
+                );
+            }
+        }
+        self.uploads = true;
+        Ok(texture)
     }
 
     /// the image of a texture pack's picture for a texture of size, and
@@ -3702,11 +3919,17 @@ impl Hardware {
                             Filtering::of(bound)
                         }
                         None => {
-                            let (view, picture) = self.texture(bound)?;
+                            let (view, picture, times) = self.texture(bound)?;
                             (views[unit], twin_views[unit]) = (view, view);
-                            match picture {
+                            let filtering = match picture {
                                 Some(smallest) => Filtering::picture(bound, smallest),
-                                None => Filtering::of(bound),
+                                None => Filtering::of(bound).scaled(times),
+                            };
+                            // only pictures: what a title drew it reads back
+                            // as data, depth among it, which blending spoils
+                            match self.smooth_textures {
+                                true => filtering.smoothed(),
+                                false => filtering,
                             }
                         }
                     };
@@ -4411,7 +4634,8 @@ impl Hardware {
             // copy's rows run as memory's do
             self.texture(bound)?;
             let key = Arc::as_ptr(&bound.texels) as *const u8 as usize;
-            let from = self.textures.get(&key).ok_or("a texture reaching past the buffer drawn into it was not uploaded")?.image.image;
+            let uploaded = self.textures.get(&key).ok_or("a texture reaching past the buffer drawn into it was not uploaded")?;
+            let (from, times) = (uploaded.image.image, uploaded.times);
             self.end_rendering();
             self.barrier();
             let n = self.scale;
@@ -4420,7 +4644,7 @@ impl Hardware {
                 [vk::Offset3D { x: 0, y: top, z: 0 }, vk::Offset3D { x: width, y: bottom, z: 1 }]
             };
             let layers = vk::ImageSubresourceLayers::default().aspect_mask(vk::ImageAspectFlags::COLOR).layer_count(1);
-            let region = [vk::ImageBlit::default().src_subresource(layers).src_offsets(rect(1)).dst_subresource(layers).dst_offsets(rect(n))];
+            let region = [vk::ImageBlit::default().src_subresource(layers).src_offsets(rect(times)).dst_subresource(layers).dst_offsets(rect(n))];
             // SAFETY: recording, outside rendering, between two color images
             // in the general layout made for transfers, both their size
             unsafe {
@@ -5064,10 +5288,11 @@ impl Hardware {
         // textures nobody drew with for a while go, long after the GPU
         // last used them
         let batch = self.batch;
+        self.uploaded_at.retain(|_, &mut at| batch - at <= STREAMED_WITHIN);
         let stale: Vec<usize> = self.textures.iter().filter(|(_, t)| batch - t.used > 600).map(|(&k, _)| k).collect();
         for key in stale {
             if let Some(texture) = self.textures.remove(&key) {
-                self.destroy_image(&texture.image);
+                self.destroy_texture(&texture);
             }
         }
         for twin in [false, true] {
@@ -5469,7 +5694,7 @@ impl Drop for Hardware {
             }
             self.device.destroy_pipeline_cache(self.pipeline_cache, None);
             for texture in self.textures.values() {
-                self.destroy_image(&texture.image);
+                self.destroy_texture(texture);
             }
             for copy in self.copies.values().chain(self.twin_copies.values()) {
                 self.destroy_image(&copy.image);
@@ -5495,7 +5720,7 @@ impl Drop for Hardware {
                 self.device.destroy_buffer(buffer.buffer, None);
                 self.device.free_memory(buffer.memory, None);
             }
-            for compute in [&self.transfer, &self.depth, &self.upright, &self.upright_image].into_iter().flatten() {
+            for compute in [&self.transfer, &self.depth, &self.upright, &self.upright_image, &self.scale_texture].into_iter().flatten() {
                 self.device.destroy_pipeline(compute.pipeline, None);
                 self.device.destroy_pipeline_layout(compute.layout, None);
                 self.device.destroy_descriptor_set_layout(compute.set_layout, None);

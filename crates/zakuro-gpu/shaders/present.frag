@@ -211,44 +211,54 @@ vec3 xbrz_sample(sampler2D img, vec2 at, vec2 size, vec2 covered, vec4 bounds) {
     return res;
 }
 
-// A screen drawn bigger than its pixels is filtered as asked:
-// 0 smooth, 1 pixels, 2 sharp, 3 xbrz.
-// When drawn at higher internal resolutions (covered > 1.001), 4-tap box
-// supersampling gathers 100% of the display pixel footprint from the 4K/8x
-// framebuffer, and AMD FidelityFX CAS restores crisp high-frequency micro-contrast
-// with zero smearing and zero halos.
+// what a window pixel covers of a screen drawn bigger than it, averaged: n
+// by n bilinear taps spread evenly over its footprint, n the texels it
+// spans, so every texel under it weighs in rather than the one nearest its
+// middle, which leaves the stair steps the bigger picture was drawn to
+// smooth. averaged in roughly linear light, squared then rooted, so an edge
+// between light and dark blends as the eye sees it rather than darkening.
+vec3 footprint(sampler2D image, vec2 at, vec2 px, vec2 covered, vec4 bounds) {
+    ivec2 n = clamp(ivec2(ceil(covered - 0.01)), ivec2(1), ivec2(8));
+    vec2 step = px / vec2(n);
+    vec2 start = at - 0.5 * px + 0.5 * step;
+    vec3 sum = vec3(0.0);
+    for (int y = 0; y < n.y; y++) {
+        for (int x = 0; x < n.x; x++) {
+            vec3 c = texture(image, clamp(start + vec2(x, y) * step, bounds.xy, bounds.zw)).rgb;
+            sum += c * c;
+        }
+    }
+    return sqrt(sum / float(n.x * n.y));
+}
+
+// A screen is filtered as asked: 0 smooth, 1 pixels, 2 sharp, 3 xbrz,
+// 4 xbrz blended with bilinear. Drawn bigger than its pixels, xBRZ follows
+// its edges as lines. Drawn smaller, as it is at higher internal
+// resolutions, each window pixel averages all it covers, sharp adding AMD
+// FidelityFX CAS on top and xbrz a lighter touch of it, as there are no
+// texel blocks left to follow.
 vec3 shown(sampler2D image, vec4 area, vec4 bounds) {
     vec2 at = area.xy + uv * area.zw;
     vec2 size = vec2(textureSize(image, 0));
-    vec2 covered = fwidth(at) * size;
+    vec2 px = fwidth(at);
+    vec2 covered = px * size;
+    bool smaller = max(covered.x, covered.y) > 1.001;
 
-    if (crop.mode == 3 || crop.mode == 4) {
+    if (!smaller && (crop.mode == 3 || crop.mode == 4)) {
         vec3 xbrz_res = xbrz_sample(image, at, size, covered, bounds);
-        vec3 final_res = xbrz_res;
-        if (crop.mode == 4) {
-            vec3 lin = texture(image, clamp(at, bounds.xy, bounds.zw)).rgb;
-            float luma = dot(lin, vec3(0.299, 0.587, 0.114));
-            float max_c = max(lin.r, max(lin.g, lin.b));
-            float min_c = min(lin.r, min(lin.g, lin.b));
-            float sat = (max_c - min_c) / max(max_c, 1e-4);
-            lin = mix(vec3(luma), lin, 1.0 + 0.16 * (1.0 - sat));
-            final_res = mix(xbrz_res, lin, 0.40);
+        if (crop.mode == 3) {
+            return xbrz_res;
         }
-        if (max(covered.x, covered.y) <= 1.5) {
-            return final_res;
-        }
-        // At 8x/extreme downscales, blend edge smoothing with 4-tap box supersampling
-        vec2 px = fwidth(at);
-        vec2 half_px = px * 0.25;
-        vec3 s0 = texture(image, clamp(at + vec2(-half_px.x, -half_px.y), bounds.xy, bounds.zw)).rgb;
-        vec3 s1 = texture(image, clamp(at + vec2( half_px.x, -half_px.y), bounds.xy, bounds.zw)).rgb;
-        vec3 s2 = texture(image, clamp(at + vec2(-half_px.x,  half_px.y), bounds.xy, bounds.zw)).rgb;
-        vec3 s3 = texture(image, clamp(at + vec2( half_px.x,  half_px.y), bounds.xy, bounds.zw)).rgb;
-        vec3 e = (s0 + s1 + s2 + s3) * 0.25;
-        return mix(final_res, e, 0.35);
+        vec3 lin = texture(image, clamp(at, bounds.xy, bounds.zw)).rgb;
+        float luma = dot(lin, vec3(0.299, 0.587, 0.114));
+        float max_c = max(lin.r, max(lin.g, lin.b));
+        float min_c = min(lin.r, min(lin.g, lin.b));
+        float sat = (max_c - min_c) / max(max_c, 1e-4);
+        lin = mix(vec3(luma), lin, 1.0 + 0.16 * (1.0 - sat));
+        return mix(xbrz_res, lin, 0.40);
     }
 
-    if (max(covered.x, covered.y) <= 1.001) {
+    if (!smaller) {
         vec2 texel = at * size;
         if (crop.mode == 1) {
             // the nearest texel, its middle sampled
@@ -269,27 +279,22 @@ vec3 shown(sampler2D image, vec4 area, vec4 bounds) {
         return texture(image, clamp(texel, bounds.xy, bounds.zw)).rgb;
     }
 
-    vec2 px = fwidth(at);
-    vec2 half_px = px * 0.25;
-    vec3 s0 = texture(image, clamp(at + vec2(-half_px.x, -half_px.y), bounds.xy, bounds.zw)).rgb;
-    vec3 s1 = texture(image, clamp(at + vec2( half_px.x, -half_px.y), bounds.xy, bounds.zw)).rgb;
-    vec3 s2 = texture(image, clamp(at + vec2(-half_px.x,  half_px.y), bounds.xy, bounds.zw)).rgb;
-    vec3 s3 = texture(image, clamp(at + vec2( half_px.x,  half_px.y), bounds.xy, bounds.zw)).rgb;
-    vec3 e = (s0 + s1 + s2 + s3) * 0.25;
-
+    vec3 e = footprint(image, at, px, covered, bounds);
     if (crop.mode == 0) {
         return e;
     }
 
-    vec3 b = texture(image, clamp(at - vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
-    vec3 d = texture(image, clamp(at - vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
-    vec3 f = texture(image, clamp(at + vec2(px.x, 0.0), bounds.xy, bounds.zw)).rgb;
-    vec3 h = texture(image, clamp(at + vec2(0.0, px.y), bounds.xy, bounds.zw)).rgb;
+    // the neighbouring window pixels, averaged more coarsely, 2 by 2, as
+    // they only steer how much sharpening there is
+    vec3 b = footprint(image, at - vec2(0.0, px.y), px, min(covered, vec2(2.0)), bounds);
+    vec3 d = footprint(image, at - vec2(px.x, 0.0), px, min(covered, vec2(2.0)), bounds);
+    vec3 f = footprint(image, at + vec2(px.x, 0.0), px, min(covered, vec2(2.0)), bounds);
+    vec3 h = footprint(image, at + vec2(0.0, px.y), px, min(covered, vec2(2.0)), bounds);
 
     vec3 min_rgb = min(e, min(min(d, f), min(b, h)));
     vec3 max_rgb = max(e, max(max(d, f), max(b, h)));
 
-    float sharpness = (crop.mode == 2) ? 0.85 : 0.45;
+    float sharpness = (crop.mode == 2) ? 0.6 : 0.35;
     vec3 amp_rgb = clamp(min(min_rgb, 1.0 - max_rgb) / max(max_rgb, vec3(1e-5)), 0.0, 1.0);
     vec3 w = -sqrt(amp_rgb) * (sharpness * 0.25);
     vec3 sharp_color = (w * (b + d + f + h) + e) / (4.0 * w + 1.0);

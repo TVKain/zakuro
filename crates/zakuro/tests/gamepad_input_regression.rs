@@ -2,7 +2,7 @@
 
 use gilrs::Button;
 use zakuro::gamepad::{button_name, Gamepads};
-use zakuro::menus::{Menus, SelectPopup, SelectTarget};
+use zakuro::menus::{Item, Menus, Scope, SelectPopup};
 use zakuro::settings::PadButtons;
 use zakuro_core::services::hid::{InputState, PadState};
 
@@ -122,9 +122,9 @@ fn test_menus_over_game_input_isolation() {
 
     // Select popup active
     menus.select_popup = Some(SelectPopup {
-        target: SelectTarget::Resolution,
-        for_game: None,
-        title: "Resolution",
+        item: Item::Resolution,
+        scope: Scope::System,
+        title: "Resolution".to_string(),
         options: vec!["1x".to_string(), "2x".to_string()],
         selected: 0,
     });

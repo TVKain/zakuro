@@ -218,37 +218,43 @@ vec3 xbrz_sample(sampler2D img, vec2 at, vec2 size, vec2 covered) {
     return res;
 }
 
+// what a window pixel covers of a screen drawn bigger than it, averaged in
+// roughly linear light, as present.frag has it
+vec3 footprint(sampler2D image, vec2 at, vec2 px, vec2 covered) {
+    ivec2 n = clamp(ivec2(ceil(covered - 0.01)), ivec2(1), ivec2(8));
+    vec2 step = px / vec2(n);
+    vec2 start = at - 0.5 * px + 0.5 * step;
+    vec3 sum = vec3(0.0);
+    for (int y = 0; y < n.y; y++) {
+        for (int x = 0; x < n.x; x++) {
+            vec3 c = texture(image, start + vec2(x, y) * step).rgb;
+            sum += c * c;
+        }
+    }
+    return sqrt(sum / float(n.x * n.y));
+}
+
 vec3 shown(sampler2D image) {
     vec2 size = vec2(textureSize(image, 0));
-    vec2 covered = fwidth(uv) * size;
+    vec2 px = fwidth(uv);
+    vec2 covered = px * size;
+    bool smaller = max(covered.x, covered.y) > 1.001;
 
-    if (mode == 3 || mode == 4) {
+    if (!smaller && (mode == 3 || mode == 4)) {
         vec3 xbrz_res = xbrz_sample(image, uv, size, covered);
-        vec3 final_res = xbrz_res;
-        if (mode == 4) {
-            vec3 lin = texture(image, uv).rgb;
-            float luma = dot(lin, vec3(0.299, 0.587, 0.114));
-            float max_c = max(lin.r, max(lin.g, lin.b));
-            float min_c = min(lin.r, min(lin.g, lin.b));
-            float sat = (max_c - min_c) / max(max_c, 1e-4);
-            lin = mix(vec3(luma), lin, 1.0 + 0.16 * (1.0 - sat));
-            final_res = mix(xbrz_res, lin, 0.40);
+        if (mode == 3) {
+            return xbrz_res;
         }
-        if (max(covered.x, covered.y) <= 1.5) {
-            return final_res;
-        }
-        // At 8x/extreme downscales, blend edge smoothing with 4-tap box supersampling
-        vec2 px = fwidth(uv);
-        vec2 half_px = px * 0.25;
-        vec3 s0 = texture(image, uv + vec2(-half_px.x, -half_px.y)).rgb;
-        vec3 s1 = texture(image, uv + vec2( half_px.x, -half_px.y)).rgb;
-        vec3 s2 = texture(image, uv + vec2(-half_px.x,  half_px.y)).rgb;
-        vec3 s3 = texture(image, uv + vec2( half_px.x,  half_px.y)).rgb;
-        vec3 e = (s0 + s1 + s2 + s3) * 0.25;
-        return mix(final_res, e, 0.35);
+        vec3 lin = texture(image, uv).rgb;
+        float luma = dot(lin, vec3(0.299, 0.587, 0.114));
+        float max_c = max(lin.r, max(lin.g, lin.b));
+        float min_c = min(lin.r, min(lin.g, lin.b));
+        float sat = (max_c - min_c) / max(max_c, 1e-4);
+        lin = mix(vec3(luma), lin, 1.0 + 0.16 * (1.0 - sat));
+        return mix(xbrz_res, lin, 0.40);
     }
 
-    if (max(covered.x, covered.y) <= 1.001) {
+    if (!smaller) {
         vec2 texel = uv * size;
         vec2 at = uv;
         if (mode == 1) {
@@ -267,27 +273,20 @@ vec3 shown(sampler2D image) {
         return texture(image, texel).rgb;
     }
 
-    vec2 px = fwidth(uv);
-    vec2 half_px = px * 0.25;
-    vec3 s0 = texture(image, uv + vec2(-half_px.x, -half_px.y)).rgb;
-    vec3 s1 = texture(image, uv + vec2( half_px.x, -half_px.y)).rgb;
-    vec3 s2 = texture(image, uv + vec2(-half_px.x,  half_px.y)).rgb;
-    vec3 s3 = texture(image, uv + vec2( half_px.x,  half_px.y)).rgb;
-    vec3 e = (s0 + s1 + s2 + s3) * 0.25;
-
+    vec3 e = footprint(image, uv, px, covered);
     if (mode == 0) {
         return e;
     }
 
-    vec3 b = texture(image, uv - vec2(0.0, px.y)).rgb;
-    vec3 d = texture(image, uv - vec2(px.x, 0.0)).rgb;
-    vec3 f = texture(image, uv + vec2(px.x, 0.0)).rgb;
-    vec3 h = texture(image, uv + vec2(0.0, px.y)).rgb;
+    vec3 b = footprint(image, uv - vec2(0.0, px.y), px, min(covered, vec2(2.0)));
+    vec3 d = footprint(image, uv - vec2(px.x, 0.0), px, min(covered, vec2(2.0)));
+    vec3 f = footprint(image, uv + vec2(px.x, 0.0), px, min(covered, vec2(2.0)));
+    vec3 h = footprint(image, uv + vec2(0.0, px.y), px, min(covered, vec2(2.0)));
 
     vec3 min_rgb = min(e, min(min(d, f), min(b, h)));
     vec3 max_rgb = max(e, max(max(d, f), max(b, h)));
 
-    float sharpness = (mode == 2) ? 0.85 : 0.45;
+    float sharpness = (mode == 2) ? 0.6 : 0.35;
     vec3 amp_rgb = clamp(min(min_rgb, 1.0 - max_rgb) / max(max_rgb, vec3(1e-5)), 0.0, 1.0);
     vec3 w = -sqrt(amp_rgb) * (sharpness * 0.25);
     vec3 sharp_color = (w * (b + d + f + h) + e) / (4.0 * w + 1.0);

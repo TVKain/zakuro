@@ -19,8 +19,10 @@ impl Gui {
         let ctx = egui::Context::default();
         ctx.set_fonts(fonts(system_fonts()));
         let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = egui::Color32::from_rgb(18, 20, 26);
-        visuals.window_fill = egui::Color32::from_rgb(26, 29, 38);
+        // anything that can be clicked shows a hand under the mouse
+        visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
+        visuals.panel_fill = egui::Color32::from_rgb(18, 19, 23);
+        visuals.window_fill = egui::Color32::from_rgb(28, 30, 36);
         visuals.extreme_bg_color = egui::Color32::from_rgb(12, 14, 18);
         visuals.faint_bg_color = egui::Color32::from_rgb(22, 25, 33);
         visuals.window_corner_radius = egui::CornerRadius::same(12);
@@ -31,7 +33,7 @@ impl Gui {
         visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(230, 235, 245));
         visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
         visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(46, 54, 72);
-        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(56, 189, 248));
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(62, 198, 255));
         visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
         visuals.widgets.active.corner_radius = egui::CornerRadius::same(8);
         visuals.widgets.active.bg_fill = egui::Color32::from_rgb(30, 90, 160);
@@ -49,6 +51,10 @@ impl Gui {
             style.spacing.item_spacing = egui::vec2(10.0, 8.0);
             style.spacing.button_padding = egui::vec2(12.0, 7.0);
             style.spacing.window_margin = egui::Margin::same(14);
+            // labels are read, not selected, so no text cursor over them
+            style.interaction.selectable_labels = false;
+            // windows fade in over this long
+            style.animation_time = 0.16;
         });
         let state = egui_winit::State::new(
             ctx.clone(),
@@ -187,19 +193,45 @@ fn texture(id: TextureId) -> u64 {
     }
 }
 
-/// egui's own fonts, then extra ones to fall back on for what they lack.
-/// game names come in Japanese, Korean and Chinese, whose characters
-/// egui's fonts have none of and drew as boxes.
+/// the family titles are drawn in: Inter's semibold, falling back on the
+/// same fonts as the body text.
+pub const STRONG: &str = "strong";
+
+/// Inter, which the interface is drawn in, in the two weights it uses.
+/// it is under the SIL Open Font License, in fonts/Inter-LICENSE.txt.
+const INTER: &[u8] = include_bytes!("../fonts/Inter-Regular.ttf");
+const INTER_SEMIBOLD: &[u8] = include_bytes!("../fonts/Inter-SemiBold.ttf");
+
+/// Inter first, then egui's own fonts for the symbols and emoji Inter
+/// lacks, then extra ones to fall back on for what they all lack. game
+/// names come in Japanese, Korean and Chinese, whose characters egui's
+/// fonts have none of and drew as boxes.
 fn fonts(extra: Vec<Vec<u8>>) -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
+    for (name, data) in [("Inter", INTER), ("Inter SemiBold", INTER_SEMIBOLD)] {
+        fonts.font_data.insert(name.into(), std::sync::Arc::new(egui::FontData::from_static(data)));
+    }
+    let proportional = fonts.families.entry(egui::FontFamily::Proportional).or_default();
+    proportional.insert(0, "Inter".into());
+    let mut strong = proportional.clone();
+    strong[0] = "Inter SemiBold".into();
+    fonts.families.insert(egui::FontFamily::Name(STRONG.into()), strong);
     for (i, font) in extra.into_iter().enumerate() {
         let name = format!("system {i}");
         fonts.font_data.insert(name.clone(), std::sync::Arc::new(egui::FontData::from_owned(font)));
-        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace, egui::FontFamily::Name(STRONG.into())] {
             fonts.families.entry(family).or_default().push(name.clone());
         }
     }
     fonts
+}
+
+/// a context with the interface's fonts, for drawing it in tests.
+#[cfg(test)]
+pub fn test_context() -> egui::Context {
+    let ctx = egui::Context::default();
+    ctx.set_fonts(fonts(Vec::new()));
+    ctx
 }
 
 /// the system's fonts for Japanese, Korean and Chinese, the first one
@@ -286,6 +318,19 @@ mod tests {
         for font in [egui::FontId::proportional(14.0), egui::FontId::monospace(14.0)] {
             assert!(with.has_glyphs(&font, name), "{font:?}");
         }
+    }
+
+    /// the interface is drawn in Inter, titles in its semibold, both
+    /// falling back on the same fonts for what Inter lacks.
+    #[test]
+    fn the_interface_is_drawn_in_inter() {
+        let fonts = fonts(vec![b"extra".to_vec()]);
+        let body = &fonts.families[&egui::FontFamily::Proportional];
+        let titles = &fonts.families[&egui::FontFamily::Name(STRONG.into())];
+        assert_eq!(body[0], "Inter");
+        assert_eq!(titles[0], "Inter SemiBold");
+        assert_eq!(body[1..], titles[1..]);
+        assert_eq!(body.last().map(String::as_str), Some("system 0"));
     }
 
     /// a font without the characters asked for is passed over, like the

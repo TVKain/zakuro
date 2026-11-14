@@ -31,6 +31,8 @@ pub struct Gamepads {
     dpad_axis_right: bool,
     suppressed_buttons: Vec<Button>,
     suppress_sticks: bool,
+    /// the direction held for the interface, which repeats.
+    repeat: crate::nav::Repeat,
 }
 
 /// detects stick or axis flicks with hysteresis
@@ -87,6 +89,7 @@ impl Gamepads {
             dpad_axis_right: false,
             suppressed_buttons: Vec::new(),
             suppress_sticks: false,
+            repeat: crate::nav::Repeat::default(),
         }
     }
 
@@ -123,7 +126,30 @@ impl Gamepads {
         let held: Vec<Button> = reports.iter().flat_map(|report| report.buttons.iter().copied()).collect();
         pressed.extend(held.iter().filter(|button| !self.pro_held.contains(button)));
         self.pro_held = held;
+        // a direction held keeps moving the interface, as a held key does
+        let now = std::time::Instant::now();
+        for &button in &pressed {
+            self.repeat.pressed(button, now);
+        }
+        let mut repeat = std::mem::take(&mut self.repeat);
+        if let Some(again) = repeat.due(now, |button| self.direction_held(button)) {
+            pressed.push(again);
+        }
+        self.repeat = repeat;
         pressed
+    }
+
+    /// whether a direction is still held, on the d-pad, its axes or the
+    /// left stick.
+    fn direction_held(&self, button: Button) -> bool {
+        let leaning = match button {
+            Button::DPadUp => self.stick_up || self.dpad_axis_up,
+            Button::DPadDown => self.stick_down || self.dpad_axis_down,
+            Button::DPadLeft => self.stick_left || self.dpad_axis_left,
+            Button::DPadRight => self.stick_right || self.dpad_axis_right,
+            _ => false,
+        };
+        leaning || self.holding(button)
     }
 
     /// whether a controller holds button down.

@@ -62,6 +62,10 @@ D2000000 00000000
 D3000000 30000000
 23F67FE9 00000000
 D2000000 00000000
+No Outlines | update 2.2 | community | Removes the black outlines drawn around characters, which look heavy at high resolutions.
+0042FBA4 E320F000
+No Ghosting | update 2.2 | community | Removes the blurred double image behind moving characters.
+0042F33C EA000000
 
 = 00040000001B5100 Pokémon Ultra Moon (USA)
 60 FPS | rev0 | Reshiban | The whole game runs twice as fast with it.

@@ -804,6 +804,28 @@ impl Gpu {
         1
     }
 
+    /// whether the host's GPU filters textures the title samples point by
+    /// point, never in software.
+    pub fn smooths_textures(&self) -> bool {
+        #[cfg(feature = "vulkan")]
+        if let Some(hardware) = self.resources.hardware.as_ref() {
+            return hardware.smooths_textures();
+        }
+        false
+    }
+
+    /// filters textures the title samples point by point, on the host's GPU,
+    /// and says whether it does.
+    pub fn set_smooth_textures(&mut self, on: bool) -> bool {
+        #[cfg(feature = "vulkan")]
+        if let Some(hardware) = self.resources.hardware.as_mut() {
+            hardware.set_smooth_textures(on);
+            return on;
+        }
+        let _ = on;
+        false
+    }
+
     /// sets how many times the console's resolution the host's GPU draws at,
     /// returning the actual scale applied.
     pub fn set_scale(&mut self, scale: u32) -> u32 {

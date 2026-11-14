@@ -1,0 +1,214 @@
+#version 450
+
+// a texture made times bigger with xBRZ, its edges followed as lines and
+// curves rather than drawn as blocks. a pixel of the bigger texture blends
+// the texel under it toward its neighbours where xBRZ finds an edge running
+// through its corner. transparent texels count as alike whatever colour they
+// hold, and colours blend weighted by how opaque they are, so cut out leaves
+// and fences take no dark fringe from around them.
+//   glslangValidator -V scale.comp -o scale.comp.spv
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// the texture's texels, rgba bytes, row by row
+layout(set = 0, binding = 0) readonly buffer Texels { uint texels[]; };
+layout(set = 0, binding = 1, rgba8) uniform writeonly image2D target;
+
+layout(push_constant) uniform Scale {
+    // the texture's width and height
+    ivec2 size;
+    // how many times bigger it is made
+    int times;
+    // whether it repeats across and down, otherwise its edges clamp
+    int repeat_s;
+    int repeat_t;
+} scale;
+
+#define BLEND_NONE 0
+#define BLEND_NORMAL 1
+#define BLEND_DOMINANT 2
+#define EQUAL_COLOR_TOLERANCE (30.0 / 255.0)
+#define STEEP_DIRECTION_THRESHOLD 2.2
+#define DOMINANT_DIRECTION_THRESHOLD 3.6
+
+int wrap(int at, int size, int repeat) {
+    return repeat != 0 ? ((at % size) + size) % size : clamp(at, 0, size - 1);
+}
+
+ivec2 base;
+
+vec4 tap(int x, int y) {
+    ivec2 at = ivec2(wrap(base.x + x, scale.size.x, scale.repeat_s), wrap(base.y + y, scale.size.y, scale.repeat_t));
+    return unpackUnorm4x8(texels[at.y * scale.size.x + at.x]);
+}
+
+// how far apart two texels look, in BT.2020's luma and chroma, plus how
+// far apart their opacity is. two transparent ones look the same.
+float dist(vec4 a, vec4 b) {
+    if (a.a < 0.01 && b.a < 0.01) {
+        return 0.0;
+    }
+    const vec3 w = vec3(0.2627, 0.6780, 0.0593);
+    const float scale_b = 0.5 / (1.0 - w.b);
+    const float scale_r = 0.5 / (1.0 - w.r);
+    vec3 diff = a.rgb - b.rgb;
+    float y = dot(diff, w);
+    float cb = scale_b * (diff.b - y);
+    float cr = scale_r * (diff.r - y);
+    return sqrt(y * y + cb * cb + cr * cr) + abs(a.a - b.a);
+}
+
+bool eq(vec4 a, vec4 b) { return all(equal(a, b)) || (a.a < 0.01 && b.a < 0.01); }
+bool neq(vec4 a, vec4 b) { return !eq(a, b); }
+bool alike(vec4 a, vec4 b) { return dist(a, b) < EQUAL_COLOR_TOLERANCE; }
+
+// a and b mixed, colours weighted by opacity
+vec4 blend(vec4 a, vec4 b, float t) {
+    float alpha = mix(a.a, b.a, t);
+    vec3 rgb = alpha > 0.0 ? mix(a.rgb * a.a, b.rgb * b.a, t) / alpha : mix(a.rgb, b.rgb, t);
+    return vec4(rgb, alpha);
+}
+
+// how much of the pixel at center lies left of the line through origin
+// along direction, softened over a pixel of the bigger texture
+float left_ratio(vec2 center, vec2 origin, vec2 direction, float times) {
+    vec2 p0 = center - origin;
+    vec2 proj = direction * (dot(p0, direction) / dot(direction, direction));
+    vec2 orth = vec2(-direction.y, direction.x);
+    float side = sign(dot(p0, orth));
+    float v = side * length((p0 - proj) * times);
+    return smoothstep(-0.70710678, 0.70710678, v);
+}
+
+void main() {
+    ivec2 out_size = scale.size * scale.times;
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, out_size))) {
+        return;
+    }
+    float times = float(scale.times);
+    vec2 texel = (vec2(pixel) + 0.5) / times;
+    base = ivec2(floor(texel));
+    vec2 pos = fract(texel) - 0.5;
+
+    vec4 A = tap(-1, -1), B = tap(0, -1), C = tap(1, -1);
+    vec4 D = tap(-1, 0), E = tap(0, 0), F = tap(1, 0);
+    vec4 G = tap(-1, 1), H = tap(0, 1), I = tap(1, 1);
+
+    ivec4 corners = ivec4(BLEND_NONE);
+
+    // bottom right
+    if (!((eq(E, F) && eq(H, I)) || (eq(E, H) && eq(F, I)))) {
+        float hf = dist(G, E) + dist(E, C) + dist(tap(0, 2), I) + dist(I, tap(2, 0)) + 4.0 * dist(H, F);
+        float ei = dist(D, H) + dist(H, tap(1, 2)) + dist(B, F) + dist(F, tap(2, 1)) + 4.0 * dist(E, I);
+        bool dominant = DOMINANT_DIRECTION_THRESHOLD * hf < ei;
+        corners.z = (hf < ei && neq(E, F) && neq(E, H)) ? (dominant ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+    }
+    // bottom left
+    if (!((eq(D, E) && eq(G, H)) || (eq(D, G) && eq(E, H)))) {
+        float ge = dist(tap(-2, 1), D) + dist(D, B) + dist(tap(-1, 2), H) + dist(H, F) + 4.0 * dist(G, E);
+        float dh = dist(tap(-2, 0), G) + dist(G, tap(0, 2)) + dist(A, E) + dist(E, I) + 4.0 * dist(D, H);
+        bool dominant = DOMINANT_DIRECTION_THRESHOLD * dh < ge;
+        corners.w = (ge > dh && neq(E, D) && neq(E, H)) ? (dominant ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+    }
+    // top right
+    if (!((eq(B, C) && eq(E, F)) || (eq(B, E) && eq(C, F)))) {
+        float ec = dist(D, B) + dist(B, tap(1, -2)) + dist(H, F) + dist(F, tap(2, -1)) + 4.0 * dist(E, C);
+        float bf = dist(A, E) + dist(E, I) + dist(tap(0, -2), C) + dist(C, tap(2, 0)) + 4.0 * dist(B, F);
+        bool dominant = DOMINANT_DIRECTION_THRESHOLD * bf < ec;
+        corners.y = (ec > bf && neq(E, B) && neq(E, F)) ? (dominant ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+    }
+    // top left
+    if (!((eq(A, B) && eq(D, E)) || (eq(A, D) && eq(B, E)))) {
+        float db = dist(tap(-2, 0), A) + dist(A, tap(0, -2)) + dist(G, E) + dist(E, C) + 4.0 * dist(D, B);
+        float ae = dist(tap(-2, -1), D) + dist(D, H) + dist(tap(-1, -2), B) + dist(B, F) + 4.0 * dist(A, E);
+        bool dominant = DOMINANT_DIRECTION_THRESHOLD * db < ae;
+        corners.x = (db < ae && neq(E, D) && neq(E, B)) ? (dominant ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+    }
+
+    vec4 res = E;
+
+    if (corners.z != BLEND_NONE) {
+        float fg = dist(F, G);
+        float hc = dist(H, C);
+        bool line = corners.z == BLEND_DOMINANT ||
+            !((corners.y != BLEND_NONE && !alike(E, G)) || (corners.w != BLEND_NONE && !alike(E, C)) ||
+              (alike(G, H) && alike(H, I) && alike(I, F) && alike(F, C) && !alike(E, I)));
+        vec2 origin = vec2(0.0, 0.70710678);
+        vec2 direction = vec2(1.0, -1.0);
+        if (line) {
+            bool shallow = STEEP_DIRECTION_THRESHOLD * fg <= hc && neq(E, G) && neq(D, G);
+            bool steep = STEEP_DIRECTION_THRESHOLD * hc <= fg && neq(E, C) && neq(B, C);
+            origin = shallow ? vec2(0.0, 0.25) : vec2(0.0, 0.5);
+            direction.x += shallow ? 1.0 : 0.0;
+            direction.y -= steep ? 1.0 : 0.0;
+        }
+        vec4 other = dist(E, F) <= dist(E, H) ? F : H;
+        res = blend(res, other, left_ratio(pos, origin, direction, times));
+    }
+    if (corners.w != BLEND_NONE) {
+        float ha = dist(H, A);
+        float di = dist(D, I);
+        bool line = corners.w == BLEND_DOMINANT ||
+            !((corners.z != BLEND_NONE && !alike(E, A)) || (corners.x != BLEND_NONE && !alike(E, I)) ||
+              (alike(A, D) && alike(D, G) && alike(G, H) && alike(H, I) && !alike(E, G)));
+        vec2 origin = vec2(-0.70710678, 0.0);
+        vec2 direction = vec2(1.0, 1.0);
+        if (line) {
+            bool shallow = STEEP_DIRECTION_THRESHOLD * ha <= di && neq(E, A) && neq(B, A);
+            bool steep = STEEP_DIRECTION_THRESHOLD * di <= ha && neq(E, I) && neq(F, I);
+            origin = shallow ? vec2(-0.25, 0.0) : vec2(-0.5, 0.0);
+            direction.y += shallow ? 1.0 : 0.0;
+            direction.x += steep ? 1.0 : 0.0;
+        }
+        vec4 other = dist(E, D) <= dist(E, H) ? D : H;
+        res = blend(res, other, left_ratio(pos, origin, direction, times));
+    }
+    if (corners.y != BLEND_NONE) {
+        float bi = dist(B, I);
+        float fa = dist(F, A);
+        bool line = corners.y == BLEND_DOMINANT ||
+            !((corners.x != BLEND_NONE && !alike(E, I)) || (corners.z != BLEND_NONE && !alike(E, A)) ||
+              (alike(I, F) && alike(F, C) && alike(C, B) && alike(B, A) && !alike(E, C)));
+        vec2 origin = vec2(0.70710678, 0.0);
+        vec2 direction = vec2(-1.0, -1.0);
+        if (line) {
+            bool shallow = STEEP_DIRECTION_THRESHOLD * bi <= fa && neq(E, I) && neq(H, I);
+            bool steep = STEEP_DIRECTION_THRESHOLD * fa <= bi && neq(E, A) && neq(D, A);
+            origin = shallow ? vec2(0.25, 0.0) : vec2(0.5, 0.0);
+            direction.y -= shallow ? 1.0 : 0.0;
+            direction.x -= steep ? 1.0 : 0.0;
+        }
+        vec4 other = dist(E, B) <= dist(E, F) ? B : F;
+        res = blend(res, other, left_ratio(pos, origin, direction, times));
+    }
+    if (corners.x != BLEND_NONE) {
+        float dc = dist(D, C);
+        float bg = dist(B, G);
+        bool line = corners.x == BLEND_DOMINANT ||
+            !((corners.w != BLEND_NONE && !alike(E, C)) || (corners.y != BLEND_NONE && !alike(E, G)) ||
+              (alike(C, B) && alike(B, A) && alike(A, D) && alike(D, G) && !alike(E, A)));
+        vec2 origin = vec2(0.0, -0.70710678);
+        vec2 direction = vec2(-1.0, 1.0);
+        if (line) {
+            bool shallow = STEEP_DIRECTION_THRESHOLD * dc <= bg && neq(E, C) && neq(F, C);
+            bool steep = STEEP_DIRECTION_THRESHOLD * bg <= dc && neq(E, G) && neq(H, G);
+            origin = shallow ? vec2(0.0, -0.25) : vec2(0.0, -0.5);
+            direction.y -= shallow ? 1.0 : 0.0;
+            direction.x += steep ? 1.0 : 0.0;
+        }
+        vec4 other = dist(E, B) <= dist(E, D) ? B : D;
+        res = blend(res, other, left_ratio(pos, origin, direction, times));
+    }
+
+    // a third of plain bilinear between the texels, which rounds off the
+    // hard little triangles xBRZ leaves where a texture's own edges step
+    // unevenly, without blurring it back to what it was
+    vec2 corner = vec2(pos.x < 0.0 ? -1.0 : 0.0, pos.y < 0.0 ? -1.0 : 0.0);
+    // between the texel centres either side of the pixel
+    vec2 f = fract(pos + 1.0);
+    ivec2 c = ivec2(corner);
+    vec4 top = blend(tap(c.x, c.y), tap(c.x + 1, c.y), f.x);
+    vec4 bottom = blend(tap(c.x, c.y + 1), tap(c.x + 1, c.y + 1), f.x);
+    vec4 linear = blend(top, bottom, f.y);
+    imageStore(target, pixel, blend(res, linear, 0.35));
+}

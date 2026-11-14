@@ -604,6 +604,7 @@ pub struct GameSettings {
     pub hardware_rasterizer: Option<bool>,
     pub resolution: Option<u32>,
     pub texture_packs: Option<bool>,
+    pub smooth_textures: Option<bool>,
     pub frame_interpolation: Option<bool>,
     pub scale: Option<u32>,
     #[serde(deserialize_with = "or_default")]
@@ -631,8 +632,12 @@ pub struct GameSettings {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// the folder the library lists games from.
+    /// an older, extra folder the library also lists games from, kept for
+    /// libraries set up before Zakuro kept its own.
     pub games: Option<PathBuf>,
+    /// where Zakuro keeps the games added to it, its data folder's library
+    /// folder when none is set.
+    pub library: Option<PathBuf>,
     /// the console's system language, which titles pick their localised
     /// text and files by.
     #[serde(deserialize_with = "or_default")]
@@ -645,6 +650,9 @@ pub struct Settings {
     pub resolution: u32,
     /// draw the texture packs put in games' mods folders.
     pub texture_packs: bool,
+    /// filter the textures a game samples point by point, which show as
+    /// blocks of pixels once drawn at more than the console's resolution.
+    pub smooth_textures: bool,
     /// draw a picture in between each two of a game at 30 frames a second.
     pub frame_interpolation: bool,
     /// run a game's recompiled code when it has some, rather than
@@ -713,11 +721,13 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             games: None,
+            library: None,
             language: Language::English,
             renderer: Renderer::Vulkan,
             hardware_rasterizer: true,
             resolution: 3,
             texture_packs: true,
+            smooth_textures: true,
             frame_interpolation: false,
             recompiled: true,
             scale: 2,
@@ -765,11 +775,17 @@ where
 }
 
 impl GameSettings {
+    /// whether the game has nothing of its own.
+    pub fn is_empty(&self) -> bool {
+        *self == GameSettings::default()
+    }
+
     /// the settings with these over them.
     pub fn over(&self, settings: &mut Settings) {
         settings.hardware_rasterizer = self.hardware_rasterizer.unwrap_or(settings.hardware_rasterizer);
         settings.resolution = self.resolution.unwrap_or(settings.resolution);
         settings.texture_packs = self.texture_packs.unwrap_or(settings.texture_packs);
+        settings.smooth_textures = self.smooth_textures.unwrap_or(settings.smooth_textures);
         settings.frame_interpolation = self.frame_interpolation.unwrap_or(settings.frame_interpolation);
         settings.scale = self.scale.unwrap_or(settings.scale);
         settings.layout = self.layout.unwrap_or(settings.layout);
@@ -804,7 +820,52 @@ impl Settings {
 
     /// whether a game has anything of its own.
     pub fn has_own(&self, program_id: u64) -> bool {
-        self.per_game.contains_key(&game_key(program_id))
+        self.per_game.get(&game_key(program_id)).is_some_and(|own| !own.is_empty())
+    }
+
+    /// what a game has of its own, made empty when it has nothing yet.
+    pub fn game_mut(&mut self, program_id: u64) -> &mut GameSettings {
+        self.per_game.entry(game_key(program_id)).or_default()
+    }
+
+    /// leaves out the games that have nothing of their own.
+    pub fn prune(&mut self) {
+        self.per_game.retain(|_, own| !own.is_empty());
+    }
+
+    /// drops what games had of their own that is now the system's alone:
+    /// the window, its scale and the frame rate counter, which a game's
+    /// options no longer show, so they could be neither seen nor undone.
+    pub fn migrate(&mut self) {
+        // a game's value the same as the system's says nothing of its own,
+        // and showed as a change that changed nothing
+        fn same<T: PartialEq + Copy>(own: &mut Option<T>, system: T) {
+            if *own == Some(system) {
+                *own = None;
+            }
+        }
+        let system = self.clone();
+        for own in self.per_game.values_mut() {
+            own.show_fps = None;
+            own.window_mode = None;
+            own.scale = None;
+            same(&mut own.hardware_rasterizer, system.hardware_rasterizer);
+            same(&mut own.resolution, system.resolution);
+            same(&mut own.texture_packs, system.texture_packs);
+            same(&mut own.smooth_textures, system.smooth_textures);
+            same(&mut own.frame_interpolation, system.frame_interpolation);
+            same(&mut own.layout, system.layout);
+            same(&mut own.orientation, system.orientation);
+            same(&mut own.filter, system.filter);
+            same(&mut own.integer_scale, system.integer_scale);
+            same(&mut own.top_shape, system.top_shape);
+            same(&mut own.stereo, system.stereo);
+            same(&mut own.depth_3d, system.depth_3d);
+            same(&mut own.language, system.language);
+            same(&mut own.recompiled, system.recompiled);
+            same(&mut own.fps_limit, system.fps_limit);
+        }
+        self.prune();
     }
 
     /// where the console's 3D slider is, down while the 3D is off, so games
@@ -838,6 +899,7 @@ impl Settings {
         if settings.pad.menu == settings.pad.select && settings.pad.menu == Button::Select {
             settings.pad.menu = Button::Mode;
         }
+        settings.migrate();
         settings
     }
 

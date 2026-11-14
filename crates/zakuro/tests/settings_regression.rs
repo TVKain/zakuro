@@ -253,36 +253,32 @@ fn test_per_game_round_trip_serialization() {
 }
 
 #[test]
-fn test_select_popup_enum_builder() {
-    use zakuro::menus::{SelectPopup, SelectTarget};
+fn test_per_game_options_drop_system_only_fields_and_empty_entries() {
+    let mut settings = Settings::default();
+    let id: u64 = 0x00040000001B5000;
+    settings.game_mut(id).show_fps = Some(true);
+    settings.game_mut(id).window_mode = Some(WindowMode::Fullscreen);
+    settings.game_mut(0x0004000000055D00).filter = Some(Filter::Xbrz);
+    settings.migrate();
+    // the window and frame counter are the system's alone now, and a game
+    // left with nothing of its own goes from the file
+    assert!(!settings.has_own(id));
+    assert!(!settings.per_game.contains_key(&zakuro::settings::game_key(id)));
+    // what a game keeps of its own stays
+    assert!(settings.has_own(0x0004000000055D00));
+    assert_eq!(settings.for_game(Some(0x0004000000055D00)).filter, Filter::Xbrz);
+}
 
-    let popup = SelectPopup::global_enum(
-        SelectTarget::Filter,
-        "Texture Filter",
-        &Filter::ALL,
-        Filter::XbrzLinear,
-        |f| f.name(),
-    );
+#[test]
+fn test_smooth_textures_defaults_on_and_overrides_per_game() {
+    assert!(Settings::default().smooth_textures);
+    // settings saved before the option existed get it on
+    let legacy: Settings = toml::from_str("resolution = 8\n").expect("legacy settings parse");
+    assert!(legacy.smooth_textures);
 
-    assert_eq!(popup.title, "Texture Filter");
-    assert_eq!(popup.for_game, None);
-    assert_eq!(popup.options.len(), 5);
-    assert_eq!(popup.options[4], "xBRZ + Linear");
-    assert_eq!(popup.selected, 4);
-
-    let program_id: u64 = 0x00040000001B5000;
-    let game_popup = SelectPopup::game_enum(
-        SelectTarget::WindowMode,
-        program_id,
-        "Window Mode",
-        &WindowMode::ALL,
-        WindowMode::Fullscreen,
-        |w| w.name(),
-    );
-
-    assert_eq!(game_popup.title, "Window Mode");
-    assert_eq!(game_popup.for_game, Some(program_id));
-    assert_eq!(game_popup.options.len(), 3);
-    assert_eq!(game_popup.options[1], "Fullscreen");
-    assert_eq!(game_popup.selected, 1);
+    let mut settings = Settings { smooth_textures: true, ..Default::default() };
+    let id = 0x0004_0000_001B_5000;
+    settings.per_game.insert(game_key(id), GameSettings { smooth_textures: Some(false), ..Default::default() });
+    assert!(!settings.for_game(Some(id)).smooth_textures);
+    assert!(settings.for_game(None).smooth_textures);
 }

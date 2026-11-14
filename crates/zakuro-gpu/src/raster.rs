@@ -1413,6 +1413,8 @@ struct BoundTexture {
     /// unless it reaches past the rows drawn. its smaller sizes follow.
     texels: Arc<[[u8; 4]]>,
     drawn: Option<DrawnTexture>,
+    /// where in memory the texture lies, 0 for none.
+    addr: u32,
     /// bilinear rather than point sampling when magnifying.
     linear: bool,
     wrap_s: Wrap,
@@ -1967,6 +1969,7 @@ fn empty_texture() -> BoundTexture {
     BoundTexture {
         texels: TEXELS.get_or_init(|| Arc::from([[0u8; 4]].as_slice())).clone(),
         drawn: None,
+        addr: 0,
         linear: false,
         wrap_s: Wrap::Repeat,
         wrap_t: Wrap::Repeat,
@@ -2043,6 +2046,7 @@ fn bind_texture<M: GpuMemory>(
     Some(BoundTexture {
         texels,
         drawn,
+        addr,
         linear: config & 0x2 != 0,
         wrap_t: Wrap::from_raw(config >> 8),
         wrap_s: Wrap::from_raw(config >> 12),
@@ -3879,6 +3883,7 @@ mod tests {
     fn clamp_to_border_reads_the_border_color() {
         let texture = |wrap: Wrap| BoundTexture {
             drawn: None,
+            addr: 0,
             texels: vec![[0xFF; 4]; 8 * 8].into(),
             linear: false,
             wrap_s: wrap,

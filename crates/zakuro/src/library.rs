@@ -24,6 +24,8 @@ pub struct Game {
     pub outdated: bool,
     /// its mods folder has something in it.
     pub modded: bool,
+    /// it has a texture pack installed.
+    pub textured: bool,
     /// why it can't be played, when it can't, an encrypted dump say.
     pub problem: Option<String>,
     /// its update in the folder, the newest there.
@@ -75,13 +77,13 @@ impl Library {
         Library { data_dir, ..Library::default() }
     }
 
-    /// starts looking through folder again.
-    pub fn scan(&mut self, folder: &Path) {
+    /// starts looking through the folders again: Zakuro's own library with
+    /// the folders in it, and any older folder only at its top.
+    pub fn scan(&mut self, sources: Vec<Source>) {
         let (send, receive) = channel();
-        let folder = folder.to_owned();
         let data_dir = self.data_dir.clone();
         std::thread::spawn(move || {
-            let _ = send.send(scan(&folder, data_dir.as_deref()));
+            let _ = send.send(scan(&sources, data_dir.as_deref()));
         });
         self.scanning = Some(receive);
     }
@@ -143,14 +145,46 @@ impl Library {
     }
 }
 
-/// the games in folder, and the Download Play children.
-fn scan(folder: &Path, data_dir: Option<&Path>) -> (Vec<Game>, Vec<Addon>) {
-    let Ok(entries) = std::fs::read_dir(folder) else { return (Vec::new(), Vec::new()) };
-    let paths = entries.filter_map(|entry| entry.ok().map(|entry| entry.path())).filter(|path| {
-        path.extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| GAME_FILES.contains(&extension.to_ascii_lowercase().as_str()))
-    });
+/// a folder the library lists games from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Source {
+    pub folder: PathBuf,
+    /// how many folders down it looks, 0 for the folder's own files.
+    pub depth: u32,
+}
+
+/// whether a file is one Zakuro plays or adds to a game, by its ending.
+pub fn is_game_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| GAME_FILES.contains(&extension.to_ascii_lowercase().as_str()))
+}
+
+/// the game files in folder and the folders in it, depth down.
+pub fn game_files(folder: &Path, depth: u32, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(folder) else { return };
+    let mut entries: Vec<PathBuf> = entries.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            if depth > 0 {
+                game_files(&path, depth - 1, found);
+            }
+        } else if is_game_file(&path) {
+            found.push(path);
+        }
+    }
+}
+
+/// the games in the folders, and the Download Play children, each file
+/// once however many of the folders it is in.
+fn scan(sources: &[Source], data_dir: Option<&Path>) -> (Vec<Game>, Vec<Addon>) {
+    let mut paths = Vec::new();
+    for source in sources {
+        game_files(&source.folder, source.depth, &mut paths);
+    }
+    let mut seen = std::collections::HashSet::new();
+    paths.retain(|path| seen.insert(path.canonicalize().unwrap_or_else(|_| path.clone())));
     let (mut games, mut addons, mut children) = (Vec::new(), Vec::new(), Vec::new());
     for path in paths {
         match addon(&path) {
@@ -262,6 +296,7 @@ fn unplayable(path: &Path, problem: String) -> Game {
         recompiled: false,
         outdated: false,
         modded: false,
+        textured: false,
         problem: Some(problem),
         update: None,
         dlc: Vec::new(),
@@ -295,6 +330,7 @@ fn read_game(path: &Path, data_dir: Option<&Path>) -> Game {
         recompiled: zakuro_core::recompiled::installed(program_id).is_some(),
         outdated: false,
         modded: data_dir.is_some_and(|data_dir| zakuro_core::mods::present(data_dir, program_id)),
+        textured: data_dir.is_some_and(|data_dir| !crate::store::texture_packs(data_dir, program_id).is_empty()),
         problem: None,
         update: None,
         dlc: Vec::new(),
@@ -460,7 +496,7 @@ mod tests {
         let stray = 0x0004_0001_0000_0002u64;
         std::fs::write(folder.join("stray.cia"), cia(stray, 0, &[(0, Some(&ncch(stray, Some(&[5; 8]), &[])))])).unwrap();
 
-        let (games, children) = scan(&folder, None);
+        let (games, children) = scan(&[Source { folder: folder.clone(), depth: 0 }], None);
         let found = games.iter().find(|entry| entry.program_id == game).unwrap();
         assert_eq!(found.update.as_ref().map(|update| update.version), Some(0x0410));
         assert_eq!(found.dlc.len(), 1);
