@@ -1249,7 +1249,8 @@ impl Menus {
                     if view.running.is_some() {
                         entries.push(Entry::Row(Row::new(Item::CopyReport, "Copy report info", Value::More).note("The game's details and the end of the log")));
                     }
-                } else if let Some((id, _)) = self.game_settings {
+                } else if let Some(&(id, _)) = self.game_settings.as_ref().filter(|_| view.running.is_none()) {
+                    // recompiling is started from Home, not over a running game
                     entries.push(Entry::Header("Performance".into()));
                     entries.push(Entry::Row(recompile_row(id, view)));
                 }
@@ -1276,7 +1277,7 @@ impl Menus {
                 entries.push(Entry::Row(Row::new(Item::LibraryLocation, "Library location", Value::Text(short_path(&library))).note("Where added games are kept")));
                 entries.push(Entry::Row(Row::new(Item::Rescan, "Look for games again", Value::More)));
                 let outdated = idle(view.library.games.iter().filter(|game| game.outdated).map(Game::wanted), view.jobs, view.waiting).len();
-                if outdated > 0 {
+                if outdated > 0 && view.running.is_none() {
                     entries.push(Entry::Row(Row::new(Item::RecompileOutdated, format!("Recompile {outdated} outdated games"), Value::More).note("About ten minutes each, one after another. Games can't be started meanwhile")));
                 }
                 entries.push(Entry::Header("Home".into()));
@@ -1502,7 +1503,7 @@ impl Menus {
             Item::AddContent => actions.push(Action::AddContent(None)),
             Item::LibraryLocation => actions.push(Action::ChooseLibrary),
             Item::Rescan => actions.push(Action::Rescan),
-            Item::RecompileOutdated => {
+            Item::RecompileOutdated if view.running.is_none() => {
                 let outdated = idle(view.library.games.iter().filter(|game| game.outdated).map(Game::wanted), view.jobs, view.waiting);
                 actions.push(Action::Recompile(outdated));
             }
@@ -1540,7 +1541,7 @@ impl Menus {
                     actions.push(Action::Mods(id));
                 }
             }
-            Item::Recompile => {
+            Item::Recompile if view.running.is_none() => {
                 if let Some((id, _)) = self.game_settings {
                     let busy = view.jobs.iter().any(|job| job.program_id == id && !job.stage().finished()) || view.waiting.iter().any(|w| w.program_id == id);
                     if busy {
@@ -3238,6 +3239,23 @@ mod tests {
         menus.navigate(Nav::Back, &mut settings, &v);
         assert!(!menus.cheats_open);
         assert_eq!(menus.navigate(Nav::Back, &mut settings, &v), [Action::Resume]);
+    }
+
+    #[test]
+    fn recompiling_is_offered_on_home_only() {
+        let library = Library::default();
+        let mut settings = Settings::default();
+        let mut menus = Menus { game_settings: Some((7, "A game".into())), ..Menus::default() };
+        menus.page.section = Section::GAME.iter().position(|&section| section == Section::System).unwrap();
+        let has_recompile = |menus: &Menus, v: &View| {
+            menus.page_entries(&Settings::default(), v).iter().any(|entry| matches!(entry, Entry::Row(row) if row.item == Item::Recompile))
+        };
+        assert!(has_recompile(&menus, &view(&library)));
+        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, fast: false };
+        let v = View { running: Some(running), ..view(&library) };
+        assert!(!has_recompile(&menus, &v));
+        assert!(menus.handle(Item::Recompile, Op::Activate, &mut settings, &v).is_empty());
+        assert!(menus.ask.is_none());
     }
 
     #[test]

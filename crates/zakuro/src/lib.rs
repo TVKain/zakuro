@@ -755,7 +755,8 @@ impl App {
     /// once the library has the games something was just added to, asks
     /// about recompiling the ones that need it.
     fn ask_about_added(&mut self) {
-        if self.added.is_none() || self.install.is_some() || self.library.is_busy() || self.menus.select_popup.is_some() {
+        // asked on Home, once no game is running
+        if self.added.is_none() || self.game.is_some() || self.install.is_some() || self.library.is_busy() || self.menus.select_popup.is_some() {
             return;
         }
         let added = self.added.take().unwrap_or_default();
