@@ -39,7 +39,8 @@ use library::Library;
 use menus::{Action, Menus};
 use nav::{InputMode, Nav};
 use present::Backend;
-use recompile::{Job, Stage, Toolchain, Wanted};
+use recomp3ds::compile::Compiler;
+use recompile::{Job, Stage, Wanted};
 use settings::{CameraSource, MicrophoneSource, Renderer, Screens, Settings, WindowMode};
 
 pub use zakuro_core::memory::Memory;
@@ -127,7 +128,6 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         },
         jobs: Vec::new(),
         waiting: Vec::new(),
-        download_compiler: false,
         gui: None,
         backend: None,
         window: None,
@@ -422,8 +422,6 @@ struct App {
     jobs: Vec<Job>,
     /// the games waiting for their turn to recompile, the next one first.
     waiting: Vec<Wanted>,
-    /// the player said yes to downloading a compiler for the next recompile.
-    download_compiler: bool,
     gui: Option<Gui>,
     // backend must be declared (and therefore dropped) before window, Rust
     // drops struct fields in declaration order, and the GL surface's Drop
@@ -1361,36 +1359,27 @@ impl App {
         winit::dpi::LogicalSize::new(width * self.scale, height * self.scale).into()
     }
 
-    /// what to recompile with: the computer's C compiler, or the Zig Zakuro
-    /// downloaded, or else, when the player said yes to it, Zig downloaded
-    /// first. with none of those there is none, it asks whether to download
-    /// Zig for games, or says what is missing.
-    fn toolchain(&mut self, games: &[Wanted]) -> Option<Toolchain> {
-        let tools = zig::tools_dir(self.data_dir.as_deref());
-        let error = match recomp3ds::compile::check(None) {
-            Ok(compiler) => return Some(Toolchain::Ready(compiler)),
-            Err(error) => error,
-        };
-        if let Some(compiler) = tools.as_deref().and_then(zig::installed) {
-            return Some(Toolchain::Ready(compiler));
+    /// what to recompile with: the Zig that comes with Zakuro, or else the
+    /// computer's own C compiler. with neither it says what is missing.
+    fn toolchain(&mut self) -> Option<Compiler> {
+        if let Some(compiler) = zig::bundled(self.data_dir.as_deref()) {
+            return Some(compiler);
         }
-        match tools {
-            Some(tools) if self.download_compiler && zig::download_size().is_some() && zig::can_download() => return Some(Toolchain::Download(tools)),
-            Some(_) if zig::download_size().is_some() && zig::can_download() => self.menus.compiler_offer = Some(games.to_vec()),
-            Some(_) if zig::download_size().is_some() => {
-                self.menus.message = Some(format!("Recompiling needs a C compiler, gcc or clang, or curl or wget for Zakuro to download one: {error}."));
+        match recomp3ds::compile::check(None) {
+            Ok(compiler) => Some(compiler),
+            Err(error) => {
+                self.menus.message = Some(format!(
+                    "Recompiling needs the compiler that comes with Zakuro, in the tools folder next to zakuro.exe, or a C compiler: {error}."
+                ));
+                None
             }
-            _ => self.menus.message = Some(format!("Recompiling needs a C compiler: {error}.")),
         }
-        None
     }
 
     /// puts games in line to recompile, after those there are, each with
-    /// its turn once the one before it is done. download says the player
-    /// agreed to download a compiler should there be none.
-    fn recompile(&mut self, games: Vec<Wanted>, download: bool) {
-        self.download_compiler = download;
-        if self.toolchain(&games).is_none() {
+    /// its turn once the one before it is done.
+    fn recompile(&mut self, games: Vec<Wanted>) {
+        if self.toolchain().is_none() {
             return;
         }
         for game in games {
@@ -1407,13 +1396,11 @@ impl App {
         if self.waiting.is_empty() || self.jobs.iter().any(|job| !job.stage().finished()) {
             return;
         }
-        // a compiler can have stopped being there, its download failing or
-        // being cancelled, and it asks again for those left
-        let Some(toolchain) = self.toolchain(&self.waiting.clone()) else {
+        // a compiler can have stopped being there meanwhile
+        let Some(toolchain) = self.toolchain() else {
             self.waiting.clear();
             return;
         };
-        self.download_compiler = false;
         let wanted = self.waiting.remove(0);
         self.jobs.retain(|job| job.program_id != wanted.program_id);
         // a scan may have taken it out of the library meanwhile
@@ -1470,8 +1457,7 @@ impl App {
                     self.menus.message = Some(error);
                 }
             }
-            Action::Recompile(games) => self.recompile(games, false),
-            Action::DownloadCompiler(games) => self.recompile(games, true),
+            Action::Recompile(games) => self.recompile(games),
             Action::Mods(program_id) => {
                 if let Some(data_dir) = &self.data_dir {
                     let folder = zakuro_core::mods::dir(data_dir, program_id);

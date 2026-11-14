@@ -34,10 +34,6 @@ pub enum Action {
     Play(PathBuf),
     /// recompile these games of the library, one after the other.
     Recompile(Vec<Wanted>),
-    /// download a compiler, then recompile these games of the library with
-    /// it.
-    DownloadCompiler(Vec<Wanted>),
-    /// show the mods folder of the game with this program id.
     Mods(u64),
     /// stop recompiling the game with this id, or waiting to.
     CancelRecompile(u64),
@@ -178,9 +174,6 @@ pub enum Item {
     CheatAdd,
     CheatsReload,
     CheatsFolder,
-    // the recompile offer
-    Download,
-    NotNow,
 }
 
 /// what is done to a row.
@@ -486,10 +479,6 @@ pub struct Menus {
     pub report: Option<(String, String)>,
     /// what is being typed into the game's keyboard, and what it asked for.
     typing: Option<(Request, String)>,
-    /// the library's games to recompile once the player agrees to download
-    /// a compiler for them.
-    pub compiler_offer: Option<Vec<Wanted>>,
-    offer_row: usize,
 
     icons: HashMap<PathBuf, egui::TextureHandle>,
     background: Background,
@@ -786,7 +775,6 @@ impl Menus {
             || self.message.is_some()
             || self.select_popup.is_some()
             || self.import.is_some()
-            || self.compiler_offer.is_some()
     }
 
     /// whether the interface is over a running game, which then gets none
@@ -811,7 +799,6 @@ impl Menus {
         self.multiplayer_open = false;
         self.game_settings = None;
         self.import = None;
-        self.compiler_offer = None;
         self.rebinding = None;
         self.rebinding_pad = None;
     }
@@ -896,9 +883,6 @@ impl Menus {
         if self.import.is_some() {
             self.import_window(&ctx, view, !popup);
         }
-        if self.compiler_offer.is_some() {
-            self.offer(&ctx, !popup);
-        }
         if let Some(request) = view.keyboard {
             actions.extend(self.keyboard(&ctx, request));
         }
@@ -964,24 +948,6 @@ impl Menus {
         }
         if view.keyboard.is_some() {
             return Vec::new();
-        }
-        if self.compiler_offer.is_some() {
-            return match nav {
-                Nav::Up | Nav::Left => {
-                    self.offer_row = 0;
-                    Vec::new()
-                }
-                Nav::Down | Nav::Right => {
-                    self.offer_row = 1;
-                    Vec::new()
-                }
-                Nav::Accept => self.handle(if self.offer_row == 0 { Item::Download } else { Item::NotNow }, Op::Activate, settings, view),
-                Nav::Back => {
-                    self.compiler_offer = None;
-                    Vec::new()
-                }
-                _ => Vec::new(),
-            };
         }
         if self.import.is_some() {
             let entries = self.import_entries(view);
@@ -1137,6 +1103,10 @@ impl Menus {
     /// what choosing a tile on Home does: plays its game, or adds games.
     fn tile(&mut self, index: usize, view: &View) -> Vec<Action> {
         match view.library.games.get(index) {
+            Some(game) if Busy::of(game.program_id, view.jobs, view.waiting).is_some() => {
+                self.toast(&format!("{} is recompiling. It can be played once that finishes.", game.name));
+                Vec::new()
+            }
             Some(game) if game.problem.is_none() => vec![Action::Play(game.path.clone())],
             Some(game) => {
                 self.message = Some(format!("{} can't be played. {}.", file_label(&game.path), game.problem.as_deref().unwrap_or("")));
@@ -1580,12 +1550,6 @@ impl Menus {
             Item::CheatAdd => self.cheat_form = true,
             Item::CheatsReload => actions.push(Action::ReloadCheats),
             Item::CheatsFolder => actions.push(Action::CheatsFolder),
-            Item::Download => {
-                if let Some(games) = self.compiler_offer.take() {
-                    actions.push(Action::DownloadCompiler(games));
-                }
-            }
-            Item::NotNow => self.compiler_offer = None,
             _ => {}
         }
         actions
@@ -1646,7 +1610,10 @@ fn recompile_row(id: u64, view: &View) -> Row {
     let job = view.jobs.iter().find(|job| job.program_id == id && !job.stage().finished());
     let waiting = view.waiting.iter().any(|wanted| wanted.program_id == id);
     let (label, value) = match (job, waiting, game) {
-        (Some(job), _, _) => ("Recompiling — select to stop", stage_name(&job.stage())),
+        (Some(job), _, _) => (
+            "Recompiling — select to stop",
+            Busy::Recompiling { stage: job.stage(), compiling: job.compiling_for() }.describe(),
+        ),
         (None, true, _) => ("Waiting to recompile — select to stop", String::new()),
         (None, false, Some(game)) if game.outdated => ("Recompile again", "Outdated".into()),
         (None, false, Some(game)) if game.recompiled => ("Recompile again", "Recompiled".into()),
@@ -1657,12 +1624,70 @@ fn recompile_row(id: u64, view: &View) -> Row {
         _ => None,
     });
     let row = Row::new(Item::Recompile, label, Value::Text(value)).enabled(game.is_some());
-    row.note(failed.unwrap_or_else(|| "Turns the game's code into native code. About ten minutes; needs a C compiler or Zig, which Zakuro can download".into()))
+    row.note(failed.unwrap_or_else(|| "Turns the game's code into native code. About ten minutes, using the compiler that comes with Zakuro".into()))
+}
+
+/// how a game's recompile is going, when it is recompiling or waiting to,
+/// in which case it can't be played.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Busy {
+    Waiting,
+    /// compiling, how long the C has been compiling.
+    Recompiling { stage: Stage, compiling: Option<std::time::Duration> },
+}
+
+impl Busy {
+    pub fn of(id: u64, jobs: &[Job], waiting: &[Wanted]) -> Option<Busy> {
+        if let Some(job) = jobs.iter().find(|job| job.program_id == id && !job.stage().finished()) {
+            return Some(Busy::Recompiling { stage: job.stage(), compiling: job.compiling_for() });
+        }
+        waiting.iter().any(|wanted| wanted.program_id == id).then_some(Busy::Waiting)
+    }
+
+    pub fn fraction(&self) -> f32 {
+        match self {
+            Busy::Waiting => 0.0,
+            Busy::Recompiling { stage, .. } => stage.fraction(),
+        }
+    }
+
+    /// the stage, how far along, and about how long is left once there is
+    /// enough to go by.
+    pub fn describe(&self) -> String {
+        match self {
+            Busy::Waiting => "Waiting to recompile".to_owned(),
+            Busy::Recompiling { stage, compiling } => {
+                let fraction = stage.fraction();
+                let mut text = format!("{}  ·  {:.0}%", stage_name(stage), fraction * 100.0);
+                // the files compiled so far, at the pace they went, after
+                // enough of them for the pace to mean something
+                if let (Stage::Compiling { done, total }, Some(compiling)) = (stage, compiling) {
+                    if *done >= 8 && compiling.as_secs() >= 15 {
+                        let left = compiling.as_secs_f32() * total.saturating_sub(*done) as f32 / *done as f32;
+                        text.push_str(&format!("  ·  about {} left", duration_name(left)));
+                    }
+                }
+                text
+            }
+        }
+    }
+}
+
+/// a span of seconds, roughly, in words.
+fn duration_name(seconds: f32) -> String {
+    let seconds = seconds.round() as u64;
+    match seconds {
+        0..60 => "under a minute".to_owned(),
+        60..3600 => {
+            let minutes = (seconds + 30) / 60;
+            if minutes == 1 { "1 minute".to_owned() } else { format!("{minutes} minutes") }
+        }
+        _ => format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60),
+    }
 }
 
 fn stage_name(stage: &Stage) -> String {
     match stage {
-        Stage::Downloading(arrived) => format!("Downloading {:.0}%", arrived * 100.0),
         Stage::Generating => "Finding code".to_owned(),
         Stage::Compiling { done, total } => format!("Compiling {done}/{total}"),
         Stage::Installing => "Installing".to_owned(),
@@ -1733,12 +1758,12 @@ impl Menus {
                         }
                     }
                     let response = if row.enabled { response.on_hover_cursor(CursorIcon::PointingHand) } else { response };
-                    paint_row(ui, rect, row, is_selected, mode);
+                    let arrows = paint_row(ui, rect, row, is_selected, mode);
                     if response.clicked() && row.enabled {
                         // a click on a value's arrows steps it
-                        let op = match (&row.value, response.interact_pointer_pos()) {
-                            (Value::Range(_), Some(at)) if at.x > rect.right() - 44.0 => Op::Step(1),
-                            (Value::Range(_), Some(at)) if at.x > rect.right() - 200.0 && at.x < rect.right() - 150.0 => Op::Step(-1),
+                        let op = match (arrows, response.interact_pointer_pos()) {
+                            (Some((less, _)), Some(at)) if less.contains(at) => Op::Step(-1),
+                            (Some((_, more)), Some(at)) if more.contains(at) => Op::Step(1),
                             _ => Op::Activate,
                         };
                         self.clicked.push((row.item, op));
@@ -1803,7 +1828,9 @@ impl Highlight {
 
 /// draws a row: its label, the dot of a game's own value, and its value.
 /// the selected row's highlight is drawn by its list, which glides it.
-fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMode) {
+/// a range's arrows are given back, (less, more), where a click steps it.
+fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMode) -> Option<(Rect, Rect)> {
+    let mut arrows = None;
     let painter = ui.painter();
     let hovered = ui.rect_contains_pointer(rect) && mode == InputMode::Pointer && row.enabled && ui.is_enabled();
     if hovered && !selected {
@@ -1838,6 +1865,10 @@ fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMo
         Value::Text(text) => painter.text(Pos2::new(right, rect.center().y), Align2::RIGHT_CENTER, text, FontId::proportional(15.0), value_color).left(),
         Value::Range(text) => {
             let shown = painter.text(Pos2::new(right - 26.0, rect.center().y), Align2::RIGHT_CENTER, text, FontId::proportional(15.0), value_color);
+            // generous targets, the row's height, for fingers as well
+            let less = Rect::from_x_y_ranges(shown.left() - 40.0..=shown.left() - 2.0, rect.y_range());
+            let more = Rect::from_x_y_ranges(right - 24.0..=rect.right(), rect.y_range());
+            arrows = Some((less, more));
             if selected || hovered {
                 painter.text(Pos2::new(right, rect.center().y), Align2::RIGHT_CENTER, "›", FontId::proportional(22.0), value_color);
                 painter.text(Pos2::new(shown.left() - 12.0, rect.center().y), Align2::RIGHT_CENTER, "‹", FontId::proportional(22.0), value_color);
@@ -1856,6 +1887,7 @@ fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMo
         let note = painter.layout_no_wrap(truncate(note, room, 12.5), FontId::proportional(12.5), color::FAINT);
         painter.galley(Pos2::new(left, rect.center().y + 3.0), note, color::FAINT);
     }
+    arrows
 }
 
 /// how long a window takes to grow in, in seconds.
@@ -1964,6 +1996,9 @@ fn window(ctx: &egui::Context, id: &str, size: Vec2, (title, subtitle): (&str, O
         .movable(false)
         .show(ctx, |ui| {
             ui.set_clip_rect(cover);
+            // the area covers the screen, so egui finds it under the pointer and
+            // its lists take the mouse wheel
+            ui.expand_to_include_rect(screen);
             // the backdrop takes the clicks around the window
             let backdrop = ui.interact(screen, ui.id().with("backdrop"), Sense::click());
             ui.painter().rect_filled(cover, 0.0, Color32::from_black_alpha(170));
@@ -2122,50 +2157,6 @@ impl Menus {
         }
     }
 
-    /// asks whether to download a compiler, there being none to recompile
-    /// with.
-    fn offer(&mut self, ctx: &egui::Context, enabled: bool) {
-        let size = crate::zig::download_size().map_or_else(String::new, |size| format!(" ({} MB download, about 400 MB unpacked)", size / 1_000_000));
-        let text = format!("Recompiling needs a C compiler, and none was found. Zakuro can download Zig, which needs no installing, into its own folder{size}.");
-        let entries = [
-            Entry::Row(Row::new(Item::Download, "Download and recompile", Value::None)),
-            Entry::Row(Row::new(Item::NotNow, "Not now", Value::None)),
-        ];
-        let selected = self.offer_row;
-        let mode = self.mode;
-        let mut clicked = None;
-        let closed = window(ctx, "offer", Vec2::new(560.0, 330.0), ("Recompile", None), enabled, None, |ui| {
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new(text).size(15.0).color(color::MUTED));
-            ui.add_space(12.0);
-            let time = ui.ctx().input(|input| input.time);
-            let highlight = Highlight::under(ui);
-            let mut target = None;
-            for (index, entry) in entries.iter().enumerate() {
-                let Entry::Row(row) = entry else { continue };
-                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 50.0), Sense::click());
-                let response = response.on_hover_cursor(CursorIcon::PointingHand);
-                if index == selected {
-                    target = Some(rect);
-                }
-                paint_row(ui, rect, row, index == selected, mode);
-                if response.clicked() {
-                    clicked = Some(row.item);
-                }
-                if response.hovered() && mode == InputMode::Pointer {
-                    self.offer_row = index;
-                }
-            }
-            highlight.paint(ui, target, mode, time);
-        });
-        if let Some(item) = clicked {
-            self.clicked.push((item, Op::Activate));
-        }
-        if closed {
-            self.compiler_offer = None;
-        }
-    }
-
     /// a list that came up to pick from, over everything else; a click
     /// outside it closes it.
     fn popup(&mut self, ctx: &egui::Context) {
@@ -2185,6 +2176,9 @@ impl Menus {
             .movable(false)
             .show(ctx, |ui| {
                 ui.set_clip_rect(cover);
+                // the area covers the screen, so egui finds it under the pointer and
+                // its lists take the mouse wheel
+                ui.expand_to_include_rect(screen);
                 let backdrop = ui.interact(screen, ui.id().with("backdrop"), Sense::click());
                 ui.painter().rect_filled(cover, 0.0, Color32::from_black_alpha(120));
                 ui.painter().rect_filled(rect, CornerRadius::same(16), color::SURFACE);
@@ -2243,6 +2237,7 @@ impl Menus {
             .movable(false)
             .show(ctx, |ui| {
                 ui.set_clip_rect(screen);
+                ui.expand_to_include_rect(screen);
                 let _ = ui.interact(screen, ui.id().with("backdrop"), Sense::click());
                 ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(140));
                 let galley = ui.painter().layout(text.clone(), FontId::proportional(15.5), color::TEXT, width - 56.0);
@@ -2628,6 +2623,7 @@ impl Menus {
             if count == 1 { "1 game".to_owned() } else { format!("{count} games") }
         };
         painter.text(screen.right_top() + Vec2::new(-36.0, 30.0), Align2::RIGHT_CENTER, status, FontId::proportional(15.0), color::FAINT);
+        self.paint_recompile_card(&painter, screen, view);
 
         // the tiles
         let tiles = library.games.len() + 1;
@@ -2750,6 +2746,9 @@ impl Menus {
         if directional && ui.is_enabled() {
             let foot = Rect::from_min_max(Pos2::new(screen.left(), screen.bottom() - 48.0), screen.max);
             let list: Vec<(Nav, &str)> = match (self.home_focus, library.games.get(self.selected_game)) {
+                (HomeFocus::Games, Some(game)) if Busy::of(game.program_id, view.jobs, view.waiting).is_some() => {
+                    vec![(Nav::Y, "Options"), (Nav::Start, "Settings")]
+                }
                 (HomeFocus::Games, Some(game)) if game.problem.is_none() => vec![(Nav::Accept, "Start"), (Nav::Y, "Options"), (Nav::Start, "Settings")],
                 (HomeFocus::Games, _) | (HomeFocus::Dock, _) => vec![(Nav::Accept, "OK"), (Nav::Start, "Settings")],
             };
@@ -2766,6 +2765,26 @@ impl Menus {
                 self.open_game_settings(game.program_id, game.name.clone(), view.data_dir);
             }
         }
+    }
+
+    /// the recompile going on, at the top of Home: the game, its stage, how
+    /// far along, about how long is left, and how many wait their turn.
+    fn paint_recompile_card(&self, painter: &egui::Painter, screen: Rect, view: &View) {
+        let Some(job) = view.jobs.iter().find(|job| !job.stage().finished()) else { return };
+        let busy = Busy::Recompiling { stage: job.stage(), compiling: job.compiling_for() };
+        let width = 460.0f32.min(screen.width() - 300.0).max(240.0);
+        let card = Rect::from_center_size(Pos2::new(screen.center().x, 44.0 + screen.top()), Vec2::new(width, 64.0));
+        painter.rect_filled(card, CornerRadius::same(14), color::SURFACE);
+        painter.rect_stroke(card, CornerRadius::same(14), Stroke::new(1.0, color::LINE), StrokeKind::Inside);
+        let inner = card.shrink2(Vec2::new(16.0, 10.0));
+        let waiting = view.waiting.len();
+        let title = if waiting > 0 { format!("Recompiling {}  (+{waiting} waiting)", job.name) } else { format!("Recompiling {}", job.name) };
+        painter.text(inner.left_top(), Align2::LEFT_TOP, truncate(&title, inner.width(), 15.0), strong(15.0), color::TEXT);
+        painter.text(inner.left_top() + Vec2::new(0.0, 21.0), Align2::LEFT_TOP, busy.describe(), FontId::proportional(13.0), color::MUTED);
+        let bar = Rect::from_min_size(Pos2::new(inner.left(), inner.bottom() - 5.0), Vec2::new(inner.width(), 5.0));
+        painter.rect_filled(bar, CornerRadius::same(3), color::RAISED);
+        let done = Rect::from_min_size(bar.min, Vec2::new(bar.width() * busy.fraction(), bar.height()));
+        painter.rect_filled(done, CornerRadius::same(3), color::ACCENT);
     }
 
     /// a game's tile: its icon over its colors, the outline when selected,
@@ -2799,11 +2818,18 @@ impl Menus {
             painter.rect_filled(rect, radius, Color32::from_black_alpha(140));
             painter.text(rect.center(), Align2::CENTER_CENTER, "!", FontId::proportional(42.0), color::WARN);
         }
-        let job = view.jobs.iter().find(|job| job.program_id == game.program_id && !job.stage().finished());
-        if let Some(job) = job {
-            let bar = Rect::from_min_size(Pos2::new(rect.left() + 14.0, rect.bottom() - 16.0), Vec2::new(rect.width() - 28.0, 5.0));
+        // a game recompiling is greyed out, as it can't be played until then
+        if let Some(busy) = Busy::of(game.program_id, view.jobs, view.waiting) {
+            painter.rect_filled(rect, radius, Color32::from_black_alpha(190));
+            let label = match &busy {
+                Busy::Waiting => "Waiting".to_owned(),
+                Busy::Recompiling { .. } => format!("{:.0}%", busy.fraction() * 100.0),
+            };
+            painter.text(rect.center() - Vec2::new(0.0, 8.0), Align2::CENTER_CENTER, label, strong(30.0), color::TEXT);
+            painter.text(rect.center() + Vec2::new(0.0, 22.0), Align2::CENTER_CENTER, "Recompiling", FontId::proportional(14.0), color::MUTED);
+            let bar = Rect::from_min_size(Pos2::new(rect.left() + 14.0, rect.bottom() - 18.0), Vec2::new(rect.width() - 28.0, 6.0));
             painter.rect_filled(bar, CornerRadius::same(3), Color32::from_black_alpha(160));
-            let done = Rect::from_min_size(bar.min, Vec2::new(bar.width() * job.stage().fraction(), bar.height()));
+            let done = Rect::from_min_size(bar.min, Vec2::new(bar.width() * busy.fraction(), bar.height()));
             painter.rect_filled(done, CornerRadius::same(3), color::ACCENT);
         }
         if selected {
@@ -2892,8 +2918,11 @@ fn game_details(game: &Game, settings: &Settings, view: &View) -> String {
     if settings.has_own(game.program_id) {
         parts.push("Custom options".to_owned());
     }
-    if let Some(job) = view.jobs.iter().find(|job| job.program_id == game.program_id && !job.stage().finished()) {
-        parts.push(stage_name(&job.stage()));
+    if let Some(busy) = Busy::of(game.program_id, view.jobs, view.waiting) {
+        parts.push(match busy {
+            Busy::Waiting => "Waiting to recompile".to_owned(),
+            Busy::Recompiling { .. } => format!("Recompiling {:.0}%, playable once it finishes", busy.fraction() * 100.0),
+        });
     }
     parts.join("  ·  ")
 }
@@ -2926,6 +2955,9 @@ impl Menus {
             .movable(false)
             .show(&ctx, |ui| {
                 ui.set_clip_rect(cover);
+                // the area covers the screen, so egui finds it under the pointer and
+                // its lists take the mouse wheel
+                ui.expand_to_include_rect(screen);
                 let _ = ui.interact(screen, ui.id().with("backdrop"), Sense::click());
                 ui.painter().rect_filled(cover, 0.0, Color32::from_black_alpha(150));
                 ui.painter().rect_filled(rect, CornerRadius::same(18), color::BG);
@@ -3179,6 +3211,22 @@ mod tests {
         assert!(menus.settings_open, "the list goes before the settings");
         menus.close_modals();
         assert!(!menus.modal_open());
+    }
+
+    #[test]
+    fn a_game_recompiling_or_waiting_is_busy_with_its_progress() {
+        let jobs = [Job::at_stage(1, Stage::Compiling { done: 50, total: 100 }), Job::at_stage(2, Stage::Done)];
+        let waiting = [Wanted { program_id: 3, path: PathBuf::from("c.3ds") }];
+        assert!(matches!(Busy::of(1, &jobs, &waiting), Some(Busy::Recompiling { .. })));
+        assert_eq!(Busy::of(2, &jobs, &waiting), None);
+        assert_eq!(Busy::of(3, &jobs, &waiting), Some(Busy::Waiting));
+        assert_eq!(Busy::of(4, &jobs, &waiting), None);
+        let halfway = Busy::Recompiling { stage: Stage::Compiling { done: 50, total: 100 }, compiling: Some(std::time::Duration::from_secs(300)) };
+        assert_eq!(halfway.describe(), "Compiling 50/100  ·  50%  ·  about 5 minutes left");
+        let early = Busy::Recompiling { stage: Stage::Compiling { done: 2, total: 100 }, compiling: Some(std::time::Duration::from_secs(5)) };
+        assert!(!early.describe().contains("left"));
+        assert_eq!(duration_name(30.0), "under a minute");
+        assert_eq!(duration_name(4000.0), "1h 06m");
     }
 
     #[test]

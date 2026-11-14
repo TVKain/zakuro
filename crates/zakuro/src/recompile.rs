@@ -12,14 +12,6 @@ use std::time::{Duration, Instant};
 use recomp3ds::build::{self, Event};
 use recomp3ds::compile::Compiler;
 
-/// the compiler a recompile uses: one there is, or Zig, downloaded first
-/// into this folder of tools.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Toolchain {
-    Ready(Compiler),
-    Download(PathBuf),
-}
-
 /// a game to recompile: the file to read, the same game being in a folder
 /// twice sometimes, and its id, which goes for either, as there is one
 /// library for both.
@@ -31,8 +23,6 @@ pub struct Wanted {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stage {
-    /// fetching the compiler, how much of it has arrived, 0 to 1.
-    Downloading(f32),
     /// finding the code and writing it as C.
     Generating,
     Compiling { done: usize, total: usize },
@@ -50,7 +40,6 @@ impl Stage {
     /// how far along it is, 0 to 1, going by the part that takes longest.
     pub fn fraction(&self) -> f32 {
         match self {
-            Stage::Downloading(arrived) => *arrived,
             Stage::Generating => 0.05,
             Stage::Compiling { done, total } => 0.05 + 0.9 * *done as f32 / (*total).max(1) as f32,
             Stage::Installing => 0.95,
@@ -73,6 +62,8 @@ impl Stage {
 struct State {
     stage: Stage,
     finished_at: Option<Instant>,
+    /// when the C began compiling, which how long is left is measured from.
+    compiling_since: Option<Instant>,
 }
 
 pub struct Job {
@@ -89,39 +80,24 @@ impl Job {
     /// starts recompiling the game at rom with toolchain's compiler, with
     /// what its mods in data_dir change. the compilers run below normal
     /// priority, so that a game can be played meanwhile.
-    pub fn start(rom: &Path, update: Option<&Path>, program_id: u64, name: &str, data_dir: Option<&Path>, toolchain: Toolchain) -> Job {
-        let first = if matches!(toolchain, Toolchain::Download(_)) { Stage::Downloading(0.0) } else { Stage::Generating };
-        let state = Arc::new(Mutex::new(State { stage: first, finished_at: None }));
+    pub fn start(rom: &Path, update: Option<&Path>, program_id: u64, name: &str, data_dir: Option<&Path>, compiler: Compiler) -> Job {
+        let state = Arc::new(Mutex::new(State { stage: Stage::Generating, finished_at: None, compiling_since: None }));
         let cancel = Arc::new(AtomicBool::new(false));
         let (progress, stop, rom, update) = (state.clone(), cancel.clone(), rom.to_owned(), update.map(Path::to_owned));
         let (game, data_dir) = (name.to_owned(), data_dir.map(Path::to_owned));
         std::thread::spawn(move || {
             let events = |event: Event| {
                 if let (Some(stage), Ok(mut state)) = (Stage::after(&event), progress.lock()) {
-                    state.stage = stage;
-                }
-            };
-            let compiler = match toolchain {
-                Toolchain::Ready(compiler) => Ok(compiler),
-                Toolchain::Download(tools) => {
-                    let arrived = |fraction: f32| {
-                        if let Ok(mut state) = progress.lock() {
-                            state.stage = Stage::Downloading(fraction);
-                        }
-                    };
-                    let downloaded = crate::zig::download(&tools, &arrived, &stop);
-                    if let Ok(mut state) = progress.lock() {
-                        state.stage = Stage::Generating;
+                    if matches!(stage, Stage::Compiling { .. }) && state.compiling_since.is_none() {
+                        state.compiling_since = Some(Instant::now());
                     }
-                    downloaded
+                    state.stage = stage;
                 }
             };
             // a bug on the way fails this game, and the ones waiting get
             // their turn, rather than this one never ending
-            let result = compiler.and_then(|compiler| {
-                let build = AssertUnwindSafe(|| recompile(&rom, update.as_deref(), program_id, &game, data_dir.as_deref(), compiler, &stop, &events));
-                std::panic::catch_unwind(build).unwrap_or_else(|_| Err("Zakuro hit a bug recompiling it, please report it".to_owned()))
-            });
+            let build = AssertUnwindSafe(|| recompile(&rom, update.as_deref(), program_id, &game, data_dir.as_deref(), compiler, &stop, &events));
+            let result = std::panic::catch_unwind(build).unwrap_or_else(|_| Err("Zakuro hit a bug recompiling it, please report it".to_owned()));
             if let Ok(mut state) = progress.lock() {
                 state.stage = match result {
                     Ok(_) => Stage::Done,
@@ -137,12 +113,19 @@ impl Job {
     /// a job at a stage, with no build behind it.
     #[cfg(test)]
     pub fn at_stage(program_id: u64, stage: Stage) -> Job {
-        let state = Arc::new(Mutex::new(State { stage, finished_at: None }));
+        let state = Arc::new(Mutex::new(State { stage, finished_at: None, compiling_since: None }));
         Job { program_id, name: String::new(), announced: false, started: Instant::now(), state, cancel: Arc::new(AtomicBool::new(false)) }
     }
 
     pub fn stage(&self) -> Stage {
         self.state.lock().map(|state| state.stage.clone()).unwrap_or(Stage::Failed("lost track".to_owned()))
+    }
+
+    /// how long the C has been compiling, none before it starts.
+    pub fn compiling_for(&self) -> Option<Duration> {
+        let state = self.state.lock().ok()?;
+        let since = state.compiling_since?;
+        Some(state.finished_at.unwrap_or_else(Instant::now).saturating_duration_since(since))
     }
 
     /// how long it has run, or ran.
