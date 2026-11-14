@@ -4857,6 +4857,7 @@ name = "zakuro-setup"
 version = "0.3.2"
 dependencies = [
  "eframe",
+ "gilrs",
  "image",
  "rfd",
  "sha2",

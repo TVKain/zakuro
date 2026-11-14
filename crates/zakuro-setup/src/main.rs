@@ -5,6 +5,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod pad;
 mod system;
 mod work;
 
@@ -192,6 +193,9 @@ struct Setup {
     measuring: Option<Receiver<DataSizes>>,
     progress: Shared,
     cancel: Arc<AtomicBool>,
+    pad: pad::Pad,
+    /// the last input was a controller's or the keyboard's, not the pointer's.
+    directional: bool,
 }
 
 impl Setup {
@@ -220,6 +224,8 @@ impl Setup {
             measuring,
             progress: Shared::default(),
             cancel: Arc::new(AtomicBool::new(false)),
+            pad: pad::Pad::new(),
+            directional: false,
         }
     }
 
@@ -242,6 +248,20 @@ impl Setup {
 
 impl eframe::App for Setup {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let presses = self.pad.presses();
+        if self.pad.connected() {
+            // eframe sleeps without window events, which a controller isn't
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+        }
+        if self.draw(ui, &presses) {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+}
+
+impl Setup {
+    /// the window's frame, after the controller's presses. whether it should close.
+    fn draw(&mut self, ui: &mut egui::Ui, presses: &[pad::Press]) -> bool {
         if let Some(receive) = &self.measuring {
             if let Ok(sizes) = receive.try_recv() {
                 self.sizes = Some(sizes);
@@ -255,19 +275,101 @@ impl eframe::App for Setup {
         if self.page == Page::Working || self.measuring.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
+        let mut close = self.controller(ui.ctx(), presses);
         egui::CentralPanel::default().frame(egui::Frame::new().fill(color::BASE).inner_margin(Margin::same(28))).show(ui, |ui| {
             header(ui, self.mode);
             ui.add_space(16.0);
-            let close = match (self.mode, self.page) {
+            close |= match (self.mode, self.page) {
                 (Mode::Install, Page::Choose) => self.install_choices(ui),
                 (Mode::Uninstall, Page::Choose) => self.uninstall_choices(ui),
                 (_, Page::Working) => self.working(ui, &progress),
                 (_, Page::Done) => self.done(ui, &progress),
             };
-            if close {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        });
+        // the ring shows where a controller or the keyboard is, the pointer's
+        // hover where the mouse is
+        ui.ctx().input(|input| {
+            if !presses.is_empty() || input.events.iter().any(|event| matches!(event, egui::Event::Key { .. })) {
+                self.directional = true;
+            } else if input.pointer.delta() != Vec2::ZERO || input.pointer.any_pressed() {
+                self.directional = false;
             }
         });
+        if self.directional {
+            focus_ring(ui.ctx());
+        }
+        close
+    }
+}
+
+/// an accent ring round what has the focus, the folder field aside, which
+/// shows its own.
+fn focus_ring(ctx: &egui::Context) {
+    let Some(id) = ctx.memory(|memory| memory.focused()).filter(|id| *id != egui::Id::new(DIR_FIELD)) else { return };
+    let Some(response) = ctx.read_response(id) else { return };
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("focus-ring")));
+    painter.rect_stroke(response.rect.expand(4.0), CornerRadius::same(10), Stroke::new(2.0, color::ACCENT), egui::StrokeKind::Outside);
+}
+
+/// the folder field, which A opens the folder picker on.
+const DIR_FIELD: &str = "install-dir";
+/// set when the main button should take the focus, for a controller that
+/// finds nothing focused.
+const FOCUS_MAIN: &str = "focus-main";
+
+impl Setup {
+    /// what the controller did this frame, as the keyboard would: a direction
+    /// moves the focus, A presses what is focused, B cancels or closes.
+    /// whether the window should close.
+    fn controller(&mut self, ctx: &egui::Context, presses: &[pad::Press]) -> bool {
+        // a controller only works the window in front
+        if presses.is_empty() || !ctx.input(|input| input.viewport().focused.unwrap_or(true)) {
+            return false;
+        }
+        let mut close = false;
+        for &press in presses {
+            let focused = ctx.memory(|memory| memory.focused());
+            let direction = match press {
+                pad::Press::Up => Some(egui::FocusDirection::Up),
+                pad::Press::Down => Some(egui::FocusDirection::Down),
+                pad::Press::Left => Some(egui::FocusDirection::Left),
+                pad::Press::Right => Some(egui::FocusDirection::Right),
+                _ => None,
+            };
+            match (press, direction) {
+                (_, Some(_)) | (pad::Press::Accept, _) if focused.is_none() => {
+                    // the first press finds the main button
+                    ctx.data_mut(|data| data.insert_temp(egui::Id::new(FOCUS_MAIN), true));
+                }
+                (_, Some(direction)) => ctx.memory_mut(|memory| memory.move_focus(direction)),
+                (pad::Press::Accept, _) if focused == Some(egui::Id::new(DIR_FIELD)) => self.pick_folder(),
+                (pad::Press::Accept, _) => {
+                    // a focused button or checkbox takes Enter as a click
+                    ctx.input_mut(|input| {
+                        input.events.push(egui::Event::Key {
+                            key: egui::Key::Enter,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        })
+                    });
+                }
+                _ => match self.page {
+                    Page::Choose | Page::Done => close = true,
+                    Page::Working => self.cancel.store(true, Ordering::Relaxed),
+                },
+            }
+        }
+        close
+    }
+
+    fn pick_folder(&mut self) {
+        if let Some(folder) = rfd::FileDialog::new().set_title("Where to install Zakuro").set_directory(&self.dir).pick_folder() {
+            // a folder picked for it holds Zakuro in its own folder
+            let named = folder.file_name().is_some_and(|name| name.eq_ignore_ascii_case("zakuro"));
+            self.dir = if named { folder } else { folder.join("Zakuro") }.display().to_string();
+        }
     }
 }
 
@@ -305,7 +407,11 @@ fn buttons(ui: &mut egui::Ui, labels: &[(&str, bool)]) -> Option<usize> {
         for (index, (label, enabled)) in labels.iter().enumerate().rev() {
             let text = RichText::new(*label).size(15.0);
             let button = if index == 0 { egui::Button::new(text.color(color::BASE).strong()).fill(color::ACCENT) } else { egui::Button::new(text) };
-            if ui.add_enabled(*enabled, button.corner_radius(CornerRadius::same(8)).min_size(Vec2::new(110.0, 36.0))).clicked() {
+            let response = ui.add_enabled(*enabled, button.corner_radius(CornerRadius::same(8)).min_size(Vec2::new(110.0, 36.0)));
+            if index == 0 && ui.ctx().data_mut(|data| data.remove_temp::<bool>(egui::Id::new(FOCUS_MAIN))).is_some() {
+                response.request_focus();
+            }
+            if response.clicked() {
                 clicked = Some(index);
             }
         }
@@ -318,14 +424,13 @@ impl Setup {
         card(ui, |ui| {
             ui.label(RichText::new("Install to").strong());
             ui.horizontal(|ui| {
-                let field = egui::TextEdit::singleline(&mut self.dir).desired_width(ui.available_width() - 100.0).margin(Margin::symmetric(8, 7));
+                let field = egui::TextEdit::singleline(&mut self.dir)
+                    .id(egui::Id::new(DIR_FIELD))
+                    .desired_width(ui.available_width() - 100.0)
+                    .margin(Margin::symmetric(8, 7));
                 ui.add(field);
                 if ui.button("Change…").clicked() {
-                    if let Some(folder) = rfd::FileDialog::new().set_title("Where to install Zakuro").set_directory(&self.dir).pick_folder() {
-                        // a folder picked for it holds Zakuro in its own folder
-                        let named = folder.file_name().is_some_and(|name| name.eq_ignore_ascii_case("zakuro"));
-                        self.dir = if named { folder } else { folder.join("Zakuro") }.display().to_string();
-                    }
+                    self.pick_folder();
                 }
             });
             if self.updating {
@@ -451,5 +556,51 @@ impl Setup {
             Some(_) => true,
             None => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::{Pos2, Rect};
+    use pad::Press;
+
+    /// one frame of the window, after presses. whether it closes.
+    fn frame(ctx: &egui::Context, setup: &mut Setup, presses: &[Press]) -> bool {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 540.0))), ..Default::default() };
+        let mut close = false;
+        ctx.run_ui(input, |ui| close = setup.draw(ui, presses)).drop_without_applying_deltas();
+        close
+    }
+
+    #[test]
+    fn a_controller_works_the_uninstall_page() {
+        let ctx = egui::Context::default();
+        let mut setup = Setup::new(Mode::Uninstall, None);
+        frame(&ctx, &mut setup, &[]);
+        assert_eq!(ctx.memory(|memory| memory.focused()), None);
+        // the first press finds the main button
+        frame(&ctx, &mut setup, &[Press::Down]);
+        frame(&ctx, &mut setup, &[]);
+        let main = ctx.memory(|memory| memory.focused()).expect("the main button has the focus");
+        // up goes to the choices above, and A ticks the one there
+        frame(&ctx, &mut setup, &[Press::Up]);
+        frame(&ctx, &mut setup, &[]);
+        assert_ne!(ctx.memory(|memory| memory.focused()), Some(main));
+        frame(&ctx, &mut setup, &[Press::Accept]);
+        assert_eq!([setup.games, setup.saves, setup.settings].iter().filter(|&&ticked| ticked).count(), 1, "{} {} {}", setup.games, setup.saves, setup.settings);
+        assert_eq!(setup.page, Page::Choose);
+        // B closes it, uninstalling nothing
+        assert!(frame(&ctx, &mut setup, &[Press::Back]));
+        assert_eq!(setup.page, Page::Choose);
+    }
+
+    #[test]
+    fn b_while_installing_cancels_it() {
+        let ctx = egui::Context::default();
+        let mut setup = Setup::new(Mode::Install, None);
+        setup.page = Page::Working;
+        assert!(!frame(&ctx, &mut setup, &[Press::Back]));
+        assert!(setup.cancel.load(Ordering::Relaxed));
     }
 }
