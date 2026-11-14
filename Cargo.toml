@@ -8,6 +8,7 @@ members = [
     "crates/zakuro-core",
     "crates/zakuro",
 ]
+exclude = ["vendor/3dsrecomp"]
 
 [workspace.package]
 version = "0.3.1"

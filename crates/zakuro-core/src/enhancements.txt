@@ -21,10 +21,30 @@ D2000000 00000000
 = 0004000000055D00 Pokémon X (USA)
 60 FPS | rev0 | Reshiban, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 28C61A85 00000000
+No Outlines | rev0 | Reshiban's 3DS cheat collection, also in the CTRPF cheat database | Removes the black outlines drawn around characters and Pokémon in the overworld and in battle, which look heavy at high resolutions. | untested
+D3000000 00000000
+00361D34 00000000
+00361D38 00000000
+D2000000 00000000
+No Outlines | update 5.6 | Reshiban's 3DS cheat collection, also in the CTRPF cheat database | Removes the black outlines drawn around characters and Pokémon in the overworld and in battle, which look heavy at high resolutions. | untested
+D3000000 00000000
+00362ED8 00000000
+00362EDC 00000000
+D2000000 00000000
 
 = 0004000000055E00 Pokémon Y (USA)
 60 FPS | rev0 | Reshiban, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 28C61A85 00000000
+No Outlines | rev0 | Reshiban's 3DS cheat collection, also in the CTRPF cheat database | Removes the black outlines drawn around characters and Pokémon in the overworld and in battle, which look heavy at high resolutions. | untested
+D3000000 00000000
+00361D34 00000000
+00361D38 00000000
+D2000000 00000000
+No Outlines | update 5.6 | Reshiban's 3DS cheat collection, also in the CTRPF cheat database | Removes the black outlines drawn around characters and Pokémon in the overworld and in battle, which look heavy at high resolutions. | untested
+D3000000 00000000
+00362ED8 00000000
+00362EDC 00000000
+D2000000 00000000
 
 = 000400000008C300 Tomodachi Life (USA)
 60 FPS | rev2 | Hazerou, 60 FPS thread on GBAtemp | The game runs faster with it.
@@ -46,6 +66,11 @@ No Outlines | update 7.4 | Sharkive cheat database | Removes the black outlines 
 = 000400000011C500 Pokémon Alpha Sapphire (USA)
 60 FPS | rev3 | Reshiban, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
 28C650C1 00000000
+No Outlines | update 7.4 | Reshiban's 3DS cheat collection, also in the CTRPF cheat database | Removes the black outlines drawn around characters and Pokémon in the overworld and in battle, which look heavy at high resolutions. | untested
+D3000000 00000000
+0037A140 00000000
+0037A144 00000000
+D2000000 00000000
 
 = 0004000000125500 The Legend of Zelda: Majora's Mask 3D (USA)
 60 FPS | rev2 | NanashiFinal13, 60 FPS thread on GBAtemp | The whole game runs twice as fast with it.
