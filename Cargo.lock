@@ -4663,7 +4663,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "zakuro"
-version = "0.2.32"
+version = "0.3.0"
 dependencies = [
  "ab_glyph",
  "cpal",
@@ -4693,7 +4693,7 @@ dependencies = [
 
 [[package]]
 name = "zakuro-common"
-version = "0.2.32"
+version = "0.3.0"
 dependencies = [
  "bitflags 2.13.2",
  "log",
@@ -4702,7 +4702,7 @@ dependencies = [
 
 [[package]]
 name = "zakuro-core"
-version = "0.2.32"
+version = "0.3.0"
 dependencies = [
  "ab_glyph",
  "bitflags 2.13.2",
@@ -4726,7 +4726,7 @@ dependencies = [
 
 [[package]]
 name = "zakuro-cpu"
-version = "0.2.32"
+version = "0.3.0"
 dependencies = [
  "log",
  "serde",
@@ -4735,7 +4735,7 @@ dependencies = [
 
 [[package]]
 name = "zakuro-fs"
-version = "0.2.32"
+version = "0.3.0"
 dependencies = [
  "crc32fast",
  "log",
@@ -4746,7 +4746,7 @@ dependencies = [
 
 [[package]]
 name = "zakuro-gpu"
-version = "0.2.32"
+version = "0.3.0"
 dependencies = [
  "ash",
  "ash-window",
