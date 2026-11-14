@@ -10,6 +10,7 @@ const GAME_FILES: [&str; 4] = ["3ds", "cci", "cxi", "cia"];
 /// the icon's side, in pixels.
 pub const ICON_SIZE: usize = 48;
 
+#[derive(Default)]
 pub struct Game {
     pub path: PathBuf,
     pub name: String,
@@ -67,6 +68,8 @@ pub struct Library {
     rebuilt: Vec<u64>,
     /// set when the games changed and their icons need uploading.
     pub changed: bool,
+    /// the files of games removed, which are not listed though still there.
+    pub hidden: Vec<PathBuf>,
     /// where the games' mods folders are.
     data_dir: Option<PathBuf>,
 }
@@ -97,7 +100,8 @@ impl Library {
     pub fn poll(&mut self) {
         if let Some(receive) = &self.scanning {
             match receive.try_recv() {
-                Ok((games, children)) => {
+                Ok((mut games, children)) => {
+                    games.retain(|game| !self.hidden.contains(&game.path));
                     self.games = games;
                     self.children = children;
                     self.scanning = None;
@@ -261,7 +265,7 @@ fn folder_of(path: &Path) -> &Path {
 
 /// the update or DLC in the file at path, none when it holds neither, and
 /// why it can't be used when it can't.
-fn addon(path: &Path) -> Option<Result<Addon, String>> {
+pub fn addon(path: &Path) -> Option<Result<Addon, String>> {
     if !path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("cia")) {
         return None;
     }

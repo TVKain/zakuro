@@ -56,6 +56,8 @@ pub enum Action {
     CancelInstall,
     /// take a texture pack out of a game.
     RemovePack(InstalledPack),
+    /// takes the game of this id out of the library.
+    RemoveGame(u64),
     /// save the game's state to the slot chosen, or load it from there.
     SaveState,
     LoadState,
@@ -151,6 +153,7 @@ pub enum Item {
     OpenMods,
     Recompile,
     UseSystem,
+    RemoveGame,
     // the menu over a game
     Resume,
     Slot,
@@ -1107,6 +1110,10 @@ impl Menus {
                 self.toast(&format!("{} is recompiling. It can be played once that finishes.", game.name));
                 Vec::new()
             }
+            Some(_) if let Some(name) = crate::recompile::blocking_play(view.jobs, view.waiting) => {
+                self.toast(&format!("Games can be started once {name} finishes recompiling, which takes the whole processor."));
+                Vec::new()
+            }
             Some(game) if game.problem.is_none() => vec![Action::Play(game.path.clone())],
             Some(game) => {
                 self.message = Some(format!("{} can't be played. {}.", file_label(&game.path), game.problem.as_deref().unwrap_or("")));
@@ -1218,7 +1225,7 @@ impl Menus {
                 entries.push(Entry::Row(Row::new(Item::Rescan, "Look for games again", Value::More)));
                 let outdated = idle(view.library.games.iter().filter(|game| game.outdated).map(Game::wanted), view.jobs, view.waiting).len();
                 if outdated > 0 {
-                    entries.push(Entry::Row(Row::new(Item::RecompileOutdated, format!("Recompile {outdated} outdated games"), Value::More).note("About ten minutes each, playable meanwhile")));
+                    entries.push(Entry::Row(Row::new(Item::RecompileOutdated, format!("Recompile {outdated} outdated games"), Value::More).note("About ten minutes each, one after another. Games can't be started meanwhile")));
                 }
                 entries.push(Entry::Header("Home".into()));
                 entries.push(Entry::Row(setting(Item::Background, settings, scope)));
@@ -1239,6 +1246,13 @@ impl Menus {
                 entries.push(Entry::Header("Files".into()));
                 entries.push(Entry::Row(Row::new(Item::OpenMods, "Open the mods folder", Value::More).note("For romfs mods, code patches and loose textures")));
                 entries.push(Entry::Row(Row::new(Item::UseSystem, "Use system settings for everything", Value::More).enabled(settings.has_own(id)).danger()));
+                let busy = Busy::of(id, view.jobs, view.waiting).is_some();
+                let remove = Row::new(Item::RemoveGame, "Remove this game", Value::More).danger();
+                entries.push(Entry::Row(match (playing, busy) {
+                    (true, _) => remove.enabled(false).note("Not while it is running"),
+                    (_, true) => remove.enabled(false).note("Not while it is recompiling"),
+                    _ => remove.note("Takes it off Home. Its saves and mods stay"),
+                }));
             }
         }
         entries
@@ -1368,6 +1382,11 @@ impl Menus {
         // values change the same everywhere
         if let Item::Choice(index) = item {
             match self.select_popup.take() {
+                Some(SelectPopup { item: Item::RemoveGame, .. }) => {
+                    if let Some(id) = self.game_settings.as_ref().map(|(id, _)| *id).filter(|_| index == 0) {
+                        actions.push(Action::RemoveGame(id));
+                    }
+                }
                 Some(SelectPopup { item: Item::Pack(pack), .. }) => {
                     if let Some(pack) = self.packs.get(pack).filter(|_| index == 0) {
                         actions.push(Action::RemovePack(pack.clone()));
@@ -1476,6 +1495,18 @@ impl Menus {
                     } else if let Some(game) = view.library.games.iter().find(|game| game.program_id == id && game.problem.is_none()) {
                         actions.push(Action::Recompile(vec![game.wanted()]));
                     }
+                }
+            }
+            Item::RemoveGame => {
+                // removing deletes the copies in Zakuro's library, so it is asked first
+                if let Some((id, name)) = &self.game_settings {
+                    let library = store::library_dir(settings, view.data_dir);
+                    let kept = view.library.games.iter().find(|game| game.program_id == *id).is_some_and(|game| library.is_some_and(|library| game.path.starts_with(library)));
+                    let title = match kept {
+                        true => format!("Delete {name} from Zakuro's library? Its saves and mods are kept."),
+                        false => format!("Remove {name} from Home? Its file stays in your folder, and adding it again brings it back. Saves and mods are kept."),
+                    };
+                    self.select_popup = Some(SelectPopup { item, scope, title, options: vec!["Remove".to_owned(), "Keep".to_owned()], selected: 1 });
                 }
             }
             Item::UseSystem => {
@@ -1813,8 +1844,11 @@ impl Highlight {
         let Some(rect) = target else { return };
         let ctx = ui.ctx();
         let id = ui.id().with("highlight");
-        let top = ctx.animate_value_with_time(id.with("top"), rect.top() - self.origin, GLIDE);
-        let height = ctx.animate_value_with_time(id.with("height"), rect.height(), GLIDE);
+        // under the pointer it is at the row at once: gliding after a moving
+        // pointer left it trailing over the rows between, which flickered
+        let glide = if mode == InputMode::Pointer { 0.0 } else { GLIDE };
+        let top = ctx.animate_value_with_time(id.with("top"), rect.top() - self.origin, glide);
+        let height = ctx.animate_value_with_time(id.with("height"), rect.height(), glide);
         let inner = Rect::from_min_size(Pos2::new(rect.left(), self.origin + top), Vec2::new(rect.width(), height)).shrink2(Vec2::splat(2.0));
         let mut shapes = vec![egui::Shape::rect_filled(inner, CornerRadius::same(10), color::RAISED)];
         if mode == InputMode::Directional {
@@ -1834,7 +1868,7 @@ fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMo
     let painter = ui.painter();
     let hovered = ui.rect_contains_pointer(rect) && mode == InputMode::Pointer && row.enabled && ui.is_enabled();
     if hovered && !selected {
-        painter.rect_filled(rect.shrink2(Vec2::new(2.0, 2.0)), CornerRadius::same(10), color::SURFACE);
+        painter.rect_filled(rect.shrink2(Vec2::new(2.0, 2.0)), CornerRadius::same(10), color::RAISED);
     }
     if !selected && !hovered {
         painter.line_segment([Pos2::new(rect.left() + 14.0, rect.bottom()), Pos2::new(rect.right() - 14.0, rect.bottom())], Stroke::new(1.0, color::LINE));
@@ -2162,8 +2196,12 @@ impl Menus {
     fn popup(&mut self, ctx: &egui::Context) {
         let Some(popup) = self.select_popup.clone() else { return };
         let screen = ctx.content_rect();
-        let height = (popup.options.len() as f32 * 48.0 + 96.0).min(screen.height() - 40.0);
-        let rect = Rect::from_center_size(screen.center(), Vec2::new(440.0f32.min(screen.width() - 24.0), height));
+        let width = 440.0f32.min(screen.width() - 24.0);
+        // the title wraps, a long name, such as a texture pack's folder, with it
+        let title = ctx.fonts_mut(|fonts| fonts.layout(popup.title.clone(), strong(18.0), color::TEXT, width - 48.0));
+        let head = title.size().y + 38.0;
+        let height = (popup.options.len() as f32 * 48.0 + head + 36.0).min(screen.height() - 40.0);
+        let rect = Rect::from_center_size(screen.center(), Vec2::new(width, height));
         let mode = self.mode;
         let mut chosen = None;
         let mut closed = false;
@@ -2183,8 +2221,8 @@ impl Menus {
                 ui.painter().rect_filled(cover, 0.0, Color32::from_black_alpha(120));
                 ui.painter().rect_filled(rect, CornerRadius::same(16), color::SURFACE);
                 ui.painter().rect_stroke(rect, CornerRadius::same(16), Stroke::new(1.0, color::LINE), StrokeKind::Inside);
-                ui.painter().text(rect.left_top() + Vec2::new(24.0, 20.0), Align2::LEFT_TOP, &popup.title, strong(18.0), color::TEXT);
-                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(rect.min + Vec2::new(10.0, 60.0), rect.max - Vec2::new(10.0, 12.0))));
+                ui.painter().galley(rect.left_top() + Vec2::new(24.0, 20.0), title.clone(), color::TEXT);
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(rect.min + Vec2::new(10.0, head), rect.max - Vec2::new(10.0, 12.0))));
                 let time = child.ctx().input(|input| input.time);
                 egui::ScrollArea::vertical().id_salt("popup").auto_shrink(false).show(&mut child, |ui| {
                     let highlight = Highlight::under(ui);
@@ -2746,7 +2784,7 @@ impl Menus {
         if directional && ui.is_enabled() {
             let foot = Rect::from_min_max(Pos2::new(screen.left(), screen.bottom() - 48.0), screen.max);
             let list: Vec<(Nav, &str)> = match (self.home_focus, library.games.get(self.selected_game)) {
-                (HomeFocus::Games, Some(game)) if Busy::of(game.program_id, view.jobs, view.waiting).is_some() => {
+                (HomeFocus::Games, Some(_)) if crate::recompile::blocking_play(view.jobs, view.waiting).is_some() => {
                     vec![(Nav::Y, "Options"), (Nav::Start, "Settings")]
                 }
                 (HomeFocus::Games, Some(game)) if game.problem.is_none() => vec![(Nav::Accept, "Start"), (Nav::Y, "Options"), (Nav::Start, "Settings")],
@@ -3243,6 +3281,34 @@ mod tests {
         menus.navigate(Nav::Right, &mut settings, &v);
         menus.navigate(Nav::Accept, &mut settings, &v);
         assert!(menus.settings_open);
+    }
+
+    /// a game is removed only once the player says so, and never while it
+    /// runs; while any game recompiles, none starts.
+    #[test]
+    fn removing_a_game_is_asked_and_no_game_starts_during_a_recompile() {
+        let mut settings = Settings::default();
+        let mut library = Library::default();
+        for (id, path) in [(7, "a.3ds"), (8, "b.3ds")] {
+            library.games.push(Game { program_id: id, path: PathBuf::from(path), name: format!("Game {id}"), ..Game::default() });
+        }
+        let mut menus = Menus { game_settings: Some((7, "Game 7".into())), ..Menus::default() };
+        let v = view(&library);
+        assert!(menus.handle(Item::RemoveGame, Op::Activate, &mut settings, &v).is_empty());
+        assert_eq!(menus.select_popup.as_ref().map(|popup| popup.selected), Some(1), "Keep is selected");
+        assert!(menus.navigate(Nav::Accept, &mut settings, &v).is_empty());
+        menus.handle(Item::RemoveGame, Op::Activate, &mut settings, &v);
+        menus.navigate(Nav::Up, &mut settings, &v);
+        assert_eq!(menus.navigate(Nav::Accept, &mut settings, &v), [Action::RemoveGame(7)]);
+
+        // game 8 recompiling keeps game 7 from starting too
+        let jobs = [Job::at_stage(8, Stage::Compiling { done: 1, total: 10 })];
+        let busy = View { jobs: &jobs, ..view(&library) };
+        let mut menus = Menus::default();
+        assert!(menus.tile(0, &busy).is_empty());
+        assert_eq!(menus.tile(0, &v), [Action::Play(PathBuf::from("a.3ds"))]);
+        let waiting = [Wanted { program_id: 8, path: PathBuf::from("b.3ds") }];
+        assert!(menus.tile(0, &View { waiting: &waiting, ..view(&library) }).is_empty());
     }
 
     #[test]

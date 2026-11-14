@@ -254,6 +254,57 @@ fn file_name_full(path: &Path) -> String {
     path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
+/// a game's files in the folders the library lists: the game, and every
+/// update, DLC and Download Play child of it, not only the ones in use.
+pub fn game_files(game: &library::Game, sources: &[Source]) -> Vec<PathBuf> {
+    let mut files = vec![game.path.clone()];
+    let mut found = Vec::new();
+    for source in sources {
+        library::game_files(&source.folder, source.depth, &mut found);
+    }
+    for path in found {
+        let ours = matches!(library::addon(&path), Some(Ok(addon)) if addon.title_id & 0xFFFF_FFFF == game.program_id & 0xFFFF_FFFF);
+        if ours && !files.contains(&path) {
+            files.push(path);
+        }
+    }
+    files
+}
+
+/// what removing a game did.
+#[derive(Debug, Default, PartialEq)]
+pub struct Removed {
+    /// files deleted from Zakuro's library.
+    pub deleted: usize,
+    /// files elsewhere, which stay where they are, no longer listed.
+    pub hidden: Vec<PathBuf>,
+}
+
+/// takes a game out of the library: the copies Zakuro keeps in library are
+/// deleted, with the game's folder there once it is empty, and files kept
+/// anywhere else are left alone, to be hidden. saves and mods stay.
+pub fn remove_game(files: &[PathBuf], library: Option<&Path>) -> std::io::Result<Removed> {
+    let mut removed = Removed::default();
+    for file in files {
+        match library.filter(|library| file.starts_with(library)) {
+            Some(library) => {
+                std::fs::remove_file(file)?;
+                removed.deleted += 1;
+                // a folder a game was unzipped into goes with its last file
+                let mut folder = file.parent();
+                while let Some(dir) = folder.filter(|dir| *dir != library && dir.starts_with(library)) {
+                    if std::fs::remove_dir(dir).is_err() {
+                        break;
+                    }
+                    folder = dir.parent();
+                }
+            }
+            None => removed.hidden.push(file.clone()),
+        }
+    }
+    Ok(removed)
+}
+
 /// takes a texture pack out of a game, the link to it alone when it is
 /// one, the pack staying where it was.
 pub fn remove_pack(pack: &InstalledPack) -> std::io::Result<()> {
@@ -656,6 +707,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// a game's copies in the library go, with the folder they were in once
+    /// empty, and files elsewhere stay.
+    #[test]
+    fn removing_a_game_deletes_only_the_library_copies() {
+        let dir = temp("remove");
+        let library = dir.join("library");
+        let own = library.join("Some game").join("game.3ds");
+        let update = library.join("update.cia");
+        let elsewhere = dir.join("mine").join("dlc.cia");
+        for file in [&own, &update, &elsewhere] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, b"x").unwrap();
+        }
+        let removed = remove_game(&[own.clone(), update.clone(), elsewhere.clone()], Some(&library)).unwrap();
+        assert_eq!(removed, Removed { deleted: 2, hidden: vec![elsewhere.clone()] });
+        assert!(!own.exists() && !update.exists() && !library.join("Some game").exists());
+        assert!(library.exists() && elsewhere.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

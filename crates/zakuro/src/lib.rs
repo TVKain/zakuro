@@ -744,8 +744,39 @@ impl App {
         }
     }
 
+    /// takes a game off Home: Zakuro's own copies of its files are deleted,
+    /// any kept elsewhere hidden. its saves and mods stay.
+    fn remove_game(&mut self, program_id: u64) {
+        let running = self.program_id() == Some(program_id);
+        let busy = self.jobs.iter().any(|job| job.program_id == program_id && !job.stage().finished());
+        let Some(game) = self.library.games.iter().find(|game| game.program_id == program_id && game.problem.is_none()) else { return };
+        if running || busy {
+            return;
+        }
+        let name = game.name.clone();
+        let sources = store::sources(&self.settings, self.data_dir.as_deref());
+        let files = store::game_files(game, &sources);
+        let library = store::library_dir(&self.settings, self.data_dir.as_deref());
+        self.waiting.retain(|waiting| waiting.program_id != program_id);
+        match store::remove_game(&files, library.as_deref()) {
+            Ok(removed) => {
+                for file in removed.hidden {
+                    if !self.settings.removed.contains(&file) {
+                        self.settings.removed.push(file);
+                    }
+                }
+                self.settings.save();
+                self.menus.close_modals();
+                self.menus.toast(&format!("Removed {name}"));
+            }
+            Err(error) => self.menus.message = Some(format!("{name} couldn't be removed: {error}")),
+        }
+        self.rescan();
+    }
+
     /// looks through the library's folders again.
     fn rescan(&mut self) {
+        self.library.hidden = self.settings.removed.clone();
         let sources = store::sources(&self.settings, self.data_dir.as_deref());
         if let Some(own) = sources.first().filter(|_| self.settings.library.is_none()) {
             // Zakuro's own library is there from the start, to add to
@@ -1452,6 +1483,9 @@ impl App {
 
     fn act(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         match action {
+            Action::Play(_) if let Some(name) = recompile::blocking_play(&self.jobs, &self.waiting) => {
+                self.menus.message = Some(format!("Games can be started once {name} finishes recompiling, which takes the whole processor."));
+            }
             Action::Play(path) => {
                 if let Err(error) = self.play(&path) {
                     self.menus.message = Some(error);
@@ -1553,17 +1587,35 @@ impl App {
                     self.rescan();
                 }
             }
-            Action::Install(choice) => match (&self.data_dir, store::library_dir(&self.settings, self.data_dir.as_deref())) {
-                (Some(data_dir), Some(library)) => {
-                    let (steps, bytes) = store::plan(&choice, &library, data_dir);
-                    if steps.is_empty() {
-                        self.menus.toast("Nothing new to add");
-                    } else {
-                        self.install = Some(store::Install::start(steps, bytes));
-                    }
+            Action::Install(mut choice) => {
+                // a game taken off Home whose files are added again comes back
+                // from where they are, not copied
+                let back: Vec<PathBuf> = choice
+                    .found
+                    .iter()
+                    .map(|(found, _)| found.path().to_path_buf())
+                    .filter(|path| self.settings.removed.contains(path))
+                    .collect();
+                if !back.is_empty() {
+                    self.settings.removed.retain(|path| !back.contains(path));
+                    self.settings.save();
+                    choice.found.retain(|(found, _)| !back.iter().any(|path| path == found.path()));
+                    self.rescan();
                 }
-                _ => self.menus.message = Some("Zakuro has no data folder to keep games in.".into()),
-            },
+                match (&self.data_dir, store::library_dir(&self.settings, self.data_dir.as_deref())) {
+                    (Some(data_dir), Some(library)) => {
+                        let (steps, bytes) = store::plan(&choice, &library, data_dir);
+                        if !steps.is_empty() {
+                            self.install = Some(store::Install::start(steps, bytes));
+                        } else if back.is_empty() {
+                            self.menus.toast("Nothing new to add");
+                        } else {
+                            self.menus.toast("Back on Home");
+                        }
+                    }
+                    _ => self.menus.message = Some("Zakuro has no data folder to keep games in.".into()),
+                }
+            }
             Action::CancelInstall => {
                 if let Some(install) = &self.install {
                     install.cancel();
@@ -1580,6 +1632,7 @@ impl App {
                 self.menus.refresh_packs(self.data_dir.as_deref());
                 self.rescan();
             }
+            Action::RemoveGame(program_id) => self.remove_game(program_id),
             Action::Resume => {
                 self.menus.menu_open = false;
                 self.release_input();

@@ -638,6 +638,10 @@ pub struct Settings {
     /// where Zakuro keeps the games added to it, its data folder's library
     /// folder when none is set.
     pub library: Option<PathBuf>,
+    /// the files of games removed that are kept outside Zakuro's library,
+    /// which stay where they are but are no longer listed.
+    #[serde(deserialize_with = "or_default")]
+    pub removed: Vec<PathBuf>,
     /// the console's system language, which titles pick their localised
     /// text and files by.
     #[serde(deserialize_with = "or_default")]
@@ -722,6 +726,7 @@ impl Default for Settings {
         Settings {
             games: None,
             library: None,
+            removed: Vec::new(),
             language: Language::English,
             renderer: Renderer::Vulkan,
             hardware_rasterizer: true,

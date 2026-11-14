@@ -265,6 +265,16 @@ fn is_module(path: &str) -> bool {
     path.ends_with(".cro") || path == "static.crs"
 }
 
+/// the name of the game recompiling while one is, or that a game waits to.
+/// no game starts then: recompiling takes every core the processor has.
+pub fn blocking_play<'a>(jobs: &'a [Job], waiting: &[Wanted]) -> Option<&'a str> {
+    match jobs.iter().find(|job| !job.stage().finished()) {
+        Some(job) => Some(&job.name),
+        None if !waiting.is_empty() => Some("a game"),
+        None => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
