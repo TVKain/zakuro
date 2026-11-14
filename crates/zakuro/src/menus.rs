@@ -24,7 +24,6 @@ use crate::nav::{InputMode, Nav};
 use crate::recompile::{Job, Stage, Wanted};
 use crate::settings::{
     game_key, CameraSource, Filter, FpsLimit, Keys, Language, MicrophoneSource, Orientation, PadButtons, Renderer, Screens, Settings, Stereo3d, TopShape,
-    WindowMode,
 };
 use crate::store::{self, Found, InstalledPack, PackPlace};
 
@@ -39,8 +38,6 @@ pub enum Action {
     CancelRecompile(u64),
     /// leave only the game recompiling now, none of those waiting.
     CancelWaiting,
-    /// pick an older folder of games to list too.
-    ChooseFolder,
     /// pick where the library keeps its games.
     ChooseLibrary,
     ChooseBackground,
@@ -115,9 +112,7 @@ pub enum Item {
     Orientation,
     IntegerScale,
     TopShape,
-    WindowMode,
     Fullscreen,
-    WindowScale,
     ShowFps,
     // 3D
     Stereo,
@@ -135,7 +130,6 @@ pub enum Item {
     // library
     AddContent,
     LibraryLocation,
-    OldFolder,
     Rescan,
     Background,
     BackgroundOpacity,
@@ -154,6 +148,8 @@ pub enum Item {
     Recompile,
     UseSystem,
     RemoveGame,
+    /// answers a recompile Zakuro asks about.
+    Ask,
     // the menu over a game
     Resume,
     Slot,
@@ -293,6 +289,60 @@ pub struct SelectPopup {
     pub title: String,
     pub options: Vec<String>,
     pub selected: usize,
+}
+
+/// a recompile Zakuro asks the player about.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Ask {
+    /// before playing a game whose code isn't recompiled, or is outdated.
+    Play { game: Wanted, name: String },
+    /// games just added, or given an update or DLC.
+    Added(Vec<(Wanted, String)>),
+    /// recompiling picked in a game's options.
+    Explain { game: Wanted, name: String },
+}
+
+/// what recompiling does, for the player deciding on it.
+const RECOMPILE_EXPLAINED: &str = "Recompiling turns the game's code into native code for this computer, so it runs faster and smoother. It takes about ten minutes and the whole processor, so no game can be started until it finishes, and it is done once per game.";
+
+impl Ask {
+    /// the question and its answers, the first one recompiling. another
+    /// recompile under way or waiting goes first.
+    pub fn popup(&self, waiting_for: Option<&str>) -> (String, Vec<String>) {
+        let queued = waiting_for.map_or(String::new(), |other| format!(" It starts once {other} finishes."));
+        let recompile = if waiting_for.is_some() { "Recompile after that" } else { "Recompile now" };
+        match self {
+            Ask::Play { name, .. } => (
+                format!("{name} isn't recompiled, or its code changed since it was. {RECOMPILE_EXPLAINED}{queued}"),
+                vec![recompile.to_owned(), "Play without".to_owned(), "Don't ask again for this game".to_owned()],
+            ),
+            Ask::Added(games) => {
+                let names = match games.as_slice() {
+                    [(_, name)] => name.clone(),
+                    games => format!("the {} games", games.len()),
+                };
+                (format!("Recompile {names}? New games, updates and DLC need it to run their best. {RECOMPILE_EXPLAINED}{queued}"), vec![recompile.to_owned(), "Not now".to_owned()])
+            }
+            Ask::Explain { name, .. } => (format!("Recompile {name}? {RECOMPILE_EXPLAINED}{queued}"), vec![recompile.to_owned(), "Not now".to_owned()]),
+        }
+    }
+
+    /// what the answer at index does.
+    fn answer(self, index: usize, settings: &mut Settings) -> Vec<Action> {
+        match (self, index) {
+            (Ask::Play { game, .. } | Ask::Explain { game, .. }, 0) => vec![Action::Recompile(vec![game])],
+            (Ask::Added(games), 0) => vec![Action::Recompile(games.into_iter().map(|(game, _)| game).collect())],
+            (Ask::Play { game, .. }, 1) => vec![Action::Play(game.path)],
+            (Ask::Play { game, .. }, 2) => {
+                let key = game_key(game.program_id);
+                if !settings.dont_ask_recompile.contains(&key) {
+                    settings.dont_ask_recompile.push(key);
+                }
+                vec![Action::Play(game.path)]
+            }
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// what was found to add, waiting for the player to say what goes where.
@@ -469,6 +519,8 @@ pub struct Menus {
 
     /// a list to pick from.
     pub select_popup: Option<SelectPopup>,
+    /// the recompile the select popup asks about.
+    pub ask: Option<Ask>,
     /// what was found to add.
     pub import: Option<ImportView>,
     import_row: usize,
@@ -608,7 +660,6 @@ fn choices(item: Item, settings: &Settings) -> Option<(Vec<String>, usize)> {
         Item::Layout => names(&Screens::ALL, settings.layout, Screens::name),
         Item::Orientation => names(&Orientation::ALL, settings.orientation, Orientation::name),
         Item::TopShape => names(&TopShape::ALL, settings.top_shape, TopShape::name),
-        Item::WindowMode => names(&WindowMode::ALL, settings.window_mode, WindowMode::name),
         Item::Stereo => names(&Stereo3d::ALL, settings.stereo, Stereo3d::name),
         Item::Microphone => names(&MicrophoneSource::ALL, settings.microphone, MicrophoneSource::name),
         Item::Language => names(&Language::ALL, settings.language, Language::name),
@@ -629,7 +680,6 @@ fn choose(item: Item, index: usize, settings: &mut Settings, scope: Scope) {
         Item::TopShape => put!(settings, scope, top_shape, TopShape::ALL[index.min(TopShape::ALL.len() - 1)]),
         Item::Stereo => put!(settings, scope, stereo, Stereo3d::ALL[index.min(Stereo3d::ALL.len() - 1)]),
         Item::Language => put!(settings, scope, language, Language::ALL[index.min(Language::ALL.len() - 1)]),
-        Item::WindowMode => settings.window_mode = WindowMode::ALL[index.min(WindowMode::ALL.len() - 1)],
         Item::Microphone => settings.microphone = MicrophoneSource::ALL[index.min(MicrophoneSource::ALL.len() - 1)],
         Item::Camera => settings.camera = CameraSource::ALL[index.min(CameraSource::ALL.len() - 1)],
         _ => {}
@@ -672,7 +722,6 @@ fn step(item: Item, delta: i32, settings: &mut Settings, scope: Scope) {
     match item {
         Item::Depth => put!(settings, scope, depth_3d, (shown.depth_3d as i32 + delta * 5).clamp(0, 100) as u32),
         Item::Volume => settings.volume = ((settings.volume * 20.0).round() + delta as f32).clamp(0.0, 20.0) / 20.0,
-        Item::WindowScale => settings.scale = (settings.scale as i32 + delta).clamp(1, 6) as u32,
         Item::BackgroundOpacity => settings.background_opacity = ((settings.background_opacity * 20.0).round() + delta as f32).clamp(0.0, 20.0) / 20.0,
         _ if matches!(value_kind(item), Kind::Switch) => toggle(item, settings, scope),
         _ => {}
@@ -695,7 +744,6 @@ fn value_kind(item: Item) -> Kind {
         | Item::Layout
         | Item::Orientation
         | Item::TopShape
-        | Item::WindowMode
         | Item::Stereo
         | Item::Microphone
         | Item::Language
@@ -703,7 +751,7 @@ fn value_kind(item: Item) -> Kind {
         Item::Rasterizer | Item::TexturePacks | Item::SmoothTextures | Item::Interpolation | Item::IntegerScale | Item::Recompiled | Item::SwapEyes | Item::ShowFps | Item::Mute => {
             Kind::Switch
         }
-        Item::Depth | Item::Volume | Item::WindowScale | Item::BackgroundOpacity | Item::Slot => Kind::Range,
+        Item::Depth | Item::Volume | Item::BackgroundOpacity | Item::Slot => Kind::Range,
         _ => Kind::Other,
     }
 }
@@ -729,9 +777,7 @@ fn setting(item: Item, settings: &Settings, scope: Scope) -> Row {
         Item::Orientation => ("Rotation", Value::Text(shown.orientation.name().into()), None),
         Item::IntegerScale => ("Whole-number scaling", Value::On(shown.integer_scale), None),
         Item::TopShape => ("Top screen shape", Value::Text(shown.top_shape.name().into()), Some("Wider shapes need a widescreen code for the game")),
-        Item::WindowMode => ("Window", Value::Text(shown.window_mode.name().into()), None),
-        Item::Fullscreen => ("Toggle fullscreen", Value::Text("F11".into()), None),
-        Item::WindowScale => ("Window size", Value::Range(format!("{}x", shown.scale)), None),
+        Item::Fullscreen => ("Fullscreen", Value::On(shown.fullscreen), Some("F11 switches it too. Zakuro opens maximized")),
         Item::ShowFps => ("Show frame rate", Value::On(shown.show_fps), None),
         Item::Stereo => ("3D mode", Value::Text(shown.stereo.name().into()), None),
         Item::Depth => ("3D depth", Value::Range(format!("{}%", shown.depth_3d)), None),
@@ -897,7 +943,7 @@ impl Menus {
             actions.extend(self.handle(item, op, settings, view));
         }
         if let Some(index) = self.clicked_tile.take() {
-            actions.extend(self.tile(index, view));
+            actions.extend(self.tile(index, settings, view));
         }
         if let Some(dock) = self.clicked_dock.take() {
             actions.extend(self.dock_action(dock, settings));
@@ -1087,7 +1133,7 @@ impl Menus {
             (HomeFocus::Games, Nav::PrevTab) => self.selected_game = self.selected_game.saturating_sub(5),
             (HomeFocus::Games, Nav::NextTab) => self.selected_game = (self.selected_game + 5).min(tiles - 1),
             (HomeFocus::Games, Nav::Down) => self.home_focus = HomeFocus::Dock,
-            (HomeFocus::Games, Nav::Accept) => return self.tile(self.selected_game, view),
+            (HomeFocus::Games, Nav::Accept) => return self.tile(self.selected_game, settings, view),
             (HomeFocus::Games, Nav::Y) => {
                 if let Some(game) = view.library.games.get(self.selected_game).filter(|game| game.problem.is_none()) {
                     self.open_game_settings(game.program_id, game.name.clone(), view.data_dir);
@@ -1104,7 +1150,7 @@ impl Menus {
     }
 
     /// what choosing a tile on Home does: plays its game, or adds games.
-    fn tile(&mut self, index: usize, view: &View) -> Vec<Action> {
+    fn tile(&mut self, index: usize, settings: &Settings, view: &View) -> Vec<Action> {
         match view.library.games.get(index) {
             Some(game) if Busy::of(game.program_id, view.jobs, view.waiting).is_some() => {
                 self.toast(&format!("{} is recompiling. It can be played once that finishes.", game.name));
@@ -1112,6 +1158,10 @@ impl Menus {
             }
             Some(_) if let Some(name) = crate::recompile::blocking_play(view.jobs, view.waiting) => {
                 self.toast(&format!("Games can be started once {name} finishes recompiling, which takes the whole processor."));
+                Vec::new()
+            }
+            Some(game) if game.problem.is_none() && asks_to_recompile(game, settings) => {
+                self.open_ask(Ask::Play { game: game.wanted(), name: game.name.clone() }, view.jobs, view.waiting);
                 Vec::new()
             }
             Some(game) if game.problem.is_none() => vec![Action::Play(game.path.clone())],
@@ -1136,6 +1186,13 @@ impl Menus {
     /// the sections of the page open.
     fn sections(&self) -> &'static [Section] {
         if self.game_settings.is_some() { &Section::GAME } else { &Section::SYSTEM }
+    }
+
+    /// asks the player about a recompile, saying when another one goes first.
+    pub fn open_ask(&mut self, ask: Ask, jobs: &[Job], waiting: &[Wanted]) {
+        let (title, options) = ask.popup(crate::recompile::blocking_play(jobs, waiting));
+        self.select_popup = Some(SelectPopup { item: Item::Ask, scope: self.scope(), title, options, selected: 0 });
+        self.ask = Some(ask);
     }
 
     fn scope(&self) -> Scope {
@@ -1166,7 +1223,7 @@ impl Menus {
                     add(item);
                 }
                 if !game {
-                    for item in [Item::WindowMode, Item::Fullscreen, Item::WindowScale, Item::ShowFps] {
+                    for item in [Item::Fullscreen, Item::ShowFps] {
                         add(item);
                     }
                 }
@@ -1217,11 +1274,6 @@ impl Menus {
                 entries.push(Entry::Row(Row::new(Item::AddContent, "Add games and content", Value::More).note("Games, updates, DLC, texture packs and cheat files")));
                 let library = store::library_dir(settings, view.data_dir).map_or("Not set".to_owned(), |path| path.display().to_string());
                 entries.push(Entry::Row(Row::new(Item::LibraryLocation, "Library location", Value::Text(short_path(&library))).note("Where added games are kept")));
-                if let Some(old) = &settings.games {
-                    entries.push(Entry::Row(
-                        Row::new(Item::OldFolder, "Also showing games from", Value::Text(short_path(&old.display().to_string()))).note("Select to stop showing this folder"),
-                    ));
-                }
                 entries.push(Entry::Row(Row::new(Item::Rescan, "Look for games again", Value::More)));
                 let outdated = idle(view.library.games.iter().filter(|game| game.outdated).map(Game::wanted), view.jobs, view.waiting).len();
                 if outdated > 0 {
@@ -1382,6 +1434,11 @@ impl Menus {
         // values change the same everywhere
         if let Item::Choice(index) = item {
             match self.select_popup.take() {
+                Some(SelectPopup { item: Item::Ask, .. }) => {
+                    if let Some(ask) = self.ask.take() {
+                        actions.extend(ask.answer(index, settings));
+                    }
+                }
                 Some(SelectPopup { item: Item::RemoveGame, .. }) => {
                     if let Some(id) = self.game_settings.as_ref().map(|(id, _)| *id).filter(|_| index == 0) {
                         actions.push(Action::RemoveGame(id));
@@ -1421,7 +1478,7 @@ impl Menus {
         }
         match item {
             Item::Fullscreen => actions.push(Action::Fullscreen),
-            Item::WindowScale | Item::Volume | Item::Depth | Item::BackgroundOpacity => {
+            Item::Volume | Item::Depth | Item::BackgroundOpacity => {
                 if op == Op::Activate {
                     step(item, 1, settings, scope);
                 }
@@ -1444,10 +1501,6 @@ impl Menus {
             }
             Item::AddContent => actions.push(Action::AddContent(None)),
             Item::LibraryLocation => actions.push(Action::ChooseLibrary),
-            Item::OldFolder => {
-                settings.games = None;
-                actions.push(Action::Rescan);
-            }
             Item::Rescan => actions.push(Action::Rescan),
             Item::RecompileOutdated => {
                 let outdated = idle(view.library.games.iter().filter(|game| game.outdated).map(Game::wanted), view.jobs, view.waiting);
@@ -1493,20 +1546,15 @@ impl Menus {
                     if busy {
                         actions.push(Action::CancelRecompile(id));
                     } else if let Some(game) = view.library.games.iter().find(|game| game.program_id == id && game.problem.is_none()) {
-                        actions.push(Action::Recompile(vec![game.wanted()]));
+                        self.open_ask(Ask::Explain { game: game.wanted(), name: game.name.clone() }, view.jobs, view.waiting);
                     }
                 }
             }
             Item::RemoveGame => {
                 // removing deletes the copies in Zakuro's library, so it is asked first
-                if let Some((id, name)) = &self.game_settings {
-                    let library = store::library_dir(settings, view.data_dir);
-                    let kept = view.library.games.iter().find(|game| game.program_id == *id).is_some_and(|game| library.is_some_and(|library| game.path.starts_with(library)));
-                    let title = match kept {
-                        true => format!("Delete {name} from Zakuro's library? Its saves and mods are kept."),
-                        false => format!("Remove {name} from Home? Its file stays in your folder, and adding it again brings it back. Saves and mods are kept."),
-                    };
-                    self.select_popup = Some(SelectPopup { item, scope, title, options: vec!["Remove".to_owned(), "Keep".to_owned()], selected: 1 });
+                if let Some((_, name)) = &self.game_settings {
+                    let title = format!("Delete {name}, with its update and DLC, from Zakuro? Its saves and mods are kept.");
+                    self.select_popup = Some(SelectPopup { item, scope, title, options: vec!["Delete".to_owned(), "Keep".to_owned()], selected: 1 });
                 }
             }
             Item::UseSystem => {
@@ -1635,6 +1683,13 @@ fn import_summary(import: &ImportView, data_dir: Option<&Path>, library: &Librar
     (count, if bytes > 0 { format!("{} to copy", store::size_name(bytes)) } else { String::new() })
 }
 
+
+/// whether starting game asks about recompiling it first: its code isn't
+/// recompiled or is outdated, recompiled code is in use, and the player
+/// didn't say to stop asking.
+pub fn asks_to_recompile(game: &Game, settings: &Settings) -> bool {
+    settings.recompiled && (!game.recompiled || game.outdated) && !settings.dont_ask_recompile.contains(&game_key(game.program_id))
+}
 /// the row that recompiles a game, with how that is going.
 fn recompile_row(id: u64, view: &View) -> Row {
     let game = view.library.games.iter().find(|game| game.program_id == id);
@@ -3305,10 +3360,43 @@ mod tests {
         let jobs = [Job::at_stage(8, Stage::Compiling { done: 1, total: 10 })];
         let busy = View { jobs: &jobs, ..view(&library) };
         let mut menus = Menus::default();
-        assert!(menus.tile(0, &busy).is_empty());
-        assert_eq!(menus.tile(0, &v), [Action::Play(PathBuf::from("a.3ds"))]);
+        let played = Settings { recompiled: false, ..Settings::default() };
+        assert!(menus.tile(0, &played, &busy).is_empty());
+        assert_eq!(menus.tile(0, &played, &v), [Action::Play(PathBuf::from("a.3ds"))]);
         let waiting = [Wanted { program_id: 8, path: PathBuf::from("b.3ds") }];
-        assert!(menus.tile(0, &View { waiting: &waiting, ..view(&library) }).is_empty());
+        assert!(menus.tile(0, &played, &View { waiting: &waiting, ..view(&library) }).is_empty());
+    }
+
+    /// a game not recompiled asks before it starts, with recompiling first,
+    /// and stops asking once told to; another recompile goes first.
+    #[test]
+    fn starting_a_game_not_recompiled_asks_about_recompiling() {
+        let mut settings = Settings { recompiled: true, ..Settings::default() };
+        let mut library = Library::default();
+        library.games.push(Game { program_id: 7, path: PathBuf::from("a.3ds"), name: "Game 7".into(), ..Game::default() });
+        library.games.push(Game { program_id: 8, path: PathBuf::from("b.3ds"), name: "Game 8".into(), recompiled: true, ..Game::default() });
+        let v = view(&library);
+        let mut menus = Menus::default();
+        assert_eq!(menus.tile(1, &settings, &v), [Action::Play(PathBuf::from("b.3ds"))], "recompiled games just start");
+        assert!(menus.tile(0, &settings, &v).is_empty());
+        let popup = menus.select_popup.clone().expect("it asks");
+        assert_eq!(popup.options[0], "Recompile now");
+        assert_eq!(menus.navigate(Nav::Accept, &mut settings, &v), [Action::Recompile(vec![library.games[0].wanted()])]);
+
+        menus.tile(0, &settings, &v);
+        menus.navigate(Nav::Down, &mut settings, &v);
+        menus.navigate(Nav::Down, &mut settings, &v);
+        assert_eq!(menus.navigate(Nav::Accept, &mut settings, &v), [Action::Play(PathBuf::from("a.3ds"))]);
+        assert_eq!(menus.tile(0, &settings, &v), [Action::Play(PathBuf::from("a.3ds"))], "not asked again");
+
+        // from the game's options it explains, and waits its turn
+        let jobs = [Job::at_stage(8, Stage::Compiling { done: 1, total: 10 })];
+        let busy = View { jobs: &jobs, ..view(&library) };
+        let mut menus = Menus { game_settings: Some((7, "Game 7".into())), ..Menus::default() };
+        assert!(menus.handle(Item::Recompile, Op::Activate, &mut settings, &busy).is_empty());
+        let popup = menus.select_popup.clone().expect("it explains");
+        assert!(popup.title.contains("ten minutes") && popup.title.contains("It starts once"));
+        assert_eq!(popup.options[0], "Recompile after that");
     }
 
     #[test]
@@ -3348,7 +3436,7 @@ mod tests {
         assert!(game_can_own(Item::Resolution));
         assert!(game_can_own(Item::Recompiled));
         assert!(!game_can_own(Item::Volume));
-        assert!(!game_can_own(Item::WindowMode));
+        assert!(!game_can_own(Item::Fullscreen));
     }
 
     #[test]

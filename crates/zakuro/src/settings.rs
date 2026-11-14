@@ -29,27 +29,6 @@ impl Renderer {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WindowMode {
-    #[default]
-    Maximized,
-    Fullscreen,
-    Windowed,
-}
-
-impl WindowMode {
-    pub const ALL: [WindowMode; 3] = [WindowMode::Maximized, WindowMode::Fullscreen, WindowMode::Windowed];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            WindowMode::Maximized => "Maximized",
-            WindowMode::Fullscreen => "Fullscreen",
-            WindowMode::Windowed => "Windowed",
-        }
-    }
-}
-
 /// target frame rate limit or uncapped mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -624,24 +603,23 @@ pub struct GameSettings {
     pub recompiled: Option<bool>,
     pub show_fps: Option<bool>,
     #[serde(deserialize_with = "or_default")]
-    pub window_mode: Option<WindowMode>,
-    #[serde(deserialize_with = "or_default")]
     pub fps_limit: Option<FpsLimit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// an older, extra folder the library also lists games from, kept for
-    /// libraries set up before Zakuro kept its own.
+    /// a folder of games older versions listed from where it was. it is
+    /// read once, to offer adding its games to the library, and not saved.
+    #[serde(skip_serializing)]
     pub games: Option<PathBuf>,
     /// where Zakuro keeps the games added to it, its data folder's library
     /// folder when none is set.
     pub library: Option<PathBuf>,
-    /// the files of games removed that are kept outside Zakuro's library,
-    /// which stay where they are but are no longer listed.
+    /// the games, by key, whose players said not to ask again about
+    /// recompiling them before they play.
     #[serde(deserialize_with = "or_default")]
-    pub removed: Vec<PathBuf>,
+    pub dont_ask_recompile: Vec<String>,
     /// the console's system language, which titles pick their localised
     /// text and files by.
     #[serde(deserialize_with = "or_default")]
@@ -664,9 +642,10 @@ pub struct Settings {
     pub recompiled: bool,
     /// window size, times the console's.
     pub scale: u32,
-    /// how the window opens and displays.
-    #[serde(deserialize_with = "or_default")]
-    pub window_mode: WindowMode,
+    /// whether the window fills the screen. it always opens maximized, so
+    /// this follows the window and is not saved.
+    #[serde(skip)]
+    pub fullscreen: bool,
     /// target frame rate limit or uncapped mode.
     #[serde(deserialize_with = "or_default")]
     pub fps_limit: FpsLimit,
@@ -726,7 +705,7 @@ impl Default for Settings {
         Settings {
             games: None,
             library: None,
-            removed: Vec::new(),
+            dont_ask_recompile: Vec::new(),
             language: Language::English,
             renderer: Renderer::Vulkan,
             hardware_rasterizer: true,
@@ -736,7 +715,7 @@ impl Default for Settings {
             frame_interpolation: false,
             recompiled: true,
             scale: 2,
-            window_mode: WindowMode::Maximized,
+            fullscreen: false,
             fps_limit: FpsLimit::Fps60,
             layout: Screens::Stacked,
             orientation: Orientation::North,
@@ -803,7 +782,6 @@ impl GameSettings {
         settings.language = self.language.unwrap_or(settings.language);
         settings.recompiled = self.recompiled.unwrap_or(settings.recompiled);
         settings.show_fps = self.show_fps.unwrap_or(settings.show_fps);
-        settings.window_mode = self.window_mode.unwrap_or(settings.window_mode);
         settings.fps_limit = self.fps_limit.unwrap_or(settings.fps_limit);
     }
 }
@@ -852,7 +830,6 @@ impl Settings {
         let system = self.clone();
         for own in self.per_game.values_mut() {
             own.show_fps = None;
-            own.window_mode = None;
             own.scale = None;
             same(&mut own.hardware_rasterizer, system.hardware_rasterizer);
             same(&mut own.resolution, system.resolution);
@@ -946,7 +923,7 @@ mod tests {
     #[test]
     fn settings_come_back_as_they_were_saved() {
         let mut settings =
-            Settings { games: Some("/games".into()), show_fps: true, layout: Screens::TopOnly, language: Language::German, ..Settings::default() };
+            Settings { library: Some("/games".into()), show_fps: true, layout: Screens::TopOnly, language: Language::German, ..Settings::default() };
         settings.keys.a = KeyCode::KeyK;
         settings.pad.a = Button::South;
         let text = toml::to_string_pretty(&settings).unwrap();

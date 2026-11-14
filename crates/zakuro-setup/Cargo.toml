@@ -1,0 +1,17 @@
+[package]
+name = "zakuro-setup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Installs and uninstalls Zakuro on Windows, with the Zig compiler recompiling uses"
+
+[[bin]]
+name = "zakuro-setup"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+rfd = { version = "0.17.2", default-features = false }
+sha2 = "0.10"
+zip = { version = "9.5.1", default-features = false, features = ["deflate"] }

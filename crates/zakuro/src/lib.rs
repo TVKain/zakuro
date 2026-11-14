@@ -41,7 +41,7 @@ use nav::{InputMode, Nav};
 use present::Backend;
 use recomp3ds::compile::Compiler;
 use recompile::{Job, Stage, Wanted};
-use settings::{CameraSource, MicrophoneSource, Renderer, Screens, Settings, WindowMode};
+use settings::{CameraSource, MicrophoneSource, Renderer, Screens, Settings};
 
 pub use zakuro_core::memory::Memory;
 pub use zakuro_core::recompiled::Linked;
@@ -160,6 +160,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         install: None,
         identifying: None,
         dropped: Vec::new(),
+        added: None,
         cursor_hidden: false,
     };
 
@@ -172,6 +173,17 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
     }
 
     app.rescan();
+    // games are kept in Zakuro's library alone now: the games of a folder
+    // older versions listed from are offered for adding to it, once
+    if let Some(folder) = app.settings.games.take() {
+        let mut files = Vec::new();
+        library::game_files(&folder, 0, &mut files);
+        if !files.is_empty() {
+            app.dropped = files;
+            app.menus.toast("Games are kept in Zakuro's library now. Pick the ones to add from your old folder");
+        }
+        app.settings.save();
+    }
     app.audio = if app.options.mute {
         None
     } else {
@@ -503,6 +515,9 @@ struct App {
     identifying: Option<(std::sync::mpsc::Receiver<Vec<store::Found>>, Option<u64>)>,
     /// files dropped on the window since the last frame.
     dropped: Vec<PathBuf>,
+    /// the games, by the unique part of their ids, that what was just
+    /// added went to, to ask about recompiling once the library has them.
+    added: Option<Vec<u32>>,
     /// the cursor is hidden, buttons driving the interface.
     cursor_hidden: bool,
 }
@@ -574,15 +589,8 @@ impl ApplicationHandler for App {
                 attributes = attributes.with_window_icon(Some(icon));
             }
         }
-        match self.settings.window_mode {
-            WindowMode::Fullscreen => {
-                attributes = attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
-            }
-            WindowMode::Maximized => {
-                attributes = attributes.with_maximized(true);
-            }
-            WindowMode::Windowed => {}
-        }
+        // it always opens maximized, full screen is a toggle away
+        attributes = attributes.with_maximized(true);
         let renderer = self.options.renderer.unwrap_or(match self.settings.renderer {
             Renderer::Vulkan => RendererKind::Vulkan,
             Renderer::OpenGl => RendererKind::OpenGl,
@@ -744,28 +752,42 @@ impl App {
         }
     }
 
-    /// takes a game off Home: Zakuro's own copies of its files are deleted,
-    /// any kept elsewhere hidden. its saves and mods stay.
+    /// once the library has the games something was just added to, asks
+    /// about recompiling the ones that need it.
+    fn ask_about_added(&mut self) {
+        if self.added.is_none() || self.install.is_some() || self.library.is_busy() || self.menus.select_popup.is_some() {
+            return;
+        }
+        let added = self.added.take().unwrap_or_default();
+        let games: Vec<(Wanted, String)> = self
+            .library
+            .games
+            .iter()
+            .filter(|game| game.problem.is_none() && added.contains(&(game.program_id as u32)))
+            .filter(|game| self.settings.recompiled && (!game.recompiled || game.outdated))
+            .filter(|game| menus::Busy::of(game.program_id, &self.jobs, &self.waiting).is_none())
+            .map(|game| (game.wanted(), game.name.clone()))
+            .collect();
+        if !games.is_empty() {
+            self.menus.open_ask(menus::Ask::Added(games), &self.jobs, &self.waiting);
+        }
+    }
+
+    /// takes a game off Home, deleting its files and those of its update
+    /// and DLC from Zakuro's library. its saves and mods stay.
     fn remove_game(&mut self, program_id: u64) {
         let running = self.program_id() == Some(program_id);
         let busy = self.jobs.iter().any(|job| job.program_id == program_id && !job.stage().finished());
         let Some(game) = self.library.games.iter().find(|game| game.program_id == program_id && game.problem.is_none()) else { return };
+        let Some(library) = store::library_dir(&self.settings, self.data_dir.as_deref()) else { return };
         if running || busy {
             return;
         }
         let name = game.name.clone();
-        let sources = store::sources(&self.settings, self.data_dir.as_deref());
-        let files = store::game_files(game, &sources);
-        let library = store::library_dir(&self.settings, self.data_dir.as_deref());
+        let files = store::game_files(game, &store::sources(&self.settings, self.data_dir.as_deref()));
         self.waiting.retain(|waiting| waiting.program_id != program_id);
-        match store::remove_game(&files, library.as_deref()) {
-            Ok(removed) => {
-                for file in removed.hidden {
-                    if !self.settings.removed.contains(&file) {
-                        self.settings.removed.push(file);
-                    }
-                }
-                self.settings.save();
+        match store::remove_game(&files, &library) {
+            Ok(_) => {
                 self.menus.close_modals();
                 self.menus.toast(&format!("Removed {name}"));
             }
@@ -776,7 +798,6 @@ impl App {
 
     /// looks through the library's folders again.
     fn rescan(&mut self) {
-        self.library.hidden = self.settings.removed.clone();
         let sources = store::sources(&self.settings, self.data_dir.as_deref());
         if let Some(own) = sources.first().filter(|_| self.settings.library.is_none()) {
             // Zakuro's own library is there from the start, to add to
@@ -862,7 +883,6 @@ impl App {
             self.active = self.settings.clone();
         }
         self.apply_layout();
-        self.apply_window_mode();
         self.apply_audio_speed();
         started
     }
@@ -1195,6 +1215,8 @@ impl App {
         self.keyboard.tilt(tilt);
     }
 
+    /// takes the window in or out of full screen, out of it back to how it
+    /// was before, maximized unless it had been made smaller.
     fn toggle_fullscreen(&mut self) {
         if let Some(window) = &self.window {
             let full = window.fullscreen().is_some();
@@ -1202,49 +1224,15 @@ impl App {
                 self.maximized_before_full_screen = window.is_maximized();
                 self.resize_after_full_screen = false;
                 window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-                self.settings.window_mode = WindowMode::Fullscreen;
-                self.active.window_mode = WindowMode::Fullscreen;
             } else {
                 window.set_fullscreen(None);
-                if self.maximized_before_full_screen {
-                    window.set_maximized(true);
-                    self.settings.window_mode = WindowMode::Maximized;
-                    self.active.window_mode = WindowMode::Maximized;
-                } else {
-                    window.set_maximized(false);
-                    self.settings.window_mode = WindowMode::Windowed;
-                    self.active.window_mode = WindowMode::Windowed;
-                    if self.resize_after_full_screen {
-                        let _ = window.request_inner_size(self.window_size());
-                    }
-                }
-            }
-            self.settings.save();
-        }
-    }
-
-    fn apply_window_mode(&mut self) {
-        if let Some(window) = &self.window {
-            match self.active.window_mode {
-                WindowMode::Fullscreen => {
-                    if window.fullscreen().is_none() {
-                        window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-                    }
-                }
-                WindowMode::Maximized => {
-                    if window.fullscreen().is_some() {
-                        window.set_fullscreen(None);
-                    }
-                    window.set_maximized(true);
-                }
-                WindowMode::Windowed => {
-                    if window.fullscreen().is_some() {
-                        window.set_fullscreen(None);
-                    }
-                    window.set_maximized(false);
+                window.set_maximized(self.maximized_before_full_screen);
+                if !self.maximized_before_full_screen && self.resize_after_full_screen {
                     let _ = window.request_inner_size(self.window_size());
                 }
             }
+            self.settings.fullscreen = !full;
+            self.active.fullscreen = !full;
         }
     }
 
@@ -1288,7 +1276,6 @@ impl App {
         self.gamepads.set_buttons(self.settings.pad.clone());
         self.apply_volume();
         self.apply_layout();
-        self.apply_window_mode();
         self.apply_audio_speed();
         self.next_frame = Instant::now();
         self.next_shown = Instant::now();
@@ -1400,7 +1387,7 @@ impl App {
             Ok(compiler) => Some(compiler),
             Err(error) => {
                 self.menus.message = Some(format!(
-                    "Recompiling needs the compiler that comes with Zakuro, in the tools folder next to zakuro.exe, or a C compiler: {error}."
+                    "Recompiling needs a C compiler. Run Zakuro setup again with \"Set up recompiling\" ticked: {error}."
                 ));
                 None
             }
@@ -1509,13 +1496,6 @@ impl App {
                 }
             }
             Action::CancelWaiting => self.waiting.clear(),
-            Action::ChooseFolder => {
-                if let Some(folder) = rfd::FileDialog::new().set_title("Where your games are").pick_folder() {
-                    self.settings.games = Some(folder.clone());
-                    self.settings.save();
-                    self.rescan();
-                }
-            }
             Action::SaveState => self.save_state(),
             Action::LoadState => self.load_state(),
             Action::HostRoom => self.host_room(),
@@ -1587,35 +1567,24 @@ impl App {
                     self.rescan();
                 }
             }
-            Action::Install(mut choice) => {
-                // a game taken off Home whose files are added again comes back
-                // from where they are, not copied
-                let back: Vec<PathBuf> = choice
-                    .found
-                    .iter()
-                    .map(|(found, _)| found.path().to_path_buf())
-                    .filter(|path| self.settings.removed.contains(path))
-                    .collect();
-                if !back.is_empty() {
-                    self.settings.removed.retain(|path| !back.contains(path));
-                    self.settings.save();
-                    choice.found.retain(|(found, _)| !back.iter().any(|path| path == found.path()));
-                    self.rescan();
-                }
-                match (&self.data_dir, store::library_dir(&self.settings, self.data_dir.as_deref())) {
-                    (Some(data_dir), Some(library)) => {
-                        let (steps, bytes) = store::plan(&choice, &library, data_dir);
-                        if !steps.is_empty() {
-                            self.install = Some(store::Install::start(steps, bytes));
-                        } else if back.is_empty() {
-                            self.menus.toast("Nothing new to add");
-                        } else {
-                            self.menus.toast("Back on Home");
-                        }
+            Action::Install(choice) => match (&self.data_dir, store::library_dir(&self.settings, self.data_dir.as_deref())) {
+                (Some(data_dir), Some(library)) => {
+                    let (steps, bytes) = store::plan(&choice, &library, data_dir);
+                    if !steps.is_empty() {
+                        self.install = Some(store::Install::start(steps, bytes));
+                        // a game, its update or its DLC added changes what
+                        // recompiling it makes, asked about once it's in
+                        let titles = choice.found.iter().filter_map(|(found, _)| match found {
+                            store::Found::Title { title_id, .. } => Some(*title_id as u32),
+                            _ => None,
+                        });
+                        self.added.get_or_insert_with(Vec::new).extend(titles);
+                    } else {
+                        self.menus.toast("Nothing new to add");
                     }
-                    _ => self.menus.message = Some("Zakuro has no data folder to keep games in.".into()),
                 }
-            }
+                _ => self.menus.message = Some("Zakuro has no data folder to keep games in.".into()),
+            },
             Action::CancelInstall => {
                 if let Some(install) = &self.install {
                     install.cancel();
@@ -2099,6 +2068,7 @@ impl App {
     /// the menus, and the actions they asked for, done.
     fn interface(&mut self, event_loop: &ActiveEventLoop) -> Overlay {
         self.poll_store();
+        self.ask_about_added();
         // when the slot chosen was saved to, while the menu shows it
         let saved = self
             .menus

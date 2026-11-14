@@ -1,4 +1,4 @@
-//! Zig's C compiler, zig cc, which comes with Zakuro in the tools folder
+//! Zig's C compiler, zig cc, which Zakuro setup puts in the tools folder
 //! next to its program, so that recompiling a game needs nothing installed
 //! by hand.
 

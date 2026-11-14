@@ -26,13 +26,10 @@ pub fn library_dir(settings: &Settings, data_dir: Option<&Path>) -> Option<PathB
     settings.library.clone().or_else(|| Some(data_dir?.join("library")))
 }
 
-/// the folders the library lists games from: its own, with a folder for
-/// each game or none, and an older folder of the settings at its top only,
-/// as it always was, a folder of everything as that one may be.
+/// the folders the library lists games from: Zakuro's own, with a folder
+/// for each game or none.
 pub fn sources(settings: &Settings, data_dir: Option<&Path>) -> Vec<Source> {
-    let own = library_dir(settings, data_dir).map(|folder| Source { folder, depth: 2 });
-    let older = settings.games.clone().map(|folder| Source { folder, depth: 0 });
-    own.into_iter().chain(older).collect()
+    library_dir(settings, data_dir).map(|folder| Source { folder, depth: 2 }).into_iter().collect()
 }
 
 /// the folder texture packs copied into Zakuro are kept in, each once.
@@ -271,38 +268,24 @@ pub fn game_files(game: &library::Game, sources: &[Source]) -> Vec<PathBuf> {
     files
 }
 
-/// what removing a game did.
-#[derive(Debug, Default, PartialEq)]
-pub struct Removed {
-    /// files deleted from Zakuro's library.
-    pub deleted: usize,
-    /// files elsewhere, which stay where they are, no longer listed.
-    pub hidden: Vec<PathBuf>,
-}
-
-/// takes a game out of the library: the copies Zakuro keeps in library are
-/// deleted, with the game's folder there once it is empty, and files kept
-/// anywhere else are left alone, to be hidden. saves and mods stay.
-pub fn remove_game(files: &[PathBuf], library: Option<&Path>) -> std::io::Result<Removed> {
-    let mut removed = Removed::default();
-    for file in files {
-        match library.filter(|library| file.starts_with(library)) {
-            Some(library) => {
-                std::fs::remove_file(file)?;
-                removed.deleted += 1;
-                // a folder a game was unzipped into goes with its last file
-                let mut folder = file.parent();
-                while let Some(dir) = folder.filter(|dir| *dir != library && dir.starts_with(library)) {
-                    if std::fs::remove_dir(dir).is_err() {
-                        break;
-                    }
-                    folder = dir.parent();
-                }
+/// takes a game out of the library: its files there are deleted, with the
+/// game's folder once it is empty, and the number deleted returned. a file
+/// outside the library is never touched. saves and mods stay.
+pub fn remove_game(files: &[PathBuf], library: &Path) -> std::io::Result<usize> {
+    let mut deleted = 0;
+    for file in files.iter().filter(|file| file.starts_with(library)) {
+        std::fs::remove_file(file)?;
+        deleted += 1;
+        // a folder a game was unzipped into goes with its last file
+        let mut folder = file.parent();
+        while let Some(dir) = folder.filter(|dir| *dir != library && dir.starts_with(library)) {
+            if std::fs::remove_dir(dir).is_err() {
+                break;
             }
-            None => removed.hidden.push(file.clone()),
+            folder = dir.parent();
         }
     }
-    Ok(removed)
+    Ok(deleted)
 }
 
 /// takes a texture pack out of a game, the link to it alone when it is
@@ -722,8 +705,8 @@ mod tests {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, b"x").unwrap();
         }
-        let removed = remove_game(&[own.clone(), update.clone(), elsewhere.clone()], Some(&library)).unwrap();
-        assert_eq!(removed, Removed { deleted: 2, hidden: vec![elsewhere.clone()] });
+        let deleted = remove_game(&[own.clone(), update.clone(), elsewhere.clone()], &library).unwrap();
+        assert_eq!(deleted, 2);
         assert!(!own.exists() && !update.exists() && !library.join("Some game").exists());
         assert!(library.exists() && elsewhere.exists());
         let _ = std::fs::remove_dir_all(&dir);

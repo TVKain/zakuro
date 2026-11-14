@@ -4,7 +4,7 @@ use std::time::Duration;
 use gilrs::Button;
 use zakuro::settings::{
     game_key, Filter, FpsLimit, GameSettings, Orientation, Renderer, Screens,
-    Settings, Stereo3d, TopShape, WindowMode,
+    Settings, Stereo3d, TopShape,
 };
 
 #[test]
@@ -18,7 +18,6 @@ fn test_default_settings_invariants() {
     assert!(settings.texture_packs);
     assert!(!settings.frame_interpolation);
     assert!(settings.recompiled);
-    assert_eq!(settings.window_mode, WindowMode::Maximized);
     assert_eq!(settings.fps_limit, FpsLimit::Fps60);
     assert_eq!(settings.layout, Screens::Stacked);
     assert_eq!(settings.orientation, Orientation::North);
@@ -93,27 +92,18 @@ fn test_filter_serialization_and_display() {
 }
 
 #[test]
-fn test_window_mode_serialization() {
-    let cases = [
-        (WindowMode::Maximized, "maximized", "Maximized"),
-        (WindowMode::Fullscreen, "fullscreen", "Fullscreen"),
-        (WindowMode::Windowed, "windowed", "Windowed"),
-    ];
-
-    for (mode, expected_str, expected_name) in cases {
-        assert_eq!(mode.name(), expected_name);
-
-        let toml_str = toml::to_string(&Wrap { val: mode }).expect("failed to serialize WindowMode");
-        assert!(
-            toml_str.contains(expected_str),
-            "expected {expected_str} in {toml_str}"
-        );
-
-        let deserialized: Wrap<WindowMode> =
-            toml::from_str(&toml_str).expect("failed to deserialize WindowMode");
-        assert_eq!(deserialized.val, mode);
-        assert_eq!(deserialized.val.name(), expected_name);
-    }
+fn test_window_is_not_saved_and_old_games_folder_is_read_once() {
+    // older files kept a window mode and a games folder: the window always
+    // opens maximized now, and the folder is read to offer its games
+    let old = r#"
+        window_mode = "windowed"
+        games = 'C:\Games'
+    "#;
+    let settings: Settings = toml::from_str(old).expect("older settings should still load");
+    assert!(!settings.fullscreen);
+    assert_eq!(settings.games, Some(std::path::PathBuf::from(r"C:\Games")));
+    let saved = toml::to_string(&Settings { fullscreen: true, ..settings }).expect("failed to serialize settings");
+    assert!(!saved.contains("window_mode") && !saved.contains("fullscreen") && !saved.contains("games ="));
 }
 
 #[test]
@@ -143,7 +133,6 @@ fn test_legacy_toml_backward_compatibility() {
 
     // Newly added fields must take their correct defaults
     assert_eq!(settings.fps_limit, FpsLimit::Fps60);
-    assert_eq!(settings.window_mode, WindowMode::Maximized);
     assert_eq!(settings.filter, Filter::Smooth);
     assert!(!settings.show_fps);
     assert_eq!(settings.pad.menu, Button::Mode);
@@ -156,7 +145,6 @@ fn test_unknown_fields_forward_compatibility() {
         resolution = 8
         fps_limit = "120"
         filter = "xbrz_linear"
-        window_mode = "fullscreen"
         future_super_sampling = "dlss_fg"
         unknown_haptic_strength = 99
     "#;
@@ -167,7 +155,6 @@ fn test_unknown_fields_forward_compatibility() {
     assert_eq!(settings.resolution, 8);
     assert_eq!(settings.fps_limit, FpsLimit::Fps120);
     assert_eq!(settings.filter, Filter::XbrzLinear);
-    assert_eq!(settings.window_mode, WindowMode::Fullscreen);
 }
 
 #[test]
@@ -177,7 +164,6 @@ fn test_per_game_settings_hierarchy_and_overrides() {
         fps_limit: FpsLimit::Fps60,
         filter: Filter::Smooth,
         show_fps: false,
-        window_mode: WindowMode::Maximized,
         ..Default::default()
     };
 
@@ -190,7 +176,6 @@ fn test_per_game_settings_hierarchy_and_overrides() {
         fps_limit: Some(FpsLimit::Fps120),
         filter: Some(Filter::Sharp),
         show_fps: Some(true),
-        window_mode: Some(WindowMode::Fullscreen),
         ..Default::default()
     };
     // Notice frame_interpolation is left as None (should inherit global false)
@@ -204,7 +189,6 @@ fn test_per_game_settings_hierarchy_and_overrides() {
     assert_eq!(active.fps_limit, FpsLimit::Fps120);
     assert_eq!(active.filter, Filter::Sharp);
     assert!(active.show_fps);
-    assert_eq!(active.window_mode, WindowMode::Fullscreen);
     assert!(!active.frame_interpolation); // Inherited global false
 
     // Different title without custom settings
@@ -214,7 +198,6 @@ fn test_per_game_settings_hierarchy_and_overrides() {
     assert_eq!(other_active.fps_limit, FpsLimit::Fps60);
     assert_eq!(other_active.filter, Filter::Smooth);
     assert!(!other_active.show_fps);
-    assert_eq!(other_active.window_mode, WindowMode::Maximized);
 
     // None title ID (main menu/library view)
     let global_active = settings.for_game(None);
@@ -257,7 +240,6 @@ fn test_per_game_options_drop_system_only_fields_and_empty_entries() {
     let mut settings = Settings::default();
     let id: u64 = 0x00040000001B5000;
     settings.game_mut(id).show_fps = Some(true);
-    settings.game_mut(id).window_mode = Some(WindowMode::Fullscreen);
     settings.game_mut(0x0004000000055D00).filter = Some(Filter::Xbrz);
     settings.migrate();
     // the window and frame counter are the system's alone now, and a game

@@ -68,8 +68,6 @@ pub struct Library {
     rebuilt: Vec<u64>,
     /// set when the games changed and their icons need uploading.
     pub changed: bool,
-    /// the files of games removed, which are not listed though still there.
-    pub hidden: Vec<PathBuf>,
     /// where the games' mods folders are.
     data_dir: Option<PathBuf>,
 }
@@ -95,13 +93,17 @@ impl Library {
         self.scanning.is_some()
     }
 
+    /// still looking for games, or whether their code is outdated.
+    pub fn is_busy(&self) -> bool {
+        self.scanning.is_some() || self.checking.is_some()
+    }
+
     /// takes in what a scan found, and which games' code is outdated, once
     /// each is done.
     pub fn poll(&mut self) {
         if let Some(receive) = &self.scanning {
             match receive.try_recv() {
-                Ok((mut games, children)) => {
-                    games.retain(|game| !self.hidden.contains(&game.path));
+                Ok((games, children)) => {
                     self.games = games;
                     self.children = children;
                     self.scanning = None;
@@ -127,24 +129,61 @@ impl Library {
     }
 
     /// starts looking through the games' recompiled code, away from the
-    /// list, which opening every library would hold up.
+    /// list, which opening every library would hold up. code is outdated
+    /// when an older 3dsrecomp made it, or the game's update or DLC changed
+    /// since it was made.
     fn check_outdated(&mut self) {
-        let recompiled: Vec<u64> = self.games.iter().filter(|game| game.recompiled).map(|game| game.program_id).collect();
+        let recompiled: Vec<(u64, String)> = self.games.iter().filter(|game| game.recompiled).map(|game| (game.program_id, addons_stamp(game))).collect();
         self.rebuilt.clear();
         let (send, receive) = channel();
         std::thread::spawn(move || {
-            let outdated = |id: &u64| zakuro_core::recompiled::installed(*id).is_some_and(|path| zakuro_core::recompiled::outdated(&path));
-            let _ = send.send(recompiled.into_iter().filter(outdated).collect::<Vec<u64>>());
+            let outdated = |(id, stamp): &(u64, String)| {
+                let Some(path) = zakuro_core::recompiled::installed(*id) else { return false };
+                zakuro_core::recompiled::outdated(&path) || !stamp_matches(&path, stamp)
+            };
+            let _ = send.send(recompiled.iter().filter(|game| outdated(game)).map(|(id, _)| *id).collect::<Vec<u64>>());
         });
         self.checking = Some(receive);
     }
 
-    /// the game just got code from this build's 3dsrecomp.
+    /// the game just got code from this build's 3dsrecomp, made with the
+    /// update and DLC it has now.
     pub fn recompiled(&mut self, program_id: u64) {
         self.rebuilt.push(program_id);
         for game in self.games.iter_mut().filter(|game| game.program_id == program_id) {
-            game.recompiled = zakuro_core::recompiled::installed(program_id).is_some();
+            let installed = zakuro_core::recompiled::installed(program_id);
+            if let Some(path) = &installed {
+                let _ = std::fs::write(stamp_path(path), addons_stamp(game));
+            }
+            game.recompiled = installed.is_some();
             game.outdated = false;
+        }
+    }
+}
+
+/// the update and DLC a game has, as its recompiled code records them.
+pub fn addons_stamp(game: &Game) -> String {
+    let mut lines: Vec<String> = game.update.iter().map(|update| format!("update {:016X} v{}", update.title_id, update.version)).collect();
+    let mut dlc: Vec<String> = game.dlc.iter().map(|dlc| format!("dlc {:016X} v{}", dlc.title_id, dlc.version)).collect();
+    dlc.sort();
+    lines.extend(dlc);
+    lines.join("\n")
+}
+
+/// where the update and DLC recompiled code was made with are written.
+fn stamp_path(code: &Path) -> PathBuf {
+    code.with_extension("addons")
+}
+
+/// whether the code at path was made with the update and DLC of stamp.
+/// code from before Zakuro wrote that down is taken as made with them, and
+/// written down so from now on.
+fn stamp_matches(code: &Path, stamp: &str) -> bool {
+    match std::fs::read_to_string(stamp_path(code)) {
+        Ok(made_with) => made_with == stamp,
+        Err(_) => {
+            let _ = std::fs::write(stamp_path(code), stamp);
+            true
         }
     }
 }
