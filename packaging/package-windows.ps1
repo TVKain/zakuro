@@ -26,7 +26,11 @@ $Version = (Select-String -Path (Join-Path $Root "Cargo.toml") -Pattern '^versio
 $Exe = Join-Path $Root "target\release\zakuro.exe"
 
 if (-not $NoBuild -and -not $ToolsOnly) {
+    # cargo reports progress on stderr, which Windows PowerShell would take
+    # for a failure under Stop, so only its exit code decides
+    $ErrorActionPreference = "Continue"
     cargo build --release --locked -p zakuro --manifest-path (Join-Path $Root "Cargo.toml")
+    $ErrorActionPreference = "Stop"
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 }
 
