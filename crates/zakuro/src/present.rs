@@ -75,17 +75,6 @@ impl Backend {
         }
     }
 
-    /// whether showing a frame waits for the display, the OpenGL swap waits
-    /// for the vertical blank.
-    #[allow(dead_code)]
-    pub fn waits_for_display(&self) -> bool {
-        match self {
-            Backend::OpenGl { .. } => true,
-            Backend::Vulkan(presenter) => presenter.waits_for_display(),
-            Backend::None => false,
-        }
-    }
-
     /// the Vulkan presenter's device, for the renderer to draw on so the
     /// screens are shown straight from it, when the two can share one.
     pub fn shared_device(&self) -> Option<std::sync::Arc<SharedDevice>> {

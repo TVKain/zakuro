@@ -4778,11 +4778,6 @@ dependencies = [
 [[package]]
 name = "zakuro-common"
 version = "0.3.6"
-dependencies = [
- "bitflags 2.13.2",
- "log",
- "thiserror 2.0.20",
-]
 
 [[package]]
 name = "zakuro-core"
@@ -4825,7 +4820,6 @@ dependencies = [
  "log",
  "memmap2",
  "thiserror 2.0.20",
- "zakuro-common",
 ]
 
 [[package]]
@@ -4834,7 +4828,6 @@ version = "0.3.6"
 dependencies = [
  "ash",
  "ash-window",
- "bitflags 2.13.2",
  "cityhasher",
  "cranelift-codegen",
  "cranelift-frontend",
@@ -4851,7 +4844,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "wide",
- "zakuro-common",
 ]
 
 [[package]]

@@ -12,10 +12,8 @@ vulkan = ["dep:ash", "dep:ash-window", "dep:naga"]
 jit = ["dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-jit", "dep:cranelift-module", "dep:cranelift-native"]
 
 [dependencies]
-zakuro-common.workspace = true
 log.workspace = true
 serde.workspace = true
-bitflags.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
 wide = "1.7"
