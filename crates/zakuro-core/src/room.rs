@@ -105,9 +105,16 @@ impl Seats {
 }
 
 impl Server {
-    /// opens a room on port, 0 for any free one, for up to most members.
+    /// opens a room on port, 0 for any free one, for up to most members,
+    /// reachable from other computers.
     pub fn start(port: u16, name: &str, password: &str, most: usize) -> std::io::Result<Server> {
-        let listener = TcpListener::bind(("0.0.0.0", port))?;
+        Server::start_on(std::net::Ipv4Addr::UNSPECIFIED.into(), port, name, password, most)
+    }
+
+    /// opens a room listening on host alone. tests use the loopback address,
+    /// which Windows' firewall doesn't ask about.
+    pub fn start_on(host: std::net::IpAddr, port: u16, name: &str, password: &str, most: usize) -> std::io::Result<Server> {
+        let listener = TcpListener::bind((host, port))?;
         let port = listener.local_addr()?.port();
         listener.set_nonblocking(true)?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -434,7 +441,7 @@ mod tests {
     /// what one sends to the other or to everyone reaches the other only.
     #[test]
     fn a_room_passes_packets_between_members() {
-        let server = Server::start(0, "test", "", 4).unwrap();
+        let server = Server::start_on(std::net::Ipv4Addr::LOCALHOST.into(), 0, "test", "", 4).unwrap();
         let address = format!("127.0.0.1:{}", server.port());
         let first = Connection::join(&address, "first", "").unwrap();
         let second = Connection::join(&address, "second", "").unwrap();

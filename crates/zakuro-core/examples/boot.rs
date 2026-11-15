@@ -678,10 +678,13 @@ fn temp(name: &str) -> String {
     std::env::temp_dir().join(name).display().to_string()
 }
 
+/// from a frame on, the buttons held and where the bottom screen is touched.
+type InputStep = (u64, PadState, Option<(u16, u16)>);
+
 /// parses frame:BUTTON[+BUTTON...] entries separated by commas, where @XxY
 /// touches the bottom screen at X, Y, CUP, CDOWN, CLEFT and CRIGHT push
 /// the circle pad and CSUP, CSDOWN, CSLEFT and CSRIGHT the C-stick.
-fn parse_input_script(spec: &str) -> Vec<(u64, PadState, Option<(u16, u16)>)> {
+fn parse_input_script(spec: &str) -> Vec<InputStep> {
     spec.split(',')
         .filter_map(|entry| {
             let (frame, buttons) = entry.trim().split_once(':')?;

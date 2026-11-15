@@ -96,10 +96,6 @@ impl PhysicalMemory {
         used as u32 * PAGE_SIZE
     }
 
-    pub fn region_free(&self, region: MemoryRegion) -> u32 {
-        self.region_size(region) - self.region_used(region)
-    }
-
     /// allocates size bytes of physically contiguous FCRAM.
     pub fn allocate(&mut self, region: MemoryRegion, size: u32) -> Option<PhysicalBlock> {
         let needed = (align_up(size, PAGE_SIZE) / PAGE_SIZE) as usize;

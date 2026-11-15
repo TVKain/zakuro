@@ -89,10 +89,6 @@ impl NcchHeader {
         self.flags[7] & 0x04 != 0
     }
 
-    pub fn uses_fixed_key(&self) -> bool {
-        self.flags[7] & 0x01 != 0
-    }
-
     pub fn has_romfs(&self) -> bool {
         self.romfs_size != 0 && self.flags[7] & 0x02 == 0
     }
@@ -326,12 +322,6 @@ impl ExHeader {
             handle_table_size,
             allowed_svcs,
         })
-    }
-
-    /// total bytes the three code segments occupy once mapped, including BSS.
-    pub fn code_span(&self) -> u32 {
-        let end = self.data.address + self.data.num_pages * 0x1000 + self.bss_size;
-        end.saturating_sub(self.text.address)
     }
 }
 

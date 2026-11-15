@@ -7,6 +7,7 @@ pub mod camera;
 pub mod cli;
 pub mod gamepad;
 pub mod gui;
+pub mod icons;
 pub mod input;
 pub mod library;
 pub mod menus;
@@ -114,6 +115,8 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         top_shape: settings.top_shape,
         options,
         active: settings.clone(),
+        started: settings.clone(),
+        presented_with: None,
         settings,
         linked,
         overlay,
@@ -173,17 +176,6 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
     }
 
     app.rescan();
-    // games are kept in Zakuro's library alone now: the games of a folder
-    // older versions listed from are offered for adding to it, once
-    if let Some(folder) = app.settings.games.take() {
-        let mut files = Vec::new();
-        library::game_files(&folder, 0, &mut files);
-        if !files.is_empty() {
-            app.dropped = files;
-            app.menus.toast("Games are kept in Zakuro's library now. Pick the ones to add from your old folder");
-        }
-        app.settings.save();
-    }
     app.audio = if app.options.mute {
         None
     } else {
@@ -422,6 +414,11 @@ struct App {
     /// the settings in force, what the running game has of its own over
     /// the general ones, which is all there is without a game.
     active: Settings,
+    /// the settings the running game started with, for what it reads only
+    /// as it starts.
+    started: Settings,
+    /// the graphics API the window was opened with, as the settings had it.
+    presented_with: Option<Renderer>,
     linked: Option<Linked>,
     /// what the program built on Zakuro shows over the game, and the line it
     /// keeps in the corner now.
@@ -572,13 +569,13 @@ fn skips_showing(playing: bool, behind: bool, waits: bool, skipped: u32) -> bool
 /// what the player is told when the 3D can't be drawn on the GPU.
 const GPU_FALLBACK: &str = "The 3D can't be drawn on the GPU, as Vulkan isn't working on this computer, so it's drawn in software. \
 Games run much slower that way, and texture packs are left out. Updating the graphics driver usually fixes it; the log says \
-what went wrong. To draw in software without this message, turn off \"Draw the 3D on the GPU\" in Settings, Graphics.";
+what went wrong. To draw in software without this message, set \"3D rendering\" to CPU in System Settings, Graphics.";
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
-        }
+impl App {
+    /// opens the window with the presenter the settings ask for, or OpenGL
+    /// when Vulkan won't start, and the interface in it, false when no
+    /// window could be opened.
+    fn open_window(&mut self, event_loop: &ActiveEventLoop) -> bool {
 
         let size = self.window_size();
         let mut attributes = Window::default_attributes().with_title("Zakuro").with_inner_size(size);
@@ -591,10 +588,14 @@ impl ApplicationHandler for App {
         }
         // it always opens maximized, full screen is a toggle away
         attributes = attributes.with_maximized(true);
+        if self.settings.fullscreen {
+            attributes = attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
         let renderer = self.options.renderer.unwrap_or(match self.settings.renderer {
             Renderer::Vulkan => RendererKind::Vulkan,
             Renderer::OpenGl => RendererKind::OpenGl,
         });
+        self.presented_with = Some(self.settings.renderer);
 
         let backend = Backend::create(event_loop, attributes.clone(), renderer).or_else(|error| {
             if renderer != RendererKind::Vulkan {
@@ -615,14 +616,55 @@ impl ApplicationHandler for App {
                 self.gui = Some(Gui::new(&window));
                 self.window = Some(window);
                 self.backend = Some(backend);
-                // the game the command line names starts on the device the
-                // presenter may lend the renderer, once there is one
-                self.start();
+                true
             }
             Err(error) => {
                 eprintln!("zakuro: could not start the {renderer:?} backend: {error}");
-                event_loop.exit();
+                log::error!("could not start the {renderer:?} backend: {error}");
+                false
             }
+        }
+    }
+
+    /// opens the window again with the presenter the settings now ask for,
+    /// while no game runs, as a running game may draw with the presenter's
+    /// device. what the interface had on the old one is uploaded again.
+    fn switch_presenter(&mut self, event_loop: &ActiveEventLoop) {
+        let from = self.presented_with;
+        // the presenter goes before the window it draws into
+        self.gui = None;
+        self.backend = None;
+        self.window = None;
+        self.menus.forget_textures();
+        if self.open_window(event_loop) {
+            let name = if self.backend.as_ref().map(Backend::name) == Some("opengl") { "OpenGL" } else { "Vulkan" };
+            self.menus.toast(&format!("Now drawing with {name}"));
+            return;
+        }
+        // back to the one that worked
+        if let Some(from) = from {
+            self.settings.renderer = from;
+            self.settings.save();
+        }
+        if !self.open_window(event_loop) {
+            event_loop.exit();
+            return;
+        }
+        self.menus.message = Some("That graphics API couldn't start on this computer, so Zakuro kept the one it had.".into());
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        if self.open_window(event_loop) {
+            // the game the command line names starts on the device the
+            // presenter may lend the renderer, once there is one
+            self.start();
+        } else {
+            event_loop.exit();
         }
     }
 
@@ -649,6 +691,8 @@ impl ApplicationHandler for App {
                 self.blow(false);
                 self.keyboard.release();
             }
+            // games copied into the library folder by hand show up on coming back
+            WindowEvent::Focused(true) if self.game.is_none() && self.install.is_none() && !self.library.is_busy() => self.rescan(),
             WindowEvent::Resized(size) => {
                 if let Some(backend) = &mut self.backend {
                     backend.resize(size.width, size.height);
@@ -780,12 +824,12 @@ impl App {
         let running = self.program_id() == Some(program_id);
         let busy = self.jobs.iter().any(|job| job.program_id == program_id && !job.stage().finished());
         let Some(game) = self.library.games.iter().find(|game| game.program_id == program_id && game.problem.is_none()) else { return };
-        let Some(library) = store::library_dir(&self.settings, self.data_dir.as_deref()) else { return };
+        let Some(library) = store::library_dir(self.data_dir.as_deref()) else { return };
         if running || busy {
             return;
         }
         let name = game.name.clone();
-        let files = store::game_files(game, &store::sources(&self.settings, self.data_dir.as_deref()));
+        let files = store::game_files(game, &store::sources(self.data_dir.as_deref()));
         self.waiting.retain(|waiting| waiting.program_id != program_id);
         match store::remove_game(&files, &library) {
             Ok(_) => {
@@ -799,8 +843,8 @@ impl App {
 
     /// looks through the library's folders again.
     fn rescan(&mut self) {
-        let sources = store::sources(&self.settings, self.data_dir.as_deref());
-        if let Some(own) = sources.first().filter(|_| self.settings.library.is_none()) {
+        let sources = store::sources(self.data_dir.as_deref());
+        if let Some(own) = sources.first() {
             // Zakuro's own library is there from the start, to add to
             let _ = std::fs::create_dir_all(&own.folder);
         }
@@ -882,6 +926,8 @@ impl App {
         let started = self.start_game(path);
         if started.is_err() {
             self.active = self.settings.clone();
+        } else {
+            self.started = self.active.clone();
         }
         self.apply_layout();
         self.apply_audio_speed();
@@ -1258,6 +1304,10 @@ impl App {
                 let actual = game.system.set_resolution(self.active.resolution);
                 log::info!("internal resolution changed to {actual}x");
             }
+            if game.system.config.texture_packs != self.active.texture_packs {
+                let drawn = game.system.set_texture_packs(self.active.texture_packs);
+                log::info!("texture packs {}", if drawn { "on" } else { "off" });
+            }
             if game.system.gpu.smooths_textures() != self.active.smooth_textures {
                 game.system.gpu.set_smooth_textures(self.active.smooth_textures);
             }
@@ -1533,7 +1583,6 @@ impl App {
                     self.settings.save();
                 }
             }
-            Action::Rescan => self.rescan(),
             Action::AddContent(for_game) => {
                 let picked = rfd::FileDialog::new()
                     .set_title("Add games, updates, DLC, texture packs or cheats")
@@ -1548,27 +1597,7 @@ impl App {
                     self.identify(vec![folder], Some(program_id));
                 }
             }
-            Action::ChooseLibrary => {
-                let before = store::library_dir(&self.settings, self.data_dir.as_deref());
-                if let Some(folder) = rfd::FileDialog::new().set_title("Where Zakuro keeps your games").pick_folder() {
-                    self.settings.library = Some(folder.clone());
-                    self.settings.save();
-                    let mut left = Vec::new();
-                    if let Some(before) = before.filter(|before| *before != folder) {
-                        library::game_files(&before, 2, &mut left);
-                        if !left.is_empty() {
-                            self.menus.message = Some(format!(
-                                "New games will be kept in {}. The {} files already in {} stay there; move them across to keep them in your library.",
-                                folder.display(),
-                                left.len(),
-                                before.display()
-                            ));
-                        }
-                    }
-                    self.rescan();
-                }
-            }
-            Action::Install(choice) => match (&self.data_dir, store::library_dir(&self.settings, self.data_dir.as_deref())) {
+            Action::Install(choice) => match (&self.data_dir, store::library_dir(self.data_dir.as_deref())) {
                 (Some(data_dir), Some(library)) => {
                     let (steps, bytes) = store::plan(&choice, &library, data_dir);
                     if !steps.is_empty() {
@@ -1684,6 +1713,11 @@ impl App {
     fn step(&mut self, event_loop: &ActiveEventLoop) {
         if self.stop {
             event_loop.exit();
+            return;
+        }
+        // a graphics API chosen on Home opens the window again with it
+        if self.options.renderer.is_none() && self.game.is_none() && self.presented_with.is_some_and(|with| with != self.settings.renderer) {
+            self.switch_presenter(event_loop);
             return;
         }
         let now = Instant::now();
@@ -2125,6 +2159,7 @@ impl App {
             saved: saved.as_deref(),
             fps: self.active.show_fps.then_some(self.shown_fps),
             fast: self.fast_forwarding,
+            started: Some(&self.started),
         });
         let view = menus::View {
             library: &self.library,
@@ -2141,6 +2176,7 @@ impl App {
         };
         let (menus, settings) = (&mut self.menus, &mut self.settings);
         let modal_open = menus.modal_open();
+        gui.set_theme(window, settings.theme);
         let mut actions = Vec::new();
         let overlay = gui.frame(window, |ui| actions.extend(menus.show(ui, settings, &view)));
         drop(view);

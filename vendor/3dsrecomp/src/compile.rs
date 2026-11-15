@@ -8,8 +8,11 @@ use std::sync::{Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// floating point has to round exactly the way the interpreter does, so
-/// nothing may be fused into a multiply-add.
-const FLAGS: &[&str] = &["-O2", "-ffp-contract=off", "-fno-math-errno", "-w"];
+/// nothing may be fused into a multiply-add. no debug information: zig cc
+/// writes CodeView by default, which nothing reads for generated code, and
+/// without it the machine code is the same, Pokémon Ultra Sun compiles about
+/// a quarter faster and its objects are around four and a half times smaller.
+const FLAGS: &[&str] = &["-O2", "-ffp-contract=off", "-fno-math-errno", "-w", "-g0"];
 /// what only matters for ELF and Mach-O, and that compilers for Windows
 /// refuse or ignore.
 const UNIX_FLAGS: &[&str] = &["-fPIC", "-fvisibility=hidden"];

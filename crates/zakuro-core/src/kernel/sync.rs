@@ -111,10 +111,6 @@ impl ArbitrationType {
         })
     }
 
-    pub fn is_wait(self) -> bool {
-        !matches!(self, ArbitrationType::Signal)
-    }
-
     pub fn has_timeout(self) -> bool {
         matches!(
             self,

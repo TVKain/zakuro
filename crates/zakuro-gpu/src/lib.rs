@@ -121,12 +121,6 @@ impl FramebufferConfig {
     pub fn color_format(&self) -> ColorFormat {
         ColorFormat::from_raw(self.format & 7)
     }
-
-    /// true when the framebuffer is interleaved for stereoscopic output.
-    pub fn is_stereo(&self) -> bool {
-        let right = self.address_right();
-        right != 0 && right != self.address_left()
-    }
 }
 
 /// vertices a title sends one attribute at a time, by selecting fixed attribute

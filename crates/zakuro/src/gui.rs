@@ -12,42 +12,17 @@ pub struct Gui {
     pub ctx: egui::Context,
     state: egui_winit::State,
     extra_events: Vec<egui::Event>,
+    /// the theme last asked for, so the title bar follows only on a change.
+    theme: Option<crate::settings::Theme>,
 }
 
 impl Gui {
     pub fn new(window: &Window) -> Gui {
         let ctx = egui::Context::default();
         ctx.set_fonts(fonts(system_fonts()));
-        let mut visuals = egui::Visuals::dark();
-        // anything that can be clicked shows a hand under the mouse
-        visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
-        visuals.panel_fill = egui::Color32::from_rgb(18, 19, 23);
-        visuals.window_fill = egui::Color32::from_rgb(28, 30, 36);
-        visuals.extreme_bg_color = egui::Color32::from_rgb(12, 14, 18);
-        visuals.faint_bg_color = egui::Color32::from_rgb(22, 25, 33);
-        visuals.window_corner_radius = egui::CornerRadius::same(12);
-        visuals.menu_corner_radius = egui::CornerRadius::same(8);
-        visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
-        visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(32, 36, 48);
-        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 56, 72));
-        visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(230, 235, 245));
-        visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
-        visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(46, 54, 72);
-        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(62, 198, 255));
-        visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
-        visuals.widgets.active.corner_radius = egui::CornerRadius::same(8);
-        visuals.widgets.active.bg_fill = egui::Color32::from_rgb(30, 90, 160);
-        visuals.widgets.active.bg_stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(80, 180, 255));
-        visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
-        visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(8);
-        visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(22, 25, 33);
-        visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(42, 48, 62));
-        visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(175, 185, 200));
-        visuals.selection.bg_fill = egui::Color32::from_rgba_premultiplied(40, 120, 220, 160);
-        visuals.selection.stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(100, 190, 255));
-        ctx.set_visuals(visuals);
-
-        ctx.style_mut_of(egui::Theme::Dark, |style| {
+        ctx.set_visuals_of(egui::Theme::Dark, crate::menus::color::visuals(false));
+        ctx.set_visuals_of(egui::Theme::Light, crate::menus::color::visuals(true));
+        ctx.all_styles_mut(|style| {
             style.spacing.item_spacing = egui::vec2(10.0, 8.0);
             style.spacing.button_padding = egui::vec2(12.0, 7.0);
             style.spacing.window_margin = egui::Margin::same(14);
@@ -64,7 +39,7 @@ impl Gui {
             None,
             Some(8192),
         );
-        Gui { ctx, state, extra_events: Vec::new() }
+        Gui { ctx, state, extra_events: Vec::new(), theme: None }
     }
 
     /// hands egui an event, true when it wants it for itself.
@@ -81,7 +56,6 @@ impl Gui {
     }
 
     /// moves egui focus to the previous interactive widget.
-    #[allow(dead_code)]
     pub fn move_focus_prev(&mut self) {
         self.ctx.memory_mut(|m| {
             m.move_focus(egui::FocusDirection::Previous);
@@ -99,7 +73,6 @@ impl Gui {
         self.ctx.request_repaint();
     }
 
-    #[allow(dead_code)]
     pub fn send_key(&mut self, key: egui::Key) {
         self.extra_events.push(egui::Event::Key {
             key,
@@ -128,6 +101,23 @@ impl Gui {
     }
 
     /// runs the interface for a frame and returns what to draw.
+    /// draws the interface light or dark from now on, and the window's title
+    /// bar to match.
+    pub fn set_theme(&mut self, window: &Window, theme: crate::settings::Theme) {
+        use crate::settings::Theme;
+        if self.theme != Some(theme) {
+            self.theme = Some(theme);
+            let (preference, title) = match theme {
+                Theme::System => (egui::ThemePreference::System, None),
+                Theme::Dark => (egui::ThemePreference::Dark, Some(winit::window::Theme::Dark)),
+                Theme::Light => (egui::ThemePreference::Light, Some(winit::window::Theme::Light)),
+            };
+            self.ctx.set_theme(preference);
+            window.set_theme(title);
+        }
+        crate::menus::color::set_light(self.ctx.theme() == egui::Theme::Light);
+    }
+
     pub fn frame(&mut self, window: &Window, ui: impl FnMut(&mut egui::Ui)) -> Overlay {
         let mut input = self.state.take_egui_input(window);
         input.events.append(&mut self.extra_events);

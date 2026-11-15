@@ -19,11 +19,12 @@ use winit::keyboard::KeyCode;
 use zakuro_core::services::keyboard::Request;
 
 use crate::gamepad::button_name;
+use crate::icons::Icon;
 use crate::library::{Game, Library, ICON_SIZE};
 use crate::nav::{InputMode, Nav};
 use crate::recompile::{Job, Stage, Wanted};
 use crate::settings::{
-    game_key, CameraSource, Filter, FpsLimit, Keys, Language, MicrophoneSource, Orientation, PadButtons, Renderer, Screens, Settings, Stereo3d, TopShape,
+    game_key, CameraSource, Filter, FpsLimit, Keys, Language, MicrophoneSource, Orientation, PadButtons, Renderer, Screens, Settings, Stereo3d, Theme, TopShape,
 };
 use crate::store::{self, Found, InstalledPack, PackPlace};
 
@@ -38,8 +39,6 @@ pub enum Action {
     CancelRecompile(u64),
     /// leave only the game recompiling now, none of those waiting.
     CancelWaiting,
-    /// pick where the library keeps its games.
-    ChooseLibrary,
     ChooseBackground,
     /// pick the picture the cameras see.
     ChooseCameraPicture,
@@ -66,7 +65,6 @@ pub enum Action {
     /// leave the one taken part in.
     DlpJoin(usize),
     DlpLeave,
-    Rescan,
     Resume,
     Reset,
     Library,
@@ -100,6 +98,7 @@ pub enum Scope {
 pub enum Item {
     // graphics
     Renderer,
+    Theme,
     Rasterizer,
     Resolution,
     Filter,
@@ -129,8 +128,6 @@ pub enum Item {
     Microphone,
     // library
     AddContent,
-    LibraryLocation,
-    Rescan,
     Background,
     BackgroundOpacity,
     RecompileOutdated,
@@ -198,6 +195,8 @@ enum Value {
     Range(String),
     /// an action that opens something.
     More,
+    /// the choice in force, in a list to pick from.
+    Check,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -212,11 +211,14 @@ struct Row {
     changed: bool,
     /// the action is one that loses something.
     danger: bool,
+    /// what the setting does, shown at the foot of the list while it is
+    /// selected.
+    help: Option<&'static str>,
 }
 
 impl Row {
     fn new(item: Item, label: impl Into<String>, value: Value) -> Row {
-        Row { item, label: label.into(), value, note: None, enabled: true, changed: false, danger: false }
+        Row { item, label: label.into(), value, note: None, enabled: true, changed: false, danger: false, help: None }
     }
 
     fn note(mut self, note: impl Into<String>) -> Row {
@@ -269,13 +271,26 @@ impl Section {
     pub fn name(self) -> &'static str {
         match self {
             Section::Graphics => "Graphics",
-            Section::Screens => "Screens",
+            Section::Screens => "Display",
             Section::Stereo => "3D",
             Section::Controls => "Controls",
             Section::Audio => "Audio",
-            Section::Library => "Library & Storage",
+            Section::Library => "Library",
             Section::System => "System",
             Section::AddOns => "Add-ons",
+        }
+    }
+
+    pub fn icon(self) -> Icon {
+        match self {
+            Section::Graphics => Icon::Monitor,
+            Section::Screens => Icon::Screens,
+            Section::Stereo => Icon::Cube,
+            Section::Controls => Icon::Gamepad,
+            Section::Audio => Icon::Speaker,
+            Section::Library => Icon::Folder,
+            Section::System => Icon::Chip,
+            Section::AddOns => Icon::AddOns,
         }
     }
 }
@@ -289,6 +304,8 @@ pub struct SelectPopup {
     pub title: String,
     pub options: Vec<String>,
     pub selected: usize,
+    /// the choice in force, ticked, when picking a setting.
+    pub current: Option<usize>,
 }
 
 /// a recompile Zakuro asks the player about.
@@ -362,6 +379,8 @@ pub struct RunningView<'a> {
     pub saved: Option<&'a str>,
     pub fps: Option<f32>,
     pub fast: bool,
+    /// the settings the game started with, for those it reads only then.
+    pub started: Option<&'a Settings>,
 }
 
 /// a running game's cheat.
@@ -539,54 +558,179 @@ pub struct Menus {
     background: Background,
 }
 
-/// the colors, a dark console's.
-mod color {
+/// the colors: slate greys with one violet accent, in a dark and a light
+/// set. text is 4.5:1 or more against what it sits on in both.
+pub mod color {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use egui::Color32;
-    pub const BG: Color32 = Color32::from_rgb(18, 19, 23);
-    pub const SURFACE: Color32 = Color32::from_rgb(28, 30, 36);
-    pub const RAISED: Color32 = Color32::from_rgb(38, 41, 49);
-    pub const HOVER: Color32 = Color32::from_rgb(46, 50, 60);
-    pub const LINE: Color32 = Color32::from_rgb(44, 47, 56);
-    pub const TEXT: Color32 = Color32::from_rgb(242, 243, 245);
-    pub const MUTED: Color32 = Color32::from_rgb(160, 166, 177);
-    pub const FAINT: Color32 = Color32::from_rgb(102, 108, 120);
-    pub const ACCENT: Color32 = Color32::from_rgb(62, 198, 255);
-    pub const DANGER: Color32 = Color32::from_rgb(255, 110, 100);
-    pub const WARN: Color32 = Color32::from_rgb(245, 180, 80);
-    pub const ON: Color32 = Color32::from_rgb(52, 199, 120);
+
+    struct Palette {
+        bg: Color32,
+        surface: Color32,
+        raised: Color32,
+        hover: Color32,
+        line: Color32,
+        text: Color32,
+        muted: Color32,
+        faint: Color32,
+        accent: Color32,
+        danger: Color32,
+        warn: Color32,
+        on: Color32,
+        /// a switch turned off, which the white knob must stand out on.
+        track: Color32,
+        /// a window's body.
+        panel: Color32,
+        scrim: u8,
+    }
+
+    const fn rgb(hex: u32) -> Color32 {
+        Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
+    }
+
+    const DARK: Palette = Palette {
+        bg: rgb(0x0B1120),
+        surface: rgb(0x151C2C),
+        raised: rgb(0x1F2738),
+        hover: rgb(0x283245),
+        line: rgb(0x2A3446),
+        text: rgb(0xF1F5F9),
+        muted: rgb(0x94A3B8),
+        faint: rgb(0x718098),
+        accent: rgb(0xA78BFA),
+        danger: rgb(0xF87171),
+        warn: rgb(0xFBBF24),
+        on: rgb(0x8B5CF6),
+        track: rgb(0x334155),
+        panel: rgb(0x0B1120),
+        scrim: 170,
+    };
+
+    const LIGHT: Palette = Palette {
+        bg: rgb(0xEEF2F7),
+        surface: rgb(0xFFFFFF),
+        raised: rgb(0xE8EDF4),
+        hover: rgb(0xDDE4EE),
+        line: rgb(0xD5DDE8),
+        text: rgb(0x0F172A),
+        muted: rgb(0x475569),
+        faint: rgb(0x64748B),
+        accent: rgb(0x7C3AED),
+        danger: rgb(0xDC2626),
+        warn: rgb(0xB45309),
+        on: rgb(0x7C3AED),
+        track: rgb(0xB8C3D3),
+        panel: rgb(0xF8FAFC),
+        scrim: 90,
+    };
+
+    static IS_LIGHT: AtomicBool = AtomicBool::new(false);
+
+    /// picks the set the interface is drawn in from now on.
+    pub fn set_light(light: bool) {
+        IS_LIGHT.store(light, Ordering::Relaxed);
+    }
+
+    pub fn is_light() -> bool {
+        IS_LIGHT.load(Ordering::Relaxed)
+    }
+
+    fn palette() -> &'static Palette {
+        if is_light() { &LIGHT } else { &DARK }
+    }
+
+    pub fn bg() -> Color32 { palette().bg }
+    pub fn surface() -> Color32 { palette().surface }
+    pub fn raised() -> Color32 { palette().raised }
+    pub fn hover() -> Color32 { palette().hover }
+    pub fn line() -> Color32 { palette().line }
+    pub fn text() -> Color32 { palette().text }
+    pub fn muted() -> Color32 { palette().muted }
+    pub fn faint() -> Color32 { palette().faint }
+    pub fn accent() -> Color32 { palette().accent }
+    pub fn danger() -> Color32 { palette().danger }
+    pub fn warn() -> Color32 { palette().warn }
+    pub fn on() -> Color32 { palette().on }
+    pub fn track() -> Color32 { palette().track }
+    pub fn panel() -> Color32 { palette().panel }
+
+    /// the dimming laid over what is behind a window.
+    pub fn scrim() -> Color32 {
+        Color32::from_black_alpha(palette().scrim)
+    }
+
+    /// egui's own widgets in the same colors.
+    pub fn visuals(light: bool) -> egui::Visuals {
+        let p = if light { &LIGHT } else { &DARK };
+        let mut visuals = if light { egui::Visuals::light() } else { egui::Visuals::dark() };
+        visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
+        visuals.panel_fill = p.bg;
+        visuals.window_fill = p.surface;
+        visuals.window_stroke = egui::Stroke::new(1.0, p.line);
+        visuals.extreme_bg_color = p.raised;
+        visuals.faint_bg_color = p.raised;
+        visuals.override_text_color = Some(p.text);
+        visuals.hyperlink_color = p.accent;
+        visuals.window_corner_radius = egui::CornerRadius::same(12);
+        visuals.menu_corner_radius = egui::CornerRadius::same(8);
+        let widgets = [
+            (&mut visuals.widgets.noninteractive, p.surface, p.line, p.muted),
+            (&mut visuals.widgets.inactive, p.raised, p.line, p.text),
+            (&mut visuals.widgets.hovered, p.hover, p.accent, p.text),
+            (&mut visuals.widgets.active, p.hover, p.accent, p.text),
+            (&mut visuals.widgets.open, p.raised, p.line, p.text),
+        ];
+        for (widget, fill, stroke, text) in widgets {
+            widget.corner_radius = egui::CornerRadius::same(8);
+            widget.bg_fill = fill;
+            widget.weak_bg_fill = fill;
+            widget.bg_stroke = egui::Stroke::new(1.0, stroke);
+            widget.fg_stroke = egui::Stroke::new(1.0, text);
+        }
+        visuals.selection.bg_fill = p.accent.gamma_multiply(0.35);
+        visuals.selection.stroke = egui::Stroke::new(1.5, p.accent);
+        visuals
+    }
 }
 
 pub const RESOLUTION_SCALES: [u32; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
 
-/// a resolution scale, with what it draws at and what that is close to.
+/// a resolution scale, short, with the height of the top screen it draws.
 pub fn resolution_label(scale: u32) -> &'static str {
     match scale {
-        1 => "1x (400x240 - Native 3DS)",
-        2 => "2x (800x480 - 480p)",
-        3 => "3x (1200x720 - 720p HD)",
-        4 => "4x (1600x960)",
-        5 => "5x (2000x1200 - 1080p FHD)",
-        6 => "6x (2400x1440 - 1440p 2K)",
-        7 => "7x (2800x1680)",
-        8 => "8x (3200x1920 - 4K UHD)",
+        1 => "1x · Native",
+        2 => "2x · 480p",
+        3 => "3x · 720p",
+        4 => "4x · 960p",
+        5 => "5x · 1200p",
+        6 => "6x · 1440p",
+        7 => "7x · 1680p",
+        8 => "8x · 4K",
         _ => "Custom",
     }
 }
 
-/// a resolution scale, short, for the value of its row.
-pub fn resolution_badge_label(scale: u32) -> &'static str {
-    match scale {
-        1 => "1x (400x240)",
-        2 => "2x (800x480)",
-        3 => "3x (1200x720 720p)",
-        4 => "4x (1600x960)",
-        5 => "5x (2000x1200 1080p)",
-        6 => "6x (2400x1440 2K)",
-        7 => "7x (2800x1680)",
-        8 => "8x (3200x1920 4K)",
-        _ => "Custom",
+/// the size of the top screen a resolution scale draws, for under it in
+/// the list it is picked from.
+pub fn resolution_size(scale: u32) -> String {
+    format!("{} × {}", 400 * scale, 240 * scale)
+}
+
+/// a line for each of the choices of a setting, what it does, when they
+/// need one.
+fn choice_notes(item: Item) -> Vec<String> {
+    match item {
+        Item::Filter => Filter::ALL.iter().map(|filter| filter.describe().to_owned()).collect(),
+        Item::Resolution => RESOLUTION_SCALES.iter().map(|&scale| resolution_size(scale)).collect(),
+        Item::Rasterizer => vec!["Fast, and needed for the settings above".into(), "Slow, but draws exactly as the console does".into()],
+        Item::Renderer => vec!["Fastest, and needed for frame interpolation".into(), "Try it if a game shows glitches".into()],
+        _ => Vec::new(),
     }
 }
+
+/// the choices of how the 3D is drawn, the GPU's first.
+const RASTERIZERS: [&str; 2] = ["GPU", "CPU"];
 
 fn names<T: Copy + PartialEq>(all: &[T], current: T, name: impl Fn(T) -> &'static str) -> (Vec<String>, usize) {
     (all.iter().map(|&item| name(item).to_owned()).collect(), all.iter().position(|&item| item == current).unwrap_or(0))
@@ -654,6 +798,8 @@ fn owned(settings: &Settings, scope: Scope, item: Item) -> bool {
 fn choices(item: Item, settings: &Settings) -> Option<(Vec<String>, usize)> {
     Some(match item {
         Item::Renderer => names(&Renderer::ALL, settings.renderer, Renderer::name),
+        Item::Theme => names(&Theme::ALL, settings.theme, Theme::name),
+        Item::Rasterizer => (RASTERIZERS.iter().map(|&name| name.to_owned()).collect(), usize::from(!settings.hardware_rasterizer)),
         Item::Resolution => (RESOLUTION_SCALES.iter().map(|&scale| resolution_label(scale).to_owned()).collect(), settings.resolution.clamp(1, 8) as usize - 1),
         Item::Filter => names(&Filter::ALL, settings.filter, Filter::name),
         Item::FpsLimit => names(&FpsLimit::ALL, settings.fps_limit, FpsLimit::badge_name),
@@ -672,6 +818,8 @@ fn choices(item: Item, settings: &Settings) -> Option<(Vec<String>, usize)> {
 fn choose(item: Item, index: usize, settings: &mut Settings, scope: Scope) {
     match item {
         Item::Renderer => settings.renderer = Renderer::ALL[index.min(Renderer::ALL.len() - 1)],
+        Item::Theme => settings.theme = Theme::ALL[index.min(Theme::ALL.len() - 1)],
+        Item::Rasterizer => put!(settings, scope, hardware_rasterizer, index == 0),
         Item::Resolution => put!(settings, scope, resolution, index.min(7) as u32 + 1),
         Item::Filter => put!(settings, scope, filter, Filter::ALL[index.min(Filter::ALL.len() - 1)]),
         Item::FpsLimit => put!(settings, scope, fps_limit, FpsLimit::ALL[index.min(FpsLimit::ALL.len() - 1)]),
@@ -693,7 +841,6 @@ fn toggle(item: Item, settings: &mut Settings, scope: Scope) {
         Scope::System => None,
     });
     match item {
-        Item::Rasterizer => put!(settings, scope, hardware_rasterizer, !shown.hardware_rasterizer),
         Item::TexturePacks => put!(settings, scope, texture_packs, !shown.texture_packs),
         Item::SmoothTextures => put!(settings, scope, smooth_textures, !shown.smooth_textures),
         Item::Interpolation => put!(settings, scope, frame_interpolation, !shown.frame_interpolation),
@@ -738,6 +885,8 @@ enum Kind {
 fn value_kind(item: Item) -> Kind {
     match item {
         Item::Renderer
+        | Item::Theme
+        | Item::Rasterizer
         | Item::Resolution
         | Item::Filter
         | Item::FpsLimit
@@ -748,7 +897,7 @@ fn value_kind(item: Item) -> Kind {
         | Item::Microphone
         | Item::Language
         | Item::Camera => Kind::Choice,
-        Item::Rasterizer | Item::TexturePacks | Item::SmoothTextures | Item::Interpolation | Item::IntegerScale | Item::Recompiled | Item::SwapEyes | Item::ShowFps | Item::Mute => {
+        Item::TexturePacks | Item::SmoothTextures | Item::Interpolation | Item::IntegerScale | Item::Recompiled | Item::SwapEyes | Item::ShowFps | Item::Mute => {
             Kind::Switch
         }
         Item::Depth | Item::Volume | Item::BackgroundOpacity | Item::Slot => Kind::Range,
@@ -764,52 +913,52 @@ fn setting(item: Item, settings: &Settings, scope: Scope) -> Row {
     });
     let hardware = shown.hardware_rasterizer;
     let stereo = shown.stereo != Stereo3d::Off;
-    let (label, value, note): (&str, Value, Option<&str>) = match item {
-        Item::Renderer => ("Presenter", Value::Text(shown.renderer.name().into()), Some("Changes the next time Zakuro starts")),
-        Item::Rasterizer => ("Draw 3D on the GPU", Value::On(hardware), None),
-        Item::Resolution => ("Resolution", Value::Text(resolution_badge_label(shown.resolution).into()), None),
-        Item::Filter => ("Screen filter", Value::Text(shown.filter.name().into()), None),
-        Item::TexturePacks => ("HD texture packs", Value::On(shown.texture_packs), Some("Applies from the next start")),
-        Item::SmoothTextures => ("Smooth textures", Value::On(shown.smooth_textures), Some("Redraws the game's textures 4x larger with smooth edges")),
-        Item::Interpolation => ("Frame interpolation", Value::On(shown.frame_interpolation), Some("Smooths 30 FPS games to 60, a frame late")),
-        Item::FpsLimit => ("Frame rate limit", Value::Text(shown.fps_limit.badge_name().into()), None),
-        Item::Layout => ("Screen layout", Value::Text(shown.layout.name().into()), Some("F9 cycles while playing")),
-        Item::Orientation => ("Rotation", Value::Text(shown.orientation.name().into()), None),
-        Item::IntegerScale => ("Whole-number scaling", Value::On(shown.integer_scale), None),
-        Item::TopShape => ("Top screen shape", Value::Text(shown.top_shape.name().into()), Some("Wider shapes need a widescreen code for the game")),
-        Item::Fullscreen => ("Fullscreen", Value::On(shown.fullscreen), Some("F11 switches it too. Zakuro opens maximized")),
-        Item::ShowFps => ("Show frame rate", Value::On(shown.show_fps), None),
-        Item::Stereo => ("3D mode", Value::Text(shown.stereo.name().into()), None),
-        Item::Depth => ("3D depth", Value::Range(format!("{}%", shown.depth_3d)), None),
-        Item::SwapEyes => ("Swap eyes", Value::On(shown.swap_eyes), None),
-        Item::Volume => ("Volume", Value::Range(format!("{:.0}%", shown.volume * 100.0)), None),
-        Item::Mute => ("Mute", Value::On(shown.mute), None),
-        Item::Microphone => ("Microphone", Value::Text(shown.microphone.name().into()), Some("Hold M to blow into it")),
-        Item::Language => ("Console language", Value::Text(shown.language.name().into()), Some("Applies from the next start")),
-        Item::Recompiled => ("Use recompiled code", Value::On(shown.recompiled), Some("Applies from the next start")),
-        Item::Camera => ("Cameras see", Value::Text(shown.camera.name().into()), None),
-        Item::CameraPicture => (
-            "Camera picture",
-            Value::Text(shown.camera_picture.as_ref().and_then(|path| path.file_name()).map_or("None".into(), |name| name.to_string_lossy().into_owned())),
-            None,
+    let file = |path: &Option<PathBuf>| path.as_ref().and_then(|path| path.file_name()).map_or("None".into(), |name| name.to_string_lossy().into_owned());
+    let (label, value, help): (&str, Value, &str) = match item {
+        Item::Theme => ("Theme", Value::Text(settings.theme.name().into()), "Light or dark. Same as system follows Windows."),
+        Item::Renderer => ("Graphics API", Value::Text(shown.renderer.name().into()), "Vulkan is the fastest. Switch to OpenGL only if a game shows glitches."),
+        Item::Rasterizer => (
+            "3D rendering",
+            Value::Text(RASTERIZERS[usize::from(!hardware)].into()),
+            "The GPU is fast and makes the resolution, textures and frame interpolation possible. The CPU is slow but exact.",
         ),
-        Item::BackgroundOpacity => ("Background strength", Value::Range(format!("{:.0}%", shown.background_opacity * 100.0)), None),
-        Item::Background => (
-            "Home background",
-            Value::Text(shown.background.as_ref().and_then(|path| path.file_name()).map_or("None".into(), |name| name.to_string_lossy().into_owned())),
-            None,
-        ),
-        _ => ("", Value::None, None),
+        Item::Resolution => ("Resolution", Value::Text(resolution_label(shown.resolution).into()), "How finely the 3D is drawn. Higher looks cleaner and needs a faster GPU."),
+        Item::Filter => ("Display filter", Value::Text(shown.filter.name().into()), "How the picture is fitted to your screen."),
+        Item::SmoothTextures => ("Upscale textures", Value::On(shown.smooth_textures), "Redraws the game's low-resolution textures with clean, smooth edges."),
+        Item::TexturePacks => ("Custom textures", Value::On(shown.texture_packs), "Swaps in textures from packs added to a game, often HD ones. Add them in its Options, under Add-ons."),
+        Item::Interpolation => ("Frame interpolation", Value::On(shown.frame_interpolation), "Makes 30 FPS games as smooth as 60, with a frame more of delay."),
+        Item::FpsLimit => ("Frame rate limit", Value::Text(shown.fps_limit.badge_name().into()), "How often the screen updates. Games always run at their normal speed."),
+        Item::Layout => ("Screen layout", Value::Text(shown.layout.name().into()), "How the two screens are arranged. F9 switches it while playing."),
+        Item::Orientation => ("Rotation", Value::Text(shown.orientation.name().into()), "Turns the screens, for games played with the console held sideways."),
+        Item::IntegerScale => ("Whole-number scaling", Value::On(shown.integer_scale), "Every pixel the same size, which may leave borders around the screens."),
+        Item::TopShape => ("Top screen shape", Value::Text(shown.top_shape.name().into()), "Wider shapes need a widescreen code for the game, in its Cheats."),
+        Item::Fullscreen => ("Fullscreen", Value::On(shown.fullscreen), "F11 switches it too."),
+        Item::ShowFps => ("Show frame rate", Value::On(shown.show_fps), "Shows the frame rate in a corner while playing."),
+        Item::Stereo => ("3D mode", Value::Text(shown.stereo.name().into()), "How the 3D effect is shown, for games that have one."),
+        Item::Depth => ("3D depth", Value::Range(format!("{}%", shown.depth_3d)), "How strong the 3D effect is."),
+        Item::SwapEyes => ("Swap eyes", Value::On(shown.swap_eyes), "Swaps the pictures for the left and right eye."),
+        Item::Volume => ("Volume", Value::Range(format!("{:.0}%", shown.volume * 100.0)), ""),
+        Item::Mute => ("Mute", Value::On(shown.mute), ""),
+        Item::Microphone => ("Microphone", Value::Text(shown.microphone.name().into()), "What games hear. Hold M to blow into it."),
+        Item::Language => ("Console language", Value::Text(shown.language.name().into()), "The language games show their text in, when they have it."),
+        Item::Recompiled => ("Use recompiled code", Value::On(shown.recompiled), "Runs games from code recompiled for your PC, which is much faster."),
+        Item::Camera => ("Cameras see", Value::Text(shown.camera.name().into()), "What the console's cameras see."),
+        Item::CameraPicture => ("Camera picture", Value::Text(file(&shown.camera_picture)), "The picture the cameras see, when they see one."),
+        Item::BackgroundOpacity => ("Background strength", Value::Range(format!("{:.0}%", shown.background_opacity * 100.0)), ""),
+        Item::Background => ("Home background", Value::Text(file(&shown.background)), "A picture behind the Home screen."),
+        _ => ("", Value::None, ""),
     };
-    let enabled = match item {
-        Item::Resolution | Item::TexturePacks | Item::SmoothTextures => hardware,
-        Item::Interpolation => hardware && shown.renderer == Renderer::Vulkan,
-        Item::Depth | Item::SwapEyes => stereo,
-        Item::BackgroundOpacity => shown.background.is_some(),
-        _ => true,
+    // a setting that can't be used now says why
+    let (enabled, note) = match item {
+        Item::Resolution | Item::TexturePacks | Item::SmoothTextures if !hardware => (false, Some("Needs 3D rendering on the GPU")),
+        Item::Interpolation if !hardware || shown.renderer != Renderer::Vulkan => (false, Some("Needs Vulkan and 3D rendering on the GPU")),
+        Item::Depth | Item::SwapEyes => (stereo, None),
+        Item::BackgroundOpacity => (shown.background.is_some(), None),
+        _ => (true, None),
     };
     let mut row = Row::new(item, label, value).enabled(enabled);
     row.note = note.map(str::to_owned);
+    row.help = Some(help).filter(|help| !help.is_empty());
     row.changed = owned(settings, scope, item);
     row
 }
@@ -910,6 +1059,11 @@ impl Menus {
         }
         let ctx = ui.ctx().clone();
         let layered = self.modal_open();
+        if view.running.is_none() {
+            // Home fades while a window is over it; underneath stays solid,
+            // not the black the window is cleared to
+            ui.painter().rect_filled(ui.max_rect(), 0.0, color::bg());
+        }
         ui.add_enabled_ui(!layered, |ui| match &view.running {
             Some(running) => self.over(ui, running, view),
             None => self.home(ui, settings, view),
@@ -1191,7 +1345,7 @@ impl Menus {
     /// asks the player about a recompile, saying when another one goes first.
     pub fn open_ask(&mut self, ask: Ask, jobs: &[Job], waiting: &[Wanted]) {
         let (title, options) = ask.popup(crate::recompile::blocking_play(jobs, waiting));
-        self.select_popup = Some(SelectPopup { item: Item::Ask, scope: self.scope(), title, options, selected: 0 });
+        self.select_popup = Some(SelectPopup { item: Item::Ask, scope: self.scope(), title, options, selected: 0, current: None });
         self.ask = Some(ask);
     }
 
@@ -1211,12 +1365,23 @@ impl Menus {
         let game = scope != Scope::System;
         match section {
             Section::Graphics => {
-                if !game {
-                    add(Item::Renderer);
-                }
-                for item in [Item::Rasterizer, Item::Resolution, Item::Filter, Item::SmoothTextures, Item::TexturePacks, Item::Interpolation, Item::FpsLimit] {
+                for item in [Item::Resolution, Item::Filter, Item::SmoothTextures, Item::TexturePacks] {
                     add(item);
                 }
+                entries.push(Entry::Header("Motion".into()));
+                for item in [Item::FpsLimit, Item::Interpolation] {
+                    entries.push(Entry::Row(setting(item, settings, scope)));
+                }
+                entries.push(Entry::Header("Advanced".into()));
+                if !game {
+                    let mut api = setting(Item::Renderer, settings, scope);
+                    if view.running.is_some() {
+                        // the running game draws with the presenter's device
+                        api = api.enabled(false).note("Change it from Home");
+                    }
+                    entries.push(Entry::Row(api));
+                }
+                entries.push(Entry::Row(setting(Item::Rasterizer, settings, scope)));
             }
             Section::Screens => {
                 for item in [Item::Layout, Item::Orientation, Item::IntegerScale, Item::TopShape] {
@@ -1226,6 +1391,7 @@ impl Menus {
                     for item in [Item::Fullscreen, Item::ShowFps] {
                         add(item);
                     }
+                    add(Item::Theme);
                 }
             }
             Section::Stereo => {
@@ -1273,9 +1439,6 @@ impl Menus {
             }
             Section::Library => {
                 entries.push(Entry::Row(Row::new(Item::AddContent, "Add games and content", Value::More).note("Games, updates, DLC, texture packs and cheat files")));
-                let library = store::library_dir(settings, view.data_dir).map_or("Not set".to_owned(), |path| path.display().to_string());
-                entries.push(Entry::Row(Row::new(Item::LibraryLocation, "Library location", Value::Text(short_path(&library))).note("Where added games are kept")));
-                entries.push(Entry::Row(Row::new(Item::Rescan, "Look for games again", Value::More)));
                 let outdated = idle(view.library.games.iter().filter(|game| game.outdated).map(Game::wanted), view.jobs, view.waiting).len();
                 if outdated > 0 && view.running.is_none() {
                     entries.push(Entry::Row(Row::new(Item::RecompileOutdated, format!("Recompile {outdated} outdated games"), Value::More).note("About ten minutes each, one after another. Games can't be started meanwhile")));
@@ -1286,7 +1449,7 @@ impl Menus {
             }
             Section::AddOns => {
                 let Some((id, _)) = self.game_settings else { return entries };
-                entries.push(Entry::Header("HD texture packs".into()));
+                entries.push(Entry::Header("Texture packs".into()));
                 for (index, pack) in self.packs.iter().enumerate() {
                     let how = if pack.target.is_some() { "Linked" } else { "In Zakuro" };
                     entries.push(Entry::Row(Row::new(Item::Pack(index), pack.name.clone(), Value::Text(how.into())).note("Select to remove")));
@@ -1306,6 +1469,27 @@ impl Menus {
                     (_, true) => remove.enabled(false).note("Not while it is recompiling"),
                     _ => remove.note("Takes it off Home. Its saves and mods stay"),
                 }));
+            }
+        }
+        // what a game reads as it starts says so when the running game
+        // started with something else
+        if let Some((running, started)) = view.running.as_ref().and_then(|running| Some((running, running.started?))) {
+            let ours = match scope {
+                Scope::Game(id) => running.program_id == Some(id),
+                Scope::System => true,
+            };
+            let now = settings.for_game(running.program_id);
+            for entry in entries.iter_mut().filter(|_| ours) {
+                let Entry::Row(row) = entry else { continue };
+                let differs = match row.item {
+                    Item::Language => now.language != started.language,
+                    Item::Recompiled => now.recompiled != started.recompiled,
+                    Item::Rasterizer => now.hardware_rasterizer != started.hardware_rasterizer,
+                    _ => false,
+                };
+                if differs {
+                    row.note = Some("Restart the game to apply".into());
+                }
             }
         }
         entries
@@ -1463,7 +1647,7 @@ impl Menus {
                 });
                 if let Some((options, selected)) = choices(item, &shown) {
                     let title = setting(item, settings, scope).label;
-                    self.select_popup = Some(SelectPopup { item, scope, title, options, selected });
+                    self.select_popup = Some(SelectPopup { item, scope, title, options, selected, current: Some(selected) });
                 }
                 return actions;
             }
@@ -1501,8 +1685,6 @@ impl Menus {
                 self.toast("Keyboard keys reset");
             }
             Item::AddContent => actions.push(Action::AddContent(None)),
-            Item::LibraryLocation => actions.push(Action::ChooseLibrary),
-            Item::Rescan => actions.push(Action::Rescan),
             Item::RecompileOutdated if view.running.is_none() => {
                 let outdated = idle(view.library.games.iter().filter(|game| game.outdated).map(Game::wanted), view.jobs, view.waiting);
                 actions.push(Action::Recompile(outdated));
@@ -1524,7 +1706,7 @@ impl Menus {
                         None => format!("Delete {}? Its files are deleted.", pack.name),
                     };
                     let options = vec![if pack.target.is_some() { "Remove" } else { "Delete" }.to_owned(), "Keep".to_owned()];
-                    self.select_popup = Some(SelectPopup { item, scope, title, options, selected: 1 });
+                    self.select_popup = Some(SelectPopup { item, scope, title, options, selected: 1, current: None });
                 }
             }
             Item::AddPack => {
@@ -1555,7 +1737,7 @@ impl Menus {
                 // removing deletes the copies in Zakuro's library, so it is asked first
                 if let Some((_, name)) = &self.game_settings {
                     let title = format!("Delete {name}, with its update and DLC, from Zakuro? Its saves and mods are kept.");
-                    self.select_popup = Some(SelectPopup { item, scope, title, options: vec!["Delete".to_owned(), "Keep".to_owned()], selected: 1 });
+                    self.select_popup = Some(SelectPopup { item, scope, title, options: vec!["Delete".to_owned(), "Keep".to_owned()], selected: 1, current: None });
                 }
             }
             Item::UseSystem => {
@@ -1787,12 +1969,6 @@ fn file_label(path: &Path) -> String {
     path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
 }
 
-/// a long path, its start cut.
-fn short_path(path: &str) -> String {
-    let chars: Vec<char> = path.chars().collect();
-    if chars.len() <= 42 { path.to_owned() } else { format!("…{}", chars[chars.len() - 40..].iter().collect::<String>()) }
-}
-
 // drawing
 
 /// how a list is drawn.
@@ -1827,7 +2003,7 @@ impl Menus {
                     ui.add_space(if text.is_empty() { 6.0 } else { 14.0 });
                     if !text.is_empty() {
                         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 22.0), Sense::hover());
-                        ui.painter().text(rect.left_center() + Vec2::new(14.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(13.0), color::MUTED);
+                        ui.painter().text(rect.left_center() + Vec2::new(14.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(13.0), color::muted());
                     }
                 }
                 Entry::Row(row) => {
@@ -1906,11 +2082,11 @@ impl Highlight {
         let top = ctx.animate_value_with_time(id.with("top"), rect.top() - self.origin, glide);
         let height = ctx.animate_value_with_time(id.with("height"), rect.height(), glide);
         let inner = Rect::from_min_size(Pos2::new(rect.left(), self.origin + top), Vec2::new(rect.width(), height)).shrink2(Vec2::splat(2.0));
-        let mut shapes = vec![egui::Shape::rect_filled(inner, CornerRadius::same(10), color::RAISED)];
+        let mut shapes = vec![egui::Shape::rect_filled(inner, CornerRadius::same(10), color::raised())];
         if mode == InputMode::Directional {
             // a highlight that breathes, as a console's does
             let glow = (0.75 + 0.25 * (time * 3.2).sin()) as f32;
-            shapes.push(egui::Shape::rect_stroke(inner, CornerRadius::same(10), Stroke::new(2.5, color::ACCENT.gamma_multiply(glow)), StrokeKind::Inside));
+            shapes.push(egui::Shape::rect_stroke(inner, CornerRadius::same(10), Stroke::new(2.5, color::accent().gamma_multiply(glow)), StrokeKind::Inside));
         }
         ui.painter().set(self.slot, egui::Shape::Vec(shapes));
     }
@@ -1924,29 +2100,29 @@ fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMo
     let painter = ui.painter();
     let hovered = ui.rect_contains_pointer(rect) && mode == InputMode::Pointer && row.enabled && ui.is_enabled();
     if hovered && !selected {
-        painter.rect_filled(rect.shrink2(Vec2::new(2.0, 2.0)), CornerRadius::same(10), color::RAISED);
+        painter.rect_filled(rect.shrink2(Vec2::new(2.0, 2.0)), CornerRadius::same(10), color::raised());
     }
     if !selected && !hovered {
-        painter.line_segment([Pos2::new(rect.left() + 14.0, rect.bottom()), Pos2::new(rect.right() - 14.0, rect.bottom())], Stroke::new(1.0, color::LINE));
+        painter.line_segment([Pos2::new(rect.left() + 14.0, rect.bottom()), Pos2::new(rect.right() - 14.0, rect.bottom())], Stroke::new(1.0, color::line()));
     }
     let text_color = match (row.enabled, row.danger) {
-        (false, _) => color::FAINT,
-        (true, true) => color::DANGER,
-        (true, false) => color::TEXT,
+        (false, _) => color::faint(),
+        (true, true) => color::danger(),
+        (true, false) => color::text(),
     };
     let left = rect.left() + if row.changed { 30.0 } else { 18.0 };
     let label_y = if row.note.is_some() { rect.center().y - 9.0 } else { rect.center().y };
     if row.changed {
-        painter.circle_filled(Pos2::new(rect.left() + 17.0, label_y), 4.0, color::ACCENT);
+        painter.circle_filled(Pos2::new(rect.left() + 17.0, label_y), 4.0, color::accent());
     }
     // the value first, so the label knows the room it has
     let right = rect.right() - 18.0;
-    let value_color = if row.enabled { if selected { color::ACCENT } else { color::MUTED } } else { color::FAINT };
+    let value_color = if row.enabled { if selected { color::accent() } else { color::muted() } } else { color::faint() };
     let value_left = match &row.value {
         Value::None => right,
         Value::On(on) => {
             let track = Rect::from_center_size(Pos2::new(right - 22.0, rect.center().y), Vec2::new(44.0, 24.0));
-            let fill = if *on { color::ON } else { color::HOVER };
+            let fill = if *on { color::on() } else { color::track() };
             painter.rect_filled(track, CornerRadius::same(12), if row.enabled { fill } else { fill.gamma_multiply(0.4) });
             let knob = if *on { track.right() - 12.0 } else { track.left() + 12.0 };
             painter.circle_filled(Pos2::new(knob, track.center().y), 9.0, Color32::WHITE);
@@ -1960,22 +2136,31 @@ fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMo
             let more = Rect::from_x_y_ranges(right - 24.0..=rect.right(), rect.y_range());
             arrows = Some((less, more));
             if selected || hovered {
-                painter.text(Pos2::new(right, rect.center().y), Align2::RIGHT_CENTER, "›", FontId::proportional(22.0), value_color);
-                painter.text(Pos2::new(shown.left() - 12.0, rect.center().y), Align2::RIGHT_CENTER, "‹", FontId::proportional(22.0), value_color);
+                crate::icons::paint(painter, Rect::from_center_size(Pos2::new(right - 9.0, rect.center().y), Vec2::splat(18.0)), Icon::ChevronRight, value_color);
+                crate::icons::paint(painter, Rect::from_center_size(Pos2::new(shown.left() - 17.0, rect.center().y), Vec2::splat(18.0)), Icon::ChevronLeft, value_color);
                 shown.left() - 30.0
             } else {
                 shown.left()
             }
         }
-        Value::More => painter.text(Pos2::new(right, rect.center().y), Align2::RIGHT_CENTER, "›", FontId::proportional(22.0), value_color).left(),
+        Value::More => {
+            let at = Rect::from_center_size(Pos2::new(right - 9.0, rect.center().y), Vec2::splat(18.0));
+            crate::icons::paint(painter, at, Icon::ChevronRight, if row.enabled { color::faint() } else { value_color });
+            at.left()
+        }
+        Value::Check => {
+            let at = Rect::from_center_size(Pos2::new(right - 10.0, rect.center().y), Vec2::splat(20.0));
+            crate::icons::paint(painter, at, Icon::Check, color::accent());
+            at.left()
+        }
     };
     let room = (value_left - left - 16.0).max(40.0);
     let label = painter.layout(row.label.clone(), FontId::proportional(16.0), text_color, room);
     let label = if label.rows.len() > 1 { painter.layout_no_wrap(truncate(&row.label, room, 16.0), FontId::proportional(16.0), text_color) } else { label };
     painter.galley(Pos2::new(left, label_y - label.size().y / 2.0), label, text_color);
     if let Some(note) = &row.note {
-        let note = painter.layout_no_wrap(truncate(note, room, 12.5), FontId::proportional(12.5), color::FAINT);
-        painter.galley(Pos2::new(left, rect.center().y + 3.0), note, color::FAINT);
+        let note = painter.layout_no_wrap(truncate(note, room, 12.5), FontId::proportional(12.5), color::faint());
+        painter.galley(Pos2::new(left, rect.center().y + 3.0), note, color::faint());
     }
     arrows
 }
@@ -2017,12 +2202,9 @@ fn truncate(text: &str, room: f32, size: f32) -> String {
 fn close_button(ui: &mut egui::Ui, center: Pos2) -> bool {
     let rect = Rect::from_center_size(center, Vec2::splat(36.0));
     let response = ui.interact(rect, ui.id().with("close"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Close");
-    let fill = if response.hovered() { color::HOVER } else { color::RAISED };
+    let fill = if response.hovered() { color::hover() } else { color::raised() };
     ui.painter().circle_filled(center, 18.0, fill);
-    let d = 6.0;
-    let stroke = Stroke::new(2.0, color::TEXT);
-    ui.painter().line_segment([center + Vec2::new(-d, -d), center + Vec2::new(d, d)], stroke);
-    ui.painter().line_segment([center + Vec2::new(-d, d), center + Vec2::new(d, -d)], stroke);
+    crate::icons::paint(ui.painter(), Rect::from_center_size(center, Vec2::splat(18.0)), Icon::Close, color::text());
     response.clicked()
 }
 
@@ -2033,13 +2215,13 @@ fn hints(ui: &egui::Ui, rect: Rect, pad: bool, list: &[(Nav, &str)]) {
     let mut x = rect.right() - 20.0;
     // a press the keyboard has no key for goes unhinted
     for (nav, label) in list.iter().rev().filter(|(nav, _)| !glyph(*nav, pad).is_empty()) {
-        let text = painter.text(Pos2::new(x, rect.center().y), Align2::RIGHT_CENTER, label, FontId::proportional(14.0), color::MUTED);
+        let text = painter.text(Pos2::new(x, rect.center().y), Align2::RIGHT_CENTER, label, FontId::proportional(14.0), color::muted());
         x = text.left() - 8.0;
         let glyph = glyph(*nav, pad);
         let width = (glyph.chars().count() as f32 * 8.0 + 14.0).max(24.0);
         let badge = Rect::from_center_size(Pos2::new(x - width / 2.0, rect.center().y), Vec2::new(width, 24.0));
-        painter.rect_filled(badge, CornerRadius::same(12), color::TEXT);
-        painter.text(badge.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(12.5), color::BG);
+        painter.rect_filled(badge, CornerRadius::same(12), color::text());
+        painter.text(badge.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(12.5), color::bg());
         x = badge.left() - 20.0;
     }
 }
@@ -2091,29 +2273,29 @@ fn window(ctx: &egui::Context, id: &str, size: Vec2, (title, subtitle): (&str, O
             ui.expand_to_include_rect(screen);
             // the backdrop takes the clicks around the window
             let backdrop = ui.interact(screen, ui.id().with("backdrop"), Sense::click());
-            ui.painter().rect_filled(cover, 0.0, Color32::from_black_alpha(170));
-            ui.painter().rect_filled(rect, CornerRadius::same(18), color::BG);
-            ui.painter().rect_stroke(rect, CornerRadius::same(18), Stroke::new(1.0, color::LINE), StrokeKind::Inside);
+            ui.painter().rect_filled(cover, 0.0, color::scrim());
+            ui.painter().rect_filled(rect, CornerRadius::same(18), color::panel());
+            ui.painter().rect_stroke(rect, CornerRadius::same(18), Stroke::new(1.0, color::line()), StrokeKind::Inside);
             let _ = backdrop;
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
             ui.add_enabled_ui(enabled, |ui| {
                 let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), if subtitle.is_some() { 76.0 } else { 64.0 }));
-                ui.painter().text(header.left_top() + Vec2::new(28.0, 22.0), Align2::LEFT_TOP, title, strong(22.0), color::TEXT);
+                ui.painter().text(header.left_top() + Vec2::new(28.0, 22.0), Align2::LEFT_TOP, title, strong(22.0), color::text());
                 if let Some(subtitle) = subtitle {
-                    ui.painter().text(header.left_top() + Vec2::new(28.0, 50.0), Align2::LEFT_TOP, subtitle, FontId::proportional(13.5), color::MUTED);
+                    ui.painter().text(header.left_top() + Vec2::new(28.0, 50.0), Align2::LEFT_TOP, subtitle, FontId::proportional(13.5), color::muted());
                 }
                 if close_button(ui, Pos2::new(header.right() - 34.0, header.top() + 34.0)) {
                     closed = true;
                 }
                 let foot = if footer.is_some_and(|(show, _, _)| show) { 52.0 } else { 16.0 };
                 let body = Rect::from_min_max(Pos2::new(rect.left(), header.bottom()), Pos2::new(rect.right(), rect.bottom() - foot));
-                ui.painter().line_segment([body.left_top() + Vec2::new(20.0, 0.0), body.right_top() - Vec2::new(20.0, 0.0)], Stroke::new(1.0, color::LINE));
+                ui.painter().line_segment([body.left_top() + Vec2::new(20.0, 0.0), body.right_top() - Vec2::new(20.0, 0.0)], Stroke::new(1.0, color::line()));
                 let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(body.shrink2(Vec2::new(12.0, 8.0))));
                 inner.set_clip_rect(body);
                 contents(&mut inner);
                 if let Some((true, pad, list)) = footer {
                     let foot = Rect::from_min_max(Pos2::new(rect.left(), rect.bottom() - foot), rect.max);
-                    ui.painter().line_segment([foot.left_top() + Vec2::new(20.0, 0.0), foot.right_top() - Vec2::new(20.0, 0.0)], Stroke::new(1.0, color::LINE));
+                    ui.painter().line_segment([foot.left_top() + Vec2::new(20.0, 0.0), foot.right_top() - Vec2::new(20.0, 0.0)], Stroke::new(1.0, color::line()));
                     hints(ui, foot, pad, list);
                 }
             });
@@ -2151,23 +2333,40 @@ impl Menus {
                 let current = index == self.page.section;
                 let hovered = response.hovered() && self.mode == InputMode::Pointer;
                 if current || hovered {
-                    side_ui.painter().rect_filled(rect.shrink(2.0), CornerRadius::same(10), if current { color::RAISED } else { color::SURFACE });
+                    side_ui.painter().rect_filled(rect.shrink(2.0), CornerRadius::same(10), if current { color::raised() } else { color::surface() });
                 }
                 if current {
                     let bar = Rect::from_min_size(rect.left_top() + Vec2::new(6.0, 12.0), Vec2::new(4.0, 22.0));
-                    side_ui.painter().rect_filled(bar, CornerRadius::same(2), color::ACCENT);
+                    side_ui.painter().rect_filled(bar, CornerRadius::same(2), color::accent());
                 }
                 if current && !self.page.in_list && self.mode == InputMode::Directional {
                     let glow = (0.75 + 0.25 * (side_ui.ctx().input(|i| i.time) * 3.2).sin()) as f32;
-                    side_ui.painter().rect_stroke(rect.shrink(2.0), CornerRadius::same(10), Stroke::new(2.5, color::ACCENT.gamma_multiply(glow)), StrokeKind::Inside);
+                    side_ui.painter().rect_stroke(rect.shrink(2.0), CornerRadius::same(10), Stroke::new(2.5, color::accent().gamma_multiply(glow)), StrokeKind::Inside);
                 }
-                let text_color = if current { color::TEXT } else { color::MUTED };
-                side_ui.painter().text(rect.left_center() + Vec2::new(22.0, 0.0), Align2::LEFT_CENTER, section.name(), FontId::proportional(16.0), text_color);
+                let text_color = if current { color::text() } else { color::muted() };
+                let icon = Rect::from_center_size(rect.left_center() + Vec2::new(32.0, 0.0), Vec2::splat(20.0));
+                crate::icons::paint(side_ui.painter(), icon, section.icon(), if current { color::accent() } else { color::muted() });
+                side_ui.painter().text(rect.left_center() + Vec2::new(54.0, 0.0), Align2::LEFT_CENTER, section.name(), FontId::proportional(16.0), text_color);
                 if response.clicked() {
                     section_clicked = Some(index);
                 }
             }
-            ui.painter().line_segment([Pos2::new(side.right() + 4.0, body.top()), Pos2::new(side.right() + 4.0, body.bottom())], Stroke::new(1.0, color::LINE));
+            ui.painter().line_segment([Pos2::new(side.right() + 4.0, body.top()), Pos2::new(side.right() + 4.0, body.bottom())], Stroke::new(1.0, color::line()));
+            // what the selected setting does, under the list, so the rows
+            // stay one line each
+            let help = rows(&entries).nth(self.page.row).filter(|_| self.page.in_list || self.mode == InputMode::Pointer).and_then(|row| row.help);
+            let has_help = rows(&entries).any(|row| row.help.is_some());
+            let main = if has_help {
+                let foot = Rect::from_min_max(Pos2::new(main.left(), main.bottom() - 58.0), main.max);
+                ui.painter().line_segment([foot.left_top() + Vec2::new(14.0, 0.0), foot.right_top() - Vec2::new(14.0, 0.0)], Stroke::new(1.0, color::line()));
+                if let Some(help) = help {
+                    let text = ui.painter().layout(help.to_owned(), FontId::proportional(14.0), color::muted(), foot.width() - 36.0);
+                    ui.painter().galley(Pos2::new(foot.left() + 18.0, foot.center().y - text.size().y / 2.0), text, color::muted());
+                }
+                Rect::from_min_max(main.min, Pos2::new(main.right(), foot.top()))
+            } else {
+                main
+            };
             let mut main_ui = ui.new_child(egui::UiBuilder::new().max_rect(main));
             egui::ScrollArea::vertical().id_salt(("page", self.page.section, self.game_settings.is_some())).auto_shrink(false).show(&mut main_ui, |ui| {
                 let focused = self.page.in_list || self.mode == InputMode::Pointer;
@@ -2200,10 +2399,10 @@ impl Menus {
             egui::ScrollArea::vertical().id_salt("cheats").auto_shrink(false).show(ui, |ui| {
                 if form {
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Name").color(color::MUTED));
+                    ui.label(egui::RichText::new("Name").color(color::muted()));
                     ui.add(egui::TextEdit::singleline(&mut self.cheat_name).hint_text("Infinite money").desired_width(f32::INFINITY));
                     ui.add_space(6.0);
-                    ui.label(egui::RichText::new("Code").color(color::MUTED));
+                    ui.label(egui::RichText::new("Code").color(color::muted()));
                     ui.add(egui::TextEdit::multiline(&mut self.cheat_code).hint_text("00000000 00000000").desired_rows(6).desired_width(f32::INFINITY).font(egui::TextStyle::Monospace));
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
@@ -2252,11 +2451,13 @@ impl Menus {
     fn popup(&mut self, ctx: &egui::Context) {
         let Some(popup) = self.select_popup.clone() else { return };
         let screen = ctx.content_rect();
-        let width = 440.0f32.min(screen.width() - 24.0);
+        let width = 480.0f32.min(screen.width() - 24.0);
         // the title wraps, a long name, such as a texture pack's folder, with it
-        let title = ctx.fonts_mut(|fonts| fonts.layout(popup.title.clone(), strong(18.0), color::TEXT, width - 48.0));
+        let title = ctx.fonts_mut(|fonts| fonts.layout(popup.title.clone(), strong(18.0), color::text(), width - 48.0));
         let head = title.size().y + 38.0;
-        let height = (popup.options.len() as f32 * 48.0 + head + 36.0).min(screen.height() - 40.0);
+        let notes = choice_notes(popup.item);
+        let row_height = if notes.is_empty() { 46.0 } else { 60.0 };
+        let height = (popup.options.len() as f32 * (row_height + 2.0) + head + 36.0).min(screen.height() - 40.0);
         let rect = Rect::from_center_size(screen.center(), Vec2::new(width, height));
         let mode = self.mode;
         let mut chosen = None;
@@ -2274,23 +2475,24 @@ impl Menus {
                 // its lists take the mouse wheel
                 ui.expand_to_include_rect(screen);
                 let backdrop = ui.interact(screen, ui.id().with("backdrop"), Sense::click());
-                ui.painter().rect_filled(cover, 0.0, Color32::from_black_alpha(120));
-                ui.painter().rect_filled(rect, CornerRadius::same(16), color::SURFACE);
-                ui.painter().rect_stroke(rect, CornerRadius::same(16), Stroke::new(1.0, color::LINE), StrokeKind::Inside);
-                ui.painter().galley(rect.left_top() + Vec2::new(24.0, 20.0), title.clone(), color::TEXT);
+                ui.painter().rect_filled(cover, 0.0, color::scrim());
+                ui.painter().rect_filled(rect, CornerRadius::same(16), color::surface());
+                ui.painter().rect_stroke(rect, CornerRadius::same(16), Stroke::new(1.0, color::line()), StrokeKind::Inside);
+                ui.painter().galley(rect.left_top() + Vec2::new(24.0, 20.0), title.clone(), color::text());
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(rect.min + Vec2::new(10.0, head), rect.max - Vec2::new(10.0, 12.0))));
                 let time = child.ctx().input(|input| input.time);
                 egui::ScrollArea::vertical().id_salt("popup").auto_shrink(false).show(&mut child, |ui| {
                     let highlight = Highlight::under(ui);
                     let mut target = None;
                     for (index, option) in popup.options.iter().enumerate() {
-                        let (row_rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), Sense::click());
+                        let (row_rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), row_height), Sense::click());
                         let response = response.on_hover_cursor(CursorIcon::PointingHand);
                         let selected = index == popup.selected;
                         if selected && mode == InputMode::Directional {
                             response.scroll_to_me(Some(egui::Align::Center));
                         }
-                        let row = Row::new(Item::Choice(index), option.clone(), if selected { Value::Text("✓".into()) } else { Value::None });
+                        let mut row = Row::new(Item::Choice(index), option.clone(), if popup.current == Some(index) { Value::Check } else { Value::None });
+                        row.note = notes.get(index).cloned();
                         if selected {
                             target = Some(row_rect);
                         }
@@ -2333,15 +2535,15 @@ impl Menus {
                 ui.set_clip_rect(screen);
                 ui.expand_to_include_rect(screen);
                 let _ = ui.interact(screen, ui.id().with("backdrop"), Sense::click());
-                ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(140));
-                let galley = ui.painter().layout(text.clone(), FontId::proportional(15.5), color::TEXT, width - 56.0);
+                ui.painter().rect_filled(screen, 0.0, color::scrim());
+                let galley = ui.painter().layout(text.clone(), FontId::proportional(15.5), color::text(), width - 56.0);
                 let height = (galley.size().y + 110.0).min(screen.height() - 40.0);
                 let rect = Rect::from_center_size(screen.center(), Vec2::new(width, height));
-                ui.painter().rect_filled(rect, CornerRadius::same(16), color::SURFACE);
-                ui.painter().rect_stroke(rect, CornerRadius::same(16), Stroke::new(1.0, color::LINE), StrokeKind::Inside);
+                ui.painter().rect_filled(rect, CornerRadius::same(16), color::surface());
+                ui.painter().rect_stroke(rect, CornerRadius::same(16), Stroke::new(1.0, color::line()), StrokeKind::Inside);
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(28.0)));
                 egui::ScrollArea::vertical().id_salt("message text").max_height(height - 110.0).show(&mut child, |ui| {
-                    ui.label(egui::RichText::new(text.as_str()).size(15.5).color(color::TEXT));
+                    ui.label(egui::RichText::new(text.as_str()).size(15.5).color(color::text()));
                 });
                 child.add_space(14.0);
                 child.horizontal(|ui| {
@@ -2379,8 +2581,8 @@ impl Menus {
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .show(ctx, |ui| {
                 let _ = screen;
-                egui::Frame::new().fill(color::SURFACE).corner_radius(CornerRadius::same(16)).inner_margin(egui::Margin::same(22)).stroke(Stroke::new(1.0, color::LINE)).show(ui, |ui| {
-                    ui.label(egui::RichText::new("The game asks for text").size(16.0).color(color::MUTED));
+                egui::Frame::new().fill(color::surface()).corner_radius(CornerRadius::same(16)).inner_margin(egui::Margin::same(22)).stroke(Stroke::new(1.0, color::line())).show(ui, |ui| {
+                    ui.label(egui::RichText::new("The game asks for text").size(16.0).color(color::muted()));
                     ui.add_space(8.0);
                     let field = ui.add(egui::TextEdit::singleline(text).hint_text(&request.hint).char_limit(request.max_length).desired_width(340.0).font(FontId::proportional(18.0)));
                     if fresh {
@@ -2424,13 +2626,13 @@ impl Menus {
                 ui.add_space(6.0);
                 match room {
                     Some(room) => {
-                        ui.label(egui::RichText::new(format!("In the room {}", room.name)).size(17.0).color(color::TEXT));
+                        ui.label(egui::RichText::new(format!("In the room {}", room.name)).size(17.0).color(color::text()));
                         if let Some(port) = room.port {
-                            ui.label(egui::RichText::new(format!("Open on port {port}. Others join with this computer's address and that port.")).color(color::MUTED));
+                            ui.label(egui::RichText::new(format!("Open on port {port}. Others join with this computer's address and that port.")).color(color::muted()));
                         }
                         for (nickname, game) in &room.members {
                             let line = if game.is_empty() { nickname.clone() } else { format!("{nickname} · {game}") };
-                            ui.label(egui::RichText::new(line).color(color::TEXT));
+                            ui.label(egui::RichText::new(line).color(color::text()));
                         }
                         let leave = if room.port.is_some() { "Close the room" } else { "Leave the room" };
                         if pill_button(ui, leave, false).clicked() {
@@ -2438,7 +2640,7 @@ impl Menus {
                         }
                         if let Some(download_play) = &room.download_play {
                             ui.add_space(10.0);
-                            ui.label(egui::RichText::new("Download Play").size(16.0).color(color::MUTED));
+                            ui.label(egui::RichText::new("Download Play").size(16.0).color(color::muted()));
                             match &download_play.doing {
                                 Some((doing, progress)) => {
                                     ui.label(doing);
@@ -2450,7 +2652,7 @@ impl Menus {
                                     }
                                 }
                                 None if download_play.offers.is_empty() => {
-                                    ui.label(egui::RichText::new("No one in the room offers a game. A game offers one from its own Download Play menu.").color(color::MUTED));
+                                    ui.label(egui::RichText::new("No one in the room offers a game. A game offers one from its own Download Play menu.").color(color::muted()));
                                 }
                                 None => {
                                     for (index, offer) in download_play.offers.iter().enumerate() {
@@ -2463,15 +2665,15 @@ impl Menus {
                                                 ui.add(egui::Image::new(&*texture).fit_to_exact_size(Vec2::splat(36.0)));
                                             }
                                             ui.vertical(|ui| {
-                                                ui.label(egui::RichText::new(&offer.title).color(color::TEXT));
-                                                ui.label(egui::RichText::new(format!("from {}, {} of {} joined", offer.host, offer.guests, offer.most)).color(color::MUTED));
+                                                ui.label(egui::RichText::new(&offer.title).color(color::text()));
+                                                ui.label(egui::RichText::new(format!("from {}, {} of {} joined", offer.host, offer.guests, offer.most)).color(color::muted()));
                                             });
                                             if ui.add_enabled_ui(offer.blocked.is_none(), |ui| pill_button(ui, "Join", true)).inner.clicked() {
                                                 actions.push(Action::DlpJoin(index));
                                             }
                                         });
                                         if let Some(why) = &offer.blocked {
-                                            ui.label(egui::RichText::new(why).color(color::MUTED));
+                                            ui.label(egui::RichText::new(why).color(color::muted()));
                                         }
                                     }
                                 }
@@ -2479,7 +2681,7 @@ impl Menus {
                         }
                     }
                     None => {
-                        ui.label(egui::RichText::new("Join a room").size(16.0).color(color::MUTED));
+                        ui.label(egui::RichText::new("Join a room").size(16.0).color(color::muted()));
                         field_row(ui, "Address", |ui| {
                             ui.add(egui::TextEdit::singleline(&mut settings.room_address).hint_text("192.168.0.10:24873").desired_width(220.0));
                         });
@@ -2490,14 +2692,14 @@ impl Menus {
                             actions.push(Action::JoinRoom);
                         }
                         ui.add_space(12.0);
-                        ui.label(egui::RichText::new("Open a room").size(16.0).color(color::MUTED));
+                        ui.label(egui::RichText::new("Open a room").size(16.0).color(color::muted()));
                         field_row(ui, "Name", |ui| {
                             ui.add(egui::TextEdit::singleline(&mut settings.room_name).hint_text("Zakuro").desired_width(220.0));
                         });
                         field_row(ui, "Port", |ui| {
                             ui.add(egui::DragValue::new(&mut settings.room_port).range(1024..=65535));
                         });
-                        ui.label(egui::RichText::new("The password above, if any, is the room's.").color(color::FAINT));
+                        ui.label(egui::RichText::new("The password above, if any, is the room's.").color(color::faint()));
                         if pill_button(ui, "Open a room", true).clicked() {
                             actions.push(Action::HostRoom);
                         }
@@ -2528,24 +2730,24 @@ impl Menus {
                 .order(egui::Order::Foreground)
                 .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -28.0))
                 .show(ctx, |ui| {
-                    egui::Frame::new().fill(color::RAISED).corner_radius(CornerRadius::same(22)).inner_margin(egui::Margin::symmetric(20, 12)).show(ui, |ui| {
+                    egui::Frame::new().fill(color::raised()).corner_radius(CornerRadius::same(22)).inner_margin(egui::Margin::symmetric(20, 12)).show(ui, |ui| {
                         if let Some((doing, fraction)) = &doing {
                             ui.horizontal(|ui| {
                                 match fraction {
                                     Some(fraction) => {
-                                        ui.add(egui::ProgressBar::new(*fraction).desired_width(180.0).corner_radius(CornerRadius::same(4)).fill(color::ACCENT));
+                                        ui.add(egui::ProgressBar::new(*fraction).desired_width(180.0).corner_radius(CornerRadius::same(4)).fill(color::accent()));
                                     }
                                     None => {
                                         ui.spinner();
                                     }
                                 }
-                                ui.label(egui::RichText::new(truncate(doing, 320.0, 14.0)).size(14.0).color(color::TEXT));
+                                ui.label(egui::RichText::new(truncate(doing, 320.0, 14.0)).size(14.0).color(color::text()));
                                 if view.install.is_some() && pill_button(ui, "Stop", false).clicked() {
                                     cancel = true;
                                 }
                             });
                         } else if let Some(text) = &toast {
-                            ui.label(egui::RichText::new(text).size(14.5).color(color::TEXT));
+                            ui.label(egui::RichText::new(text).size(14.5).color(color::text()));
                         }
                     });
                 });
@@ -2561,17 +2763,17 @@ impl Menus {
 fn field_row(ui: &mut egui::Ui, label: &str, field: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(100.0, 24.0), Sense::hover());
-        ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, label, FontId::proportional(15.0), color::MUTED);
+        ui.painter().text(rect.left_center(), Align2::LEFT_CENTER, label, FontId::proportional(15.0), color::muted());
         field(ui);
     });
 }
 
 /// a rounded button, filled when it is the main one.
 fn pill_button(ui: &mut egui::Ui, text: &str, primary: bool) -> egui::Response {
-    let (fill, text_color) = if primary { (color::ACCENT, color::BG) } else { (color::RAISED, color::TEXT) };
+    let (fill, text_color) = if primary { (color::accent(), color::bg()) } else { (color::raised(), color::text()) };
     let enabled = ui.is_enabled();
-    let button = egui::Button::new(egui::RichText::new(text).size(15.0).color(if enabled { text_color } else { color::FAINT }))
-        .fill(if enabled { fill } else { color::SURFACE })
+    let button = egui::Button::new(egui::RichText::new(text).size(15.0).color(if enabled { text_color } else { color::faint() }))
+        .fill(if enabled { fill } else { color::surface() })
         .corner_radius(CornerRadius::same(18))
         .min_size(Vec2::new(96.0, 38.0));
     let response = ui.add(button);
@@ -2591,6 +2793,16 @@ struct Background {
 
 /// the longest side a background is kept at, bigger ones are scaled down.
 const BACKGROUND_SIDE: u32 = 2560;
+
+impl Menus {
+    /// lets go of the pictures uploaded to the interface, which a new one,
+    /// with another presenter, has to upload again.
+    pub fn forget_textures(&mut self) {
+        self.icons.clear();
+        self.dlp_icons.clear();
+        self.background = Background::default();
+    }
+}
 
 impl Background {
     /// the texture for path, starting to read it when it changed, none until
@@ -2659,7 +2871,7 @@ fn average(pixels: &[u8]) -> Color32 {
         n += 1;
     }
     if n == 0 {
-        return color::RAISED;
+        return color::raised();
     }
     Color32::from_rgb((r / n) as u8, (g / n) as u8, (b / n) as u8)
 }
@@ -2686,7 +2898,7 @@ impl Menus {
         }
         let alpha = 1.0 - egui::emath::easing::cubic_out(t);
         let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new("home fade"));
-        ctx.layer_painter(layer).rect_filled(ctx.content_rect(), 0.0, color::BG.gamma_multiply(alpha));
+        ctx.layer_painter(layer).rect_filled(ctx.content_rect(), 0.0, color::bg().gamma_multiply(alpha));
         ctx.request_repaint();
     }
 
@@ -2696,7 +2908,7 @@ impl Menus {
         let library = view.library;
         let screen = ui.max_rect();
         let painter = ui.painter().clone();
-        painter.rect_filled(screen, 0.0, color::BG);
+        painter.rect_filled(screen, 0.0, color::bg());
         match self.background.get(ui.ctx(), settings.background.as_deref()) {
             Ok(Some(texture)) => {
                 let alpha = (settings.background_opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -2709,14 +2921,14 @@ impl Menus {
         let directional = self.mode == InputMode::Directional;
 
         // the top bar
-        painter.text(screen.left_top() + Vec2::new(36.0, 30.0), Align2::LEFT_CENTER, "Zakuro", strong(18.0), color::MUTED);
+        painter.text(screen.left_top() + Vec2::new(36.0, 30.0), Align2::LEFT_CENTER, "Zakuro", strong(18.0), color::muted());
         let status = if library.is_scanning() {
             "Looking for games…".to_owned()
         } else {
             let count = library.games.iter().filter(|game| game.problem.is_none()).count();
             if count == 1 { "1 game".to_owned() } else { format!("{count} games") }
         };
-        painter.text(screen.right_top() + Vec2::new(-36.0, 30.0), Align2::RIGHT_CENTER, status, FontId::proportional(15.0), color::FAINT);
+        painter.text(screen.right_top() + Vec2::new(-36.0, 30.0), Align2::RIGHT_CENTER, status, FontId::proportional(15.0), color::faint());
         self.paint_recompile_card(&painter, screen, view);
 
         // the tiles
@@ -2794,12 +3006,12 @@ impl Menus {
         // clear of the selected tile once it has grown
         let grown = side * TILE_GROW / 2.0;
         if self.home_focus == HomeFocus::Games {
-            painter.text(Pos2::new(title_x, row_top - 22.0 - grown), Align2::LEFT_BOTTOM, &title, strong(26.0), color::TEXT);
+            painter.text(Pos2::new(title_x, row_top - 22.0 - grown), Align2::LEFT_BOTTOM, &title, strong(26.0), color::text());
         }
-        let details_galley = painter.layout(details, FontId::proportional(14.5), color::MUTED, (screen.width() - 120.0).min(760.0));
-        painter.galley(Pos2::new(title_x, row_top + side + 22.0 + grown), details_galley, color::MUTED);
+        let details_galley = painter.layout(details, FontId::proportional(14.5), color::muted(), (screen.width() - 120.0).min(760.0));
+        painter.galley(Pos2::new(title_x, row_top + side + 22.0 + grown), details_galley, color::muted());
         if let Some(problem) = problem {
-            painter.text(Pos2::new(title_x, row_top + side + 48.0 + grown), Align2::LEFT_TOP, problem, FontId::proportional(14.5), color::WARN);
+            painter.text(Pos2::new(title_x, row_top + side + 48.0 + grown), Align2::LEFT_TOP, problem, FontId::proportional(14.5), color::warn());
         }
 
         // the round buttons
@@ -2818,14 +3030,14 @@ impl Menus {
             if hovered {
                 hovered_dock = Some(index);
             }
-            painter.circle_filled(center, dock_size / 2.0, if selected || hovered { color::HOVER } else { color::SURFACE });
+            painter.circle_filled(center, dock_size / 2.0, if selected || hovered { color::hover() } else { color::surface() });
             if selected && directional {
                 let glow = (0.75 + 0.25 * (time * 3.2).sin()) as f32;
-                painter.circle_stroke(center, dock_size / 2.0 + 3.0, Stroke::new(3.0, color::ACCENT.gamma_multiply(glow)));
+                painter.circle_stroke(center, dock_size / 2.0 + 3.0, Stroke::new(3.0, color::accent().gamma_multiply(glow)));
             }
             paint_dock_icon(&painter, center, *button);
             if selected || hovered {
-                painter.text(center + Vec2::new(0.0, dock_size / 2.0 + 16.0), Align2::CENTER_CENTER, button.name(), FontId::proportional(13.5), color::TEXT);
+                painter.text(center + Vec2::new(0.0, dock_size / 2.0 + 16.0), Align2::CENTER_CENTER, button.name(), FontId::proportional(13.5), color::text());
             }
             if response.clicked() {
                 self.clicked_dock = Some(*button);
@@ -2868,17 +3080,17 @@ impl Menus {
         let busy = Busy::Recompiling { stage: job.stage(), compiling: job.compiling_for() };
         let width = 460.0f32.min(screen.width() - 300.0).max(240.0);
         let card = Rect::from_center_size(Pos2::new(screen.center().x, 44.0 + screen.top()), Vec2::new(width, 64.0));
-        painter.rect_filled(card, CornerRadius::same(14), color::SURFACE);
-        painter.rect_stroke(card, CornerRadius::same(14), Stroke::new(1.0, color::LINE), StrokeKind::Inside);
+        painter.rect_filled(card, CornerRadius::same(14), color::surface());
+        painter.rect_stroke(card, CornerRadius::same(14), Stroke::new(1.0, color::line()), StrokeKind::Inside);
         let inner = card.shrink2(Vec2::new(16.0, 10.0));
         let waiting = view.waiting.len();
         let title = if waiting > 0 { format!("Recompiling {}  (+{waiting} waiting)", job.name) } else { format!("Recompiling {}", job.name) };
-        painter.text(inner.left_top(), Align2::LEFT_TOP, truncate(&title, inner.width(), 15.0), strong(15.0), color::TEXT);
-        painter.text(inner.left_top() + Vec2::new(0.0, 21.0), Align2::LEFT_TOP, busy.describe(), FontId::proportional(13.0), color::MUTED);
+        painter.text(inner.left_top(), Align2::LEFT_TOP, truncate(&title, inner.width(), 15.0), strong(15.0), color::text());
+        painter.text(inner.left_top() + Vec2::new(0.0, 21.0), Align2::LEFT_TOP, busy.describe(), FontId::proportional(13.0), color::muted());
         let bar = Rect::from_min_size(Pos2::new(inner.left(), inner.bottom() - 5.0), Vec2::new(inner.width(), 5.0));
-        painter.rect_filled(bar, CornerRadius::same(3), color::RAISED);
+        painter.rect_filled(bar, CornerRadius::same(3), color::raised());
         let done = Rect::from_min_size(bar.min, Vec2::new(bar.width() * busy.fraction(), bar.height()));
-        painter.rect_filled(done, CornerRadius::same(3), color::ACCENT);
+        painter.rect_filled(done, CornerRadius::same(3), color::accent());
     }
 
     /// a game's tile: its icon over its colors, the outline when selected,
@@ -2893,9 +3105,14 @@ impl Menus {
             });
             (texture.id(), average(pixels))
         });
-        let tint = icon.map_or(color::RAISED, |(_, average)| average);
-        painter.rect_filled(rect, radius, tint.gamma_multiply(0.55));
-        painter.rect_filled(rect, radius, Color32::from_black_alpha(70));
+        let tint = icon.map_or(color::raised(), |(_, average)| average);
+        // the icon's own colour, toned toward the background
+        if color::is_light() {
+            painter.rect_filled(rect, radius, tint.lerp_to_gamma(Color32::WHITE, 0.72));
+        } else {
+            painter.rect_filled(rect, radius, tint.gamma_multiply(0.55));
+            painter.rect_filled(rect, radius, Color32::from_black_alpha(70));
+        }
         match icon {
             Some((texture, _)) => {
                 // the icon at a whole number of times its size, sharp
@@ -2904,13 +3121,13 @@ impl Menus {
                 painter.image(texture, icon_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
             }
             None => {
-                let name = painter.layout(game.name.clone(), FontId::proportional(16.0), color::TEXT, rect.width() - 28.0);
-                painter.galley(rect.center() - galley_half(&name), name, color::TEXT);
+                let name = painter.layout(game.name.clone(), FontId::proportional(16.0), color::text(), rect.width() - 28.0);
+                painter.galley(rect.center() - galley_half(&name), name, color::text());
             }
         }
         if game.problem.is_some() {
             painter.rect_filled(rect, radius, Color32::from_black_alpha(140));
-            painter.text(rect.center(), Align2::CENTER_CENTER, "!", FontId::proportional(42.0), color::WARN);
+            painter.text(rect.center(), Align2::CENTER_CENTER, "!", FontId::proportional(42.0), color::warn());
         }
         // a game recompiling is greyed out, as it can't be played until then
         if let Some(busy) = Busy::of(game.program_id, view.jobs, view.waiting) {
@@ -2919,16 +3136,16 @@ impl Menus {
                 Busy::Waiting => "Waiting".to_owned(),
                 Busy::Recompiling { .. } => format!("{:.0}%", busy.fraction() * 100.0),
             };
-            painter.text(rect.center() - Vec2::new(0.0, 8.0), Align2::CENTER_CENTER, label, strong(30.0), color::TEXT);
-            painter.text(rect.center() + Vec2::new(0.0, 22.0), Align2::CENTER_CENTER, "Recompiling", FontId::proportional(14.0), color::MUTED);
+            painter.text(rect.center() - Vec2::new(0.0, 8.0), Align2::CENTER_CENTER, label, strong(30.0), Color32::WHITE);
+            painter.text(rect.center() + Vec2::new(0.0, 22.0), Align2::CENTER_CENTER, "Recompiling", FontId::proportional(14.0), Color32::from_gray(200));
             let bar = Rect::from_min_size(Pos2::new(rect.left() + 14.0, rect.bottom() - 18.0), Vec2::new(rect.width() - 28.0, 6.0));
             painter.rect_filled(bar, CornerRadius::same(3), Color32::from_black_alpha(160));
             let done = Rect::from_min_size(bar.min, Vec2::new(bar.width() * busy.fraction(), bar.height()));
-            painter.rect_filled(done, CornerRadius::same(3), color::ACCENT);
+            painter.rect_filled(done, CornerRadius::same(3), color::accent());
         }
         if selected {
             let glow = if self.mode == InputMode::Directional { (0.8 + 0.2 * (time * 3.2).sin()) as f32 } else { 1.0 };
-            painter.rect_stroke(rect.expand(5.0), CornerRadius::same(22), Stroke::new(4.0, color::ACCENT.gamma_multiply(glow)), StrokeKind::Inside);
+            painter.rect_stroke(rect.expand(5.0), CornerRadius::same(22), Stroke::new(4.0, color::accent().gamma_multiply(glow)), StrokeKind::Inside);
         }
     }
 }
@@ -2939,54 +3156,27 @@ fn galley_half(galley: &egui::Galley) -> Vec2 {
 
 /// the tile that adds games, last in the row.
 fn paint_add_tile(painter: &egui::Painter, rect: Rect, selected: bool, directional: bool, time: f64) {
-    painter.rect_filled(rect, CornerRadius::same(18), color::SURFACE);
-    painter.rect_stroke(rect.shrink(1.0), CornerRadius::same(18), Stroke::new(1.5, color::LINE), StrokeKind::Inside);
+    painter.rect_filled(rect, CornerRadius::same(18), color::surface());
+    painter.rect_stroke(rect.shrink(1.0), CornerRadius::same(18), Stroke::new(1.5, color::line()), StrokeKind::Inside);
     let center = rect.center() - Vec2::new(0.0, 14.0);
     let arm = rect.width() * 0.11;
-    let stroke = Stroke::new(4.0, color::MUTED);
-    painter.line_segment([center - Vec2::new(arm, 0.0), center + Vec2::new(arm, 0.0)], stroke);
-    painter.line_segment([center - Vec2::new(0.0, arm), center + Vec2::new(0.0, arm)], stroke);
-    painter.text(rect.center() + Vec2::new(0.0, arm + 18.0), Align2::CENTER_CENTER, "Add games", FontId::proportional(15.0), color::MUTED);
+    crate::icons::paint(painter, Rect::from_center_size(center, Vec2::splat(arm * 2.6)), Icon::Plus, color::muted());
+    painter.text(rect.center() + Vec2::new(0.0, arm + 18.0), Align2::CENTER_CENTER, "Add games", FontId::proportional(15.0), color::muted());
     if selected {
         let glow = if directional { (0.8 + 0.2 * (time * 3.2).sin()) as f32 } else { 1.0 };
-        painter.rect_stroke(rect.expand(5.0), CornerRadius::same(22), Stroke::new(4.0, color::ACCENT.gamma_multiply(glow)), StrokeKind::Inside);
+        painter.rect_stroke(rect.expand(5.0), CornerRadius::same(22), Stroke::new(4.0, color::accent().gamma_multiply(glow)), StrokeKind::Inside);
     }
 }
 
-/// a round button's icon, drawn, as no font has them all.
+/// a round button's icon.
 fn paint_dock_icon(painter: &egui::Painter, center: Pos2, button: Dock) {
-    let stroke = Stroke::new(2.6, color::TEXT);
-    match button {
-        Dock::Add => {
-            painter.line_segment([center - Vec2::new(10.0, 0.0), center + Vec2::new(10.0, 0.0)], stroke);
-            painter.line_segment([center - Vec2::new(0.0, 10.0), center + Vec2::new(0.0, 10.0)], stroke);
-        }
-        Dock::Multiplayer => {
-            painter.circle_stroke(center + Vec2::new(-5.0, -4.0), 5.0, stroke);
-            painter.circle_stroke(center + Vec2::new(7.0, -2.0), 4.0, stroke);
-            arc(painter, center + Vec2::new(-5.0, 12.0), 9.0, std::f32::consts::PI, std::f32::consts::TAU, stroke);
-            arc(painter, center + Vec2::new(7.0, 12.0), 7.0, std::f32::consts::PI * 1.1, std::f32::consts::TAU, stroke);
-        }
-        Dock::Settings => {
-            painter.circle_stroke(center, 5.0, stroke);
-            for tooth in 0..8 {
-                let angle = tooth as f32 * std::f32::consts::TAU / 8.0;
-                let direction = Vec2::angled(angle);
-                painter.line_segment([center + direction * 9.0, center + direction * 13.0], Stroke::new(3.2, color::TEXT));
-            }
-            painter.circle_stroke(center, 9.5, stroke);
-        }
-        Dock::Quit => {
-            arc(painter, center, 11.0, -std::f32::consts::FRAC_PI_2 + 0.75, std::f32::consts::PI * 1.5 - 0.75, stroke);
-            painter.line_segment([center - Vec2::new(0.0, 13.0), center - Vec2::new(0.0, 2.0)], stroke);
-        }
-    }
-}
-
-/// part of a circle's outline, from one angle to another.
-fn arc(painter: &egui::Painter, center: Pos2, radius: f32, from: f32, to: f32, stroke: Stroke) {
-    let points: Vec<Pos2> = (0..=24).map(|step| center + Vec2::angled(from + (to - from) * step as f32 / 24.0) * radius).collect();
-    painter.add(egui::Shape::line(points, stroke));
+    let icon = match button {
+        Dock::Add => Icon::Plus,
+        Dock::Multiplayer => Icon::Users,
+        Dock::Settings => Icon::Sliders,
+        Dock::Quit => Icon::Power,
+    };
+    crate::icons::paint(painter, Rect::from_center_size(center, Vec2::splat(26.0)), icon, color::text());
 }
 
 /// what a game has, in a line: its update, DLC, textures, recompiled code.
@@ -3002,7 +3192,7 @@ fn game_details(game: &Game, settings: &Settings, view: &View) -> String {
         parts.push("DLC".to_owned());
     }
     if game.textured {
-        parts.push("HD textures".to_owned());
+        parts.push("Custom textures".to_owned());
     }
     if game.outdated {
         parts.push("Recompiled (outdated)".to_owned());
@@ -3053,16 +3243,16 @@ impl Menus {
                 // its lists take the mouse wheel
                 ui.expand_to_include_rect(screen);
                 let _ = ui.interact(screen, ui.id().with("backdrop"), Sense::click());
-                ui.painter().rect_filled(cover, 0.0, Color32::from_black_alpha(150));
-                ui.painter().rect_filled(rect, CornerRadius::same(18), color::BG);
-                ui.painter().rect_stroke(rect, CornerRadius::same(18), Stroke::new(1.0, color::LINE), StrokeKind::Inside);
-                ui.painter().text(rect.left_top() + Vec2::new(26.0, 24.0), Align2::LEFT_TOP, truncate(running.name, 330.0, 20.0), strong(20.0), color::TEXT);
+                ui.painter().rect_filled(cover, 0.0, color::scrim());
+                ui.painter().rect_filled(rect, CornerRadius::same(18), color::panel());
+                ui.painter().rect_stroke(rect, CornerRadius::same(18), Stroke::new(1.0, color::line()), StrokeKind::Inside);
+                ui.painter().text(rect.left_top() + Vec2::new(26.0, 24.0), Align2::LEFT_TOP, truncate(running.name, 330.0, 20.0), strong(20.0), color::text());
                 let how = if running.recompiled { "Recompiled code" } else { "Interpreted" };
                 let line = match jobs.first() {
                     Some(job) => format!("{how}  ·  {} {}", job.name, stage_name(&job.stage())),
                     None => how.to_owned(),
                 };
-                ui.painter().text(rect.left_top() + Vec2::new(26.0, 52.0), Align2::LEFT_TOP, line, FontId::proportional(13.0), color::MUTED);
+                ui.painter().text(rect.left_top() + Vec2::new(26.0, 52.0), Align2::LEFT_TOP, line, FontId::proportional(13.0), color::muted());
                 let foot = if directional { 44.0 } else { 0.0 };
                 let body = Rect::from_min_max(rect.min + Vec2::new(10.0, 82.0), rect.max - Vec2::new(10.0, 10.0 + foot));
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body));
@@ -3082,7 +3272,7 @@ fn badge(ctx: &egui::Context, id: &str, corner: Align2, text: &str) {
     let offset = Vec2::new(if corner.x() == egui::Align::Max { -10.0 } else { 10.0 }, 10.0);
     egui::Area::new(egui::Id::new(id)).anchor(corner, offset).interactable(false).show(ctx, |ui| {
         egui::Frame::new().fill(Color32::from_black_alpha(170)).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
-            ui.add(egui::Label::new(egui::RichText::new(text).size(13.5).monospace().color(color::TEXT)).extend());
+            ui.add(egui::Label::new(egui::RichText::new(text).size(13.5).monospace().color(Color32::WHITE)).extend());
         });
     });
 }
@@ -3227,12 +3417,12 @@ mod tests {
         for open_cheats in [false, true] {
             menus.cheats_open = open_cheats;
             let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 480.0))), ..Default::default() };
-            let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: Some(60.0), fast: false };
+            let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: Some(60.0), fast: false, started: None };
             let v = View { running: Some(running), cheats: &cheats, ..view(&library) };
             ctx.run_ui(input, |ui| drop(menus.show(ui, &mut settings, &v))).drop_without_applying_deltas();
         }
         // A on the enhancement turns it on
-        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, fast: false };
+        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, fast: false, started: None };
         let v = View { running: Some(running), cheats: &cheats, ..view(&library) };
         assert_eq!(menus.navigate(Nav::Accept, &mut settings, &v), [Action::Cheat(0, true)]);
         // back closes the cheats, then resumes
@@ -3251,7 +3441,7 @@ mod tests {
             menus.page_entries(&Settings::default(), v).iter().any(|entry| matches!(entry, Entry::Row(row) if row.item == Item::Recompile))
         };
         assert!(has_recompile(&menus, &view(&library)));
-        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, fast: false };
+        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, fast: false, started: None };
         let v = View { running: Some(running), ..view(&library) };
         assert!(!has_recompile(&menus, &v));
         assert!(menus.handle(Item::Recompile, Op::Activate, &mut settings, &v).is_empty());
@@ -3262,13 +3452,13 @@ mod tests {
     fn a_games_change_is_its_own_and_matching_the_system_drops_it() {
         let mut settings = Settings::default();
         let game = Scope::Game(7);
-        choose(Item::Filter, Filter::ALL.iter().position(|&f| f == Filter::Xbrz).unwrap(), &mut settings, game);
-        assert_eq!(settings.for_game(Some(7)).filter, Filter::Xbrz);
-        assert_eq!(settings.filter, Filter::Smooth, "the system keeps its own");
+        choose(Item::Filter, Filter::ALL.iter().position(|&f| f == Filter::SmoothEdges).unwrap(), &mut settings, game);
+        assert_eq!(settings.for_game(Some(7)).filter, Filter::SmoothEdges);
+        assert_eq!(settings.filter, Filter::Sharp, "the system keeps its own");
         assert!(owned(&settings, game, Item::Filter));
         assert!(setting(Item::Filter, &settings, game).changed);
         // picking the system's value again leaves the game nothing of its own
-        choose(Item::Filter, Filter::ALL.iter().position(|&f| f == Filter::Smooth).unwrap(), &mut settings, game);
+        choose(Item::Filter, Filter::ALL.iter().position(|&f| f == Filter::Sharp).unwrap(), &mut settings, game);
         assert!(!settings.has_own(7));
         assert!(settings.per_game.is_empty());
     }
@@ -3292,10 +3482,8 @@ mod tests {
         let mut menus = Menus::default();
         menus.open_settings();
         let v = view(&library);
-        // into the list, down a row, and choose: the resolution's list comes up
+        // into the list and choose its first row: the resolution's list comes up
         menus.navigate(Nav::Accept, &mut settings, &v);
-        menus.navigate(Nav::Down, &mut settings, &v);
-        menus.navigate(Nav::Down, &mut settings, &v);
         menus.navigate(Nav::Accept, &mut settings, &v);
         let popup = menus.select_popup.clone().expect("a list to pick from");
         assert_eq!(popup.item, Item::Resolution);
@@ -3317,7 +3505,7 @@ mod tests {
     fn back_closes_what_is_on_top_first() {
         let mut menus = Menus::default();
         menus.open_settings();
-        menus.select_popup = Some(SelectPopup { item: Item::Filter, scope: Scope::System, title: "Filter".into(), options: vec!["a".into()], selected: 0 });
+        menus.select_popup = Some(SelectPopup { item: Item::Filter, scope: Scope::System, title: "Filter".into(), options: vec!["a".into()], selected: 0, current: None });
         menus.close_modals();
         assert!(menus.settings_open, "the list goes before the settings");
         menus.close_modals();

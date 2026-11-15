@@ -11,8 +11,9 @@ pub struct Cp15 {
     /// c1,c0,0, control register. We keep the value so reads round-trip.
     pub control: u32,
 
-    /// set when the guest asked for an instruction-cache invalidate since the
-    /// last time the JIT looked. Range-based invalidation is tracked too.
+    /// never read: code is recompiled ahead of time or interpreted, so an
+    /// instruction-cache invalidate has nothing to do. both stay only so
+    /// saved states keep their layout; drop them with the next version.
     pub icache_invalidated: bool,
     pub invalidate_ranges: Vec<(u32, u32)>,
 }
@@ -54,24 +55,13 @@ impl Cp15 {
             (0, 13, 0, 3) => self.thread_id_ro = value,
             (0, 13, 0, 4) => self.thread_id_priv = value,
 
-            // c7 is cache maintenance.
-            (0, 7, 5, 0) | (0, 7, 5, 4) | (0, 7, 7, 0) => self.icache_invalidated = true,
-            (0, 7, 5, 1) | (0, 7, 13, 1) => {
-                self.invalidate_ranges.push((value & !31, 32));
-            }
-            // data cache clean/invalidate, no-ops for us, memory is coherent.
+            // c7 is cache maintenance, no-ops for us: memory is coherent and
+            // no code is compiled at run time.
             (0, 7, ..) => {}
 
             _ => log::debug!(
                 "CP15 write of unimplemented c{crn},c{crm},{opc1},{opc2} = 0x{value:08X}"
             ),
         }
-    }
-
-    /// drains the pending invalidation requests.
-    pub fn take_invalidations(&mut self) -> (bool, Vec<(u32, u32)>) {
-        let all = std::mem::take(&mut self.icache_invalidated);
-        let ranges = std::mem::take(&mut self.invalidate_ranges);
-        (all, ranges)
     }
 }

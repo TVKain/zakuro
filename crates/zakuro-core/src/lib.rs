@@ -1094,6 +1094,17 @@ impl System {
         self.gpu.set_scale(resolution)
     }
 
+    /// draws the title's texture packs or stops drawing them, while it runs,
+    /// and says whether a pack is drawn now.
+    pub fn set_texture_packs(&mut self, on: bool) -> bool {
+        self.config.texture_packs = on;
+        let pack = match (on, self.config.data_dir.as_deref(), self.title.as_ref()) {
+            (true, Some(data_dir), Some(title)) => zakuro_gpu::pack::Pack::open(&mods::textures(data_dir, title.program_id())).map(std::sync::Arc::new),
+            _ => None,
+        };
+        self.gpu.set_texture_pack(pack)
+    }
+
     /// where a screen's picture is on the host's GPU, for a presenter sharing
     /// its device to draw straight from, none when the GPU does not show the
     /// screens itself or did not draw what the screen shows, read_screen_scaled
@@ -1187,12 +1198,8 @@ impl System {
         self.gpu.scaled_screen(base, (height, width), stride / bpp, format, &bytes)
     }
 
-    /// reads one screen into a straight RGBA8 buffer for presentation.
-    pub fn read_screen(&mut self, screen: zakuro_common::Screen) -> Vec<u8> {
-        self.read_screen_at(screen, false)
-    }
-
-    /// the same, the top screen's picture for the right eye when right.
+    /// reads one screen into a straight RGBA8 buffer for presentation, the
+    /// top screen's picture for the right eye when right.
     fn read_screen_at(&mut self, screen: zakuro_common::Screen, right: bool) -> Vec<u8> {
         let index = match screen {
             zakuro_common::Screen::Top => 0,

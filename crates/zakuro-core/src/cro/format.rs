@@ -1,7 +1,5 @@
 //! on-disk layout of a CRO/CRS module.
 
-use zakuro_common::VAddr;
-
 /// byte offsets of the header fields.
 pub mod header {
     pub const MAGIC: u32 = 0x080;
@@ -144,30 +142,6 @@ impl RelocationType {
             other => RelocationType::Unknown(other),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct InternalRelocation {
-    pub target: SegmentTag,
-    pub kind: RelocationType,
-    pub symbol_segment: u32,
-    pub addend: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct ExternalRelocation {
-    pub target: SegmentTag,
-    pub kind: RelocationType,
-    pub is_batch_end: bool,
-    pub addend: u32,
-}
-
-/// a module the loader has linked in.
-#[derive(Debug, Clone)]
-pub struct LoadedModule {
-    pub name: String,
-    pub base: VAddr,
-    pub size: u32,
 }
 
 #[cfg(test)]

@@ -219,10 +219,6 @@ impl Instruction {
         (self.0 >> 22) & 0x3
     }
 
-    pub fn raw_condition(self) -> u32 {
-        (self.0 >> 22) & 0x3
-    }
-
     /// which of x and y the condition compares, and how they combine.
     pub fn condition_op(self) -> u32 {
         (self.0 >> 22) & 0x3
@@ -257,30 +253,6 @@ impl OperandDescriptor {
         let pick = |component: u32| ((pattern >> (6 - component * 2)) & 3) as u8;
         ([pick(0), pick(1), pick(2), pick(3)], (self.0 >> (shift - 1)) & 1 != 0)
     }
-
-    pub fn apply_source1(self, value: [f32; 4]) -> [f32; 4] {
-        swizzle(value, (self.0 >> 5) & 0xFF, (self.0 >> 4) & 1 != 0)
-    }
-
-    pub fn apply_source2(self, value: [f32; 4]) -> [f32; 4] {
-        swizzle(value, (self.0 >> 14) & 0xFF, (self.0 >> 13) & 1 != 0)
-    }
-
-    pub fn apply_source3(self, value: [f32; 4]) -> [f32; 4] {
-        swizzle(value, (self.0 >> 23) & 0xFF, (self.0 >> 22) & 1 != 0)
-    }
-}
-
-/// applies a swizzle pattern and optional negation.
-fn swizzle(value: [f32; 4], pattern: u32, negate: bool) -> [f32; 4] {
-    let pick = |component: u32| value[((pattern >> (6 - component * 2)) & 3) as usize];
-    let mut out = [pick(0), pick(1), pick(2), pick(3)];
-    if negate {
-        for component in &mut out {
-            *component = -*component;
-        }
-    }
-    out
 }
 
 /// decodes the 24-bit float format the shader uses for its uniforms.
@@ -328,15 +300,17 @@ mod tests {
 
     #[test]
     fn swizzle_takes_x_from_the_top_pair() {
-        let value = [1.0, 2.0, 3.0, 4.0];
+        // source 1's pattern sits at bit 5 with its negation at bit 4,
+        // source 2's at 14 and 13, source 3's at 23 and 22.
+        let at = |pattern: u32, shift: u32, negate: bool| OperandDescriptor(pattern << shift | (negate as u32) << (shift - 1));
         // 0b00_01_10_11 selects x, y, z, w in order.
-        assert_eq!(swizzle(value, 0b00_01_10_11, false), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(at(0b00_01_10_11, 5, false).source(1), ([0, 1, 2, 3], false));
         // broadcasting x to every component.
-        assert_eq!(swizzle(value, 0b00_00_00_00, false), [1.0; 4]);
+        assert_eq!(at(0b00_00_00_00, 14, false).source(2), ([0; 4], false));
         // reversing.
-        assert_eq!(swizzle(value, 0b11_10_01_00, false), [4.0, 3.0, 2.0, 1.0]);
-        // negation applies after the swizzle.
-        assert_eq!(swizzle(value, 0b00_00_00_00, true), [-1.0; 4]);
+        assert_eq!(at(0b11_10_01_00, 23, false).source(3), ([3, 2, 1, 0], false));
+        // negation.
+        assert_eq!(at(0b00_00_00_00, 5, true).source(1), ([0; 4], true));
     }
 
     #[test]

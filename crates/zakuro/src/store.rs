@@ -4,7 +4,7 @@
 //! goes away from the interface, with its progress to show.
 //!
 //! the library is a folder of Zakuro's own, its data folder's library
-//! folder unless the player moves it, another drive's say. texture packs
+//! folder. texture packs
 //! copied in go to its data folder's textures folder once, and each game
 //! they are for gets a link to them in its mods folder, so a pack made for
 //! a pair of games, Sun and Moon say, is kept once. a pack used from where
@@ -19,17 +19,16 @@ use std::sync::{Arc, Mutex};
 use zakuro_fs::TitleKind;
 
 use crate::library::{self, Source};
-use crate::settings::Settings;
 
-/// the folder the library keeps its games in.
-pub fn library_dir(settings: &Settings, data_dir: Option<&Path>) -> Option<PathBuf> {
-    settings.library.clone().or_else(|| Some(data_dir?.join("library")))
+/// the folder the library keeps its games in, the data folder's library.
+pub fn library_dir(data_dir: Option<&Path>) -> Option<PathBuf> {
+    Some(data_dir?.join("library"))
 }
 
 /// the folders the library lists games from: Zakuro's own, with a folder
 /// for each game or none.
-pub fn sources(settings: &Settings, data_dir: Option<&Path>) -> Vec<Source> {
-    library_dir(settings, data_dir).map(|folder| Source { folder, depth: 2 }).into_iter().collect()
+pub fn sources(data_dir: Option<&Path>) -> Vec<Source> {
+    library_dir(data_dir).map(|folder| Source { folder, depth: 2 }).into_iter().collect()
 }
 
 /// the folder texture packs copied into Zakuro are kept in, each once.

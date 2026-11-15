@@ -183,10 +183,6 @@ impl Cpu {
         self.halted = true;
     }
 
-    pub fn is_halted(&self) -> bool {
-        self.halted
-    }
-
     pub fn resume(&mut self) {
         self.halted = false;
     }
