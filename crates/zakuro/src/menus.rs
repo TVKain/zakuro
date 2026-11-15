@@ -23,6 +23,7 @@ use crate::icons::Icon;
 use crate::library::{Game, Library, ICON_SIZE};
 use crate::nav::{InputMode, Nav};
 use crate::recompile::{Job, Stage, Wanted};
+use crate::ui_sound::Cue;
 use crate::settings::{
     game_key, CameraSource, Filter, FpsLimit, Keys, Language, MicrophoneSource, Orientation, PadButtons, Renderer, Screens, Settings, Stereo3d, Theme, TopShape,
 };
@@ -126,6 +127,8 @@ pub enum Item {
     Volume,
     Mute,
     Microphone,
+    UiSounds,
+    UiVolume,
     // library
     AddContent,
     Background,
@@ -302,6 +305,8 @@ pub struct SelectPopup {
     pub item: Item,
     pub scope: Scope,
     pub title: String,
+    /// a line under the title saying more, smaller.
+    pub detail: Option<String>,
     pub options: Vec<String>,
     pub selected: usize,
     /// the choice in force, ticked, when picking a setting.
@@ -319,28 +324,34 @@ pub enum Ask {
     Explain { game: Wanted, name: String },
 }
 
-/// what recompiling does, for the player deciding on it.
-const RECOMPILE_EXPLAINED: &str = "Recompiling turns the game's code into native code for this computer, so it runs faster and smoother. It takes about ten minutes and the whole processor, so no game can be started until it finishes, and it is done once per game.";
+/// what recompiling does, short, under the question.
+const RECOMPILE_EXPLAINED: &str = "Makes it run faster. Takes about 10 minutes, once.";
+
+/// the longest a popup's title and its detail line are let be, so a small
+/// box never fills with text. a game's name may add to the title.
+pub const POPUP_TITLE_MAX: usize = 48;
+pub const POPUP_DETAIL_MAX: usize = 110;
 
 impl Ask {
-    /// the question and its answers, the first one recompiling. another
-    /// recompile under way or waiting goes first.
-    pub fn popup(&self, waiting_for: Option<&str>) -> (String, Vec<String>) {
-        let queued = waiting_for.map_or(String::new(), |other| format!(" It starts once {other} finishes."));
+    /// the question, a line about it, and its answers, the first one
+    /// recompiling. another recompile under way or waiting goes first.
+    pub fn popup(&self, waiting_for: Option<&str>) -> (String, String, Vec<String>) {
+        let queued = waiting_for.map_or(String::new(), |other| format!(" Starts after {other}."));
         let recompile = if waiting_for.is_some() { "Recompile after that" } else { "Recompile now" };
         match self {
             Ask::Play { name, .. } => (
-                format!("{name} isn't recompiled, or its code changed since it was. {RECOMPILE_EXPLAINED}{queued}"),
+                format!("Recompile {name} first?"),
+                format!("It isn't recompiled, or is out of date. {RECOMPILE_EXPLAINED}{queued}"),
                 vec![recompile.to_owned(), "Play without".to_owned(), "Don't ask again for this game".to_owned()],
             ),
             Ask::Added(games) => {
                 let names = match games.as_slice() {
                     [(_, name)] => name.clone(),
-                    games => format!("the {} games", games.len()),
+                    games => format!("{} games", games.len()),
                 };
-                (format!("Recompile {names}? New games, updates and DLC need it to run their best. {RECOMPILE_EXPLAINED}{queued}"), vec![recompile.to_owned(), "Not now".to_owned()])
+                (format!("Recompile {names}?"), format!("{RECOMPILE_EXPLAINED}{queued}"), vec![recompile.to_owned(), "Not now".to_owned()])
             }
-            Ask::Explain { name, .. } => (format!("Recompile {name}? {RECOMPILE_EXPLAINED}{queued}"), vec![recompile.to_owned(), "Not now".to_owned()]),
+            Ask::Explain { name, .. } => (format!("Recompile {name}?"), format!("{RECOMPILE_EXPLAINED}{queued}"), vec![recompile.to_owned(), "Not now".to_owned()]),
         }
     }
 
@@ -556,10 +567,21 @@ pub struct Menus {
 
     icons: HashMap<PathBuf, egui::TextureHandle>,
     background: Background,
+    /// the sound for what the last frame did, for the app to play.
+    pub cue: Option<Cue>,
 }
 
-/// the colors: slate greys with one violet accent, in a dark and a light
-/// set. text is 4.5:1 or more against what it sits on in both.
+/// where the selection is and what is open, to tell what a frame changed.
+#[derive(PartialEq)]
+struct Cursor {
+    at: [usize; 8],
+    in_list: bool,
+    layers: usize,
+}
+
+/// the colors: neutral greys in the dark set and slate in the light one,
+/// with one teal accent. text is 4.5:1 or more against what it sits on in
+/// both.
 pub mod color {
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -590,20 +612,20 @@ pub mod color {
     }
 
     const DARK: Palette = Palette {
-        bg: rgb(0x0B1120),
-        surface: rgb(0x151C2C),
-        raised: rgb(0x1F2738),
-        hover: rgb(0x283245),
-        line: rgb(0x2A3446),
-        text: rgb(0xF1F5F9),
-        muted: rgb(0x94A3B8),
-        faint: rgb(0x718098),
-        accent: rgb(0xA78BFA),
+        bg: rgb(0x111214),
+        surface: rgb(0x1B1C1F),
+        raised: rgb(0x26272B),
+        hover: rgb(0x313236),
+        line: rgb(0x2E2F33),
+        text: rgb(0xF2F2F3),
+        muted: rgb(0xA1A1AA),
+        faint: rgb(0x80808A),
+        accent: rgb(0x2DD4BF),
         danger: rgb(0xF87171),
         warn: rgb(0xFBBF24),
-        on: rgb(0x8B5CF6),
-        track: rgb(0x334155),
-        panel: rgb(0x0B1120),
+        on: rgb(0x14B8A6),
+        track: rgb(0x3F3F46),
+        panel: rgb(0x111214),
         scrim: 170,
     };
 
@@ -616,10 +638,10 @@ pub mod color {
         text: rgb(0x0F172A),
         muted: rgb(0x475569),
         faint: rgb(0x64748B),
-        accent: rgb(0x7C3AED),
+        accent: rgb(0x0F766E),
         danger: rgb(0xDC2626),
         warn: rgb(0xB45309),
-        on: rgb(0x7C3AED),
+        on: rgb(0x0F766E),
         track: rgb(0xB8C3D3),
         panel: rgb(0xF8FAFC),
         scrim: 90,
@@ -849,6 +871,7 @@ fn toggle(item: Item, settings: &mut Settings, scope: Scope) {
         Item::SwapEyes => settings.swap_eyes = !settings.swap_eyes,
         Item::ShowFps => settings.show_fps = !settings.show_fps,
         Item::Mute => settings.mute = !settings.mute,
+        Item::UiSounds => settings.ui_sounds = !settings.ui_sounds,
         _ => {}
     }
 }
@@ -870,6 +893,7 @@ fn step(item: Item, delta: i32, settings: &mut Settings, scope: Scope) {
         Item::Depth => put!(settings, scope, depth_3d, (shown.depth_3d as i32 + delta * 5).clamp(0, 100) as u32),
         Item::Volume => settings.volume = ((settings.volume * 20.0).round() + delta as f32).clamp(0.0, 20.0) / 20.0,
         Item::BackgroundOpacity => settings.background_opacity = ((settings.background_opacity * 20.0).round() + delta as f32).clamp(0.0, 20.0) / 20.0,
+        Item::UiVolume => settings.ui_volume = ((settings.ui_volume * 20.0).round() + delta as f32).clamp(0.0, 20.0) / 20.0,
         _ if matches!(value_kind(item), Kind::Switch) => toggle(item, settings, scope),
         _ => {}
     }
@@ -897,10 +921,10 @@ fn value_kind(item: Item) -> Kind {
         | Item::Microphone
         | Item::Language
         | Item::Camera => Kind::Choice,
-        Item::TexturePacks | Item::SmoothTextures | Item::Interpolation | Item::IntegerScale | Item::Recompiled | Item::SwapEyes | Item::ShowFps | Item::Mute => {
+        Item::TexturePacks | Item::SmoothTextures | Item::Interpolation | Item::IntegerScale | Item::Recompiled | Item::SwapEyes | Item::ShowFps | Item::Mute | Item::UiSounds => {
             Kind::Switch
         }
-        Item::Depth | Item::Volume | Item::BackgroundOpacity | Item::Slot => Kind::Range,
+        Item::Depth | Item::Volume | Item::BackgroundOpacity | Item::UiVolume | Item::Slot => Kind::Range,
         _ => Kind::Other,
     }
 }
@@ -939,6 +963,8 @@ fn setting(item: Item, settings: &Settings, scope: Scope) -> Row {
         Item::SwapEyes => ("Swap eyes", Value::On(shown.swap_eyes), "Swaps the pictures for the left and right eye."),
         Item::Volume => ("Volume", Value::Range(format!("{:.0}%", shown.volume * 100.0)), ""),
         Item::Mute => ("Mute", Value::On(shown.mute), ""),
+        Item::UiSounds => ("Interface sounds", Value::On(shown.ui_sounds), "Soft sounds as you move around the menus. Never during a game."),
+        Item::UiVolume => ("Interface volume", Value::Range(format!("{:.0}%", shown.ui_volume * 100.0)), ""),
         Item::Microphone => ("Microphone", Value::Text(shown.microphone.name().into()), "What games hear. Hold M to blow into it."),
         Item::Language => ("Console language", Value::Text(shown.language.name().into()), "The language games show their text in, when they have it."),
         Item::Recompiled => ("Use recompiled code", Value::On(shown.recompiled), "Runs games from code recompiled for your PC, which is much faster."),
@@ -954,6 +980,7 @@ fn setting(item: Item, settings: &Settings, scope: Scope) -> Row {
         Item::Interpolation if !hardware || shown.renderer != Renderer::Vulkan => (false, Some("Needs Vulkan and 3D rendering on the GPU")),
         Item::Depth | Item::SwapEyes => (stereo, None),
         Item::BackgroundOpacity => (shown.background.is_some(), None),
+        Item::UiVolume => (shown.ui_sounds, None),
         _ => (true, None),
     };
     let mut row = Row::new(item, label, value).enabled(enabled);
@@ -1048,9 +1075,53 @@ impl Menus {
     }
 
     /// the interface for a frame, with what the player asked for in it.
+    /// where the selection is, and how many windows are open.
+    fn cursor(&self) -> Cursor {
+        let layers = [self.settings_open, self.game_settings.is_some(), self.cheats_open, self.multiplayer_open, self.import.is_some(), self.select_popup.is_some(), self.menu_open, self.cheat_form]
+            .iter()
+            .filter(|open| **open)
+            .count();
+        Cursor {
+            at: [
+                self.selected_game,
+                self.home_focus as usize,
+                self.dock,
+                self.page.section,
+                self.page.row,
+                self.pause_row,
+                self.cheats_row + self.import_row * 1000,
+                self.select_popup.as_ref().map_or(0, |popup| popup.selected),
+            ],
+            in_list: self.page.in_list,
+            layers,
+        }
+    }
+
+    /// the sound for what a frame did: a message coming up, going into or
+    /// out of something, a setting changed, or the selection moved.
+    fn cue_for(&self, from: &Cursor, had_message: bool, changed: bool, acted: bool) -> Option<Cue> {
+        let now = self.cursor();
+        let deeper = |cursor: &Cursor| cursor.layers * 2 + usize::from(cursor.in_list);
+        if self.message.is_some() && !had_message {
+            Some(Cue::Notice)
+        } else if deeper(&now) < deeper(from) || (had_message && self.message.is_none()) {
+            Some(Cue::Back)
+        } else if deeper(&now) > deeper(from) || acted {
+            Some(Cue::Accept)
+        } else if changed {
+            Some(Cue::Toggle)
+        } else if now.at != from.at {
+            Some(Cue::Move)
+        } else {
+            None
+        }
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, settings: &mut Settings, view: &View) -> Vec<Action> {
         let mut actions = Vec::new();
         let before = settings.clone();
+        let cursor = self.cursor();
+        let had_message = self.message.is_some();
         for nav in std::mem::take(&mut self.queue) {
             actions.extend(self.navigate(nav, settings, view));
         }
@@ -1108,7 +1179,9 @@ impl Menus {
         if std::mem::take(&mut self.pending_cancel_install) {
             actions.push(Action::CancelInstall);
         }
-        if *settings != before && !actions.contains(&Action::Settings) {
+        let changed = *settings != before;
+        self.cue = self.cue_for(&cursor, had_message, changed, !actions.is_empty());
+        if changed && !actions.contains(&Action::Settings) {
             actions.push(Action::Settings);
         }
         // the highlight breathes while buttons drive the interface
@@ -1311,7 +1384,7 @@ impl Menus {
                 Vec::new()
             }
             Some(_) if let Some(name) = crate::recompile::blocking_play(view.jobs, view.waiting) => {
-                self.toast(&format!("Games can be started once {name} finishes recompiling, which takes the whole processor."));
+                self.toast(&format!("Games can be started once {name} finishes recompiling."));
                 Vec::new()
             }
             Some(game) if game.problem.is_none() && asks_to_recompile(game, settings) => {
@@ -1344,8 +1417,8 @@ impl Menus {
 
     /// asks the player about a recompile, saying when another one goes first.
     pub fn open_ask(&mut self, ask: Ask, jobs: &[Job], waiting: &[Wanted]) {
-        let (title, options) = ask.popup(crate::recompile::blocking_play(jobs, waiting));
-        self.select_popup = Some(SelectPopup { item: Item::Ask, scope: self.scope(), title, options, selected: 0, current: None });
+        let (title, detail, options) = ask.popup(crate::recompile::blocking_play(jobs, waiting));
+        self.select_popup = Some(SelectPopup { detail: Some(detail), item: Item::Ask, scope: self.scope(), title, options, selected: 0, current: None });
         self.ask = Some(ask);
     }
 
@@ -1405,6 +1478,11 @@ impl Menus {
                 for item in [Item::Volume, Item::Mute, Item::Microphone] {
                     add(item);
                 }
+                if !game {
+                    entries.push(Entry::Header("Interface".into()));
+                    entries.push(Entry::Row(setting(Item::UiSounds, settings, scope)));
+                    entries.push(Entry::Row(setting(Item::UiVolume, settings, scope)));
+                }
             }
             Section::System => {
                 add(Item::Language);
@@ -1441,7 +1519,7 @@ impl Menus {
                 entries.push(Entry::Row(Row::new(Item::AddContent, "Add games and content", Value::More).note("Games, updates, DLC, texture packs and cheat files")));
                 let outdated = idle(view.library.games.iter().filter(|game| game.outdated).map(Game::wanted), view.jobs, view.waiting).len();
                 if outdated > 0 && view.running.is_none() {
-                    entries.push(Entry::Row(Row::new(Item::RecompileOutdated, format!("Recompile {outdated} outdated games"), Value::More).note("About ten minutes each, one after another. Games can't be started meanwhile")));
+                    entries.push(Entry::Row(Row::new(Item::RecompileOutdated, format!("Recompile {outdated} outdated games"), Value::More).note("About 10 minutes each, one after another")));
                 }
                 entries.push(Entry::Header("Home".into()));
                 entries.push(Entry::Row(setting(Item::Background, settings, scope)));
@@ -1647,7 +1725,7 @@ impl Menus {
                 });
                 if let Some((options, selected)) = choices(item, &shown) {
                     let title = setting(item, settings, scope).label;
-                    self.select_popup = Some(SelectPopup { item, scope, title, options, selected, current: Some(selected) });
+                    self.select_popup = Some(SelectPopup { detail: None, item, scope, title, options, selected, current: Some(selected) });
                 }
                 return actions;
             }
@@ -1663,7 +1741,7 @@ impl Menus {
         }
         match item {
             Item::Fullscreen => actions.push(Action::Fullscreen),
-            Item::Volume | Item::Depth | Item::BackgroundOpacity => {
+            Item::Volume | Item::Depth | Item::BackgroundOpacity | Item::UiVolume => {
                 if op == Op::Activate {
                     step(item, 1, settings, scope);
                 }
@@ -1701,12 +1779,12 @@ impl Menus {
             Item::Pack(index) => {
                 // a pack kept in Zakuro goes for good, so it is asked first
                 if let Some(pack) = self.packs.get(index) {
-                    let title = match pack.target {
-                        Some(_) => format!("Remove {}? The pack stays where it is.", pack.name),
-                        None => format!("Delete {}? Its files are deleted.", pack.name),
+                    let (title, detail) = match pack.target {
+                        Some(_) => (format!("Remove {}?", pack.name), "The pack's own folder stays where it is."),
+                        None => (format!("Delete {}?", pack.name), "Its files are deleted."),
                     };
                     let options = vec![if pack.target.is_some() { "Remove" } else { "Delete" }.to_owned(), "Keep".to_owned()];
-                    self.select_popup = Some(SelectPopup { item, scope, title, options, selected: 1, current: None });
+                    self.select_popup = Some(SelectPopup { detail: Some(detail.to_owned()), item, scope, title, options, selected: 1, current: None });
                 }
             }
             Item::AddPack => {
@@ -1736,8 +1814,9 @@ impl Menus {
             Item::RemoveGame => {
                 // removing deletes the copies in Zakuro's library, so it is asked first
                 if let Some((_, name)) = &self.game_settings {
-                    let title = format!("Delete {name}, with its update and DLC, from Zakuro? Its saves and mods are kept.");
-                    self.select_popup = Some(SelectPopup { item, scope, title, options: vec!["Delete".to_owned(), "Keep".to_owned()], selected: 1, current: None });
+                    let title = format!("Delete {name}?");
+                    let detail = Some("Removes it with its update and DLC. Saves and mods are kept.".to_owned());
+                    self.select_popup = Some(SelectPopup { detail, item, scope, title, options: vec!["Delete".to_owned(), "Keep".to_owned()], selected: 1, current: None });
                 }
             }
             Item::UseSystem => {
@@ -2454,7 +2533,8 @@ impl Menus {
         let width = 480.0f32.min(screen.width() - 24.0);
         // the title wraps, a long name, such as a texture pack's folder, with it
         let title = ctx.fonts_mut(|fonts| fonts.layout(popup.title.clone(), strong(18.0), color::text(), width - 48.0));
-        let head = title.size().y + 38.0;
+        let detail = popup.detail.as_ref().map(|detail| ctx.fonts_mut(|fonts| fonts.layout(detail.clone(), FontId::proportional(14.5), color::muted(), width - 48.0)));
+        let head = title.size().y + detail.as_ref().map_or(0.0, |detail| detail.size().y + 6.0) + 38.0;
         let notes = choice_notes(popup.item);
         let row_height = if notes.is_empty() { 46.0 } else { 60.0 };
         let height = (popup.options.len() as f32 * (row_height + 2.0) + head + 36.0).min(screen.height() - 40.0);
@@ -2479,6 +2559,9 @@ impl Menus {
                 ui.painter().rect_filled(rect, CornerRadius::same(16), color::surface());
                 ui.painter().rect_stroke(rect, CornerRadius::same(16), Stroke::new(1.0, color::line()), StrokeKind::Inside);
                 ui.painter().galley(rect.left_top() + Vec2::new(24.0, 20.0), title.clone(), color::text());
+                if let Some(detail) = &detail {
+                    ui.painter().galley(rect.left_top() + Vec2::new(24.0, 26.0 + title.size().y), detail.clone(), color::muted());
+                }
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(rect.min + Vec2::new(10.0, head), rect.max - Vec2::new(10.0, 12.0))));
                 let time = child.ctx().input(|input| input.time);
                 egui::ScrollArea::vertical().id_salt("popup").auto_shrink(false).show(&mut child, |ui| {
@@ -2861,19 +2944,63 @@ fn cover(area: Vec2, picture: [usize; 2]) -> Rect {
     }
 }
 
-/// the average color of an icon, for the tile behind it.
-fn average(pixels: &[u8]) -> Color32 {
-    let (mut r, mut g, mut b, mut n) = (0u64, 0u64, 0u64, 0u64);
-    for pixel in pixels.as_chunks::<4>().0.iter().filter(|pixel| pixel[3] > 128) {
-        r += pixel[0] as u64;
-        g += pixel[1] as u64;
-        b += pixel[2] as u64;
-        n += 1;
+/// a game's 48 pixel icon made big without blur: its edges are followed
+/// out three times over, as Scale2x does, then the result is brought down
+/// to six times, which smooths what steps are left. the side and the RGBA.
+fn smooth_icon(pixels: &[u8]) -> (usize, Vec<u8>) {
+    let mut side = ICON_SIZE;
+    let mut image: Vec<[u8; 4]> = pixels.as_chunks::<4>().0.to_vec();
+    if image.len() != side * side {
+        return (side, pixels.to_vec());
     }
-    if n == 0 {
-        return color::raised();
+    for _ in 0..3 {
+        image = scale2x(&image, side);
+        side *= 2;
     }
-    Color32::from_rgb((r / n) as u8, (g / n) as u8, (b / n) as u8)
+    let Some(big) = image::RgbaImage::from_raw(side as u32, side as u32, image.into_flattened()) else { return (ICON_SIZE, pixels.to_vec()) };
+    let shown = ICON_SIZE * 6;
+    let small = image::imageops::resize(&big, shown as u32, shown as u32, image::imageops::FilterType::Triangle);
+    (shown, small.into_raw())
+}
+
+/// two pixels near enough in color to be one edge: icons are stored in 15
+/// bit color, and dithered, so the same color is often a little off.
+fn alike(a: [u8; 4], b: [u8; 4]) -> bool {
+    a.iter().zip(&b).map(|(a, b)| a.abs_diff(*b) as u32).sum::<u32>() < 40
+}
+
+/// doubles a square picture, each pixel becoming four that follow the
+/// edges around it.
+fn scale2x(image: &[[u8; 4]], side: usize) -> Vec<[u8; 4]> {
+    let at = |x: isize, y: isize| image[(y.clamp(0, side as isize - 1) as usize) * side + x.clamp(0, side as isize - 1) as usize];
+    let out_side = side * 2;
+    let mut out = vec![[0u8; 4]; out_side * out_side];
+    for y in 0..side as isize {
+        for x in 0..side as isize {
+            let (e, b, d, f, h) = (at(x, y), at(x, y - 1), at(x - 1, y), at(x + 1, y), at(x, y + 1));
+            let (mut e0, mut e1, mut e2, mut e3) = (e, e, e, e);
+            if !alike(b, h) && !alike(d, f) {
+                if alike(d, b) {
+                    e0 = d;
+                }
+                if alike(b, f) {
+                    e1 = f;
+                }
+                if alike(d, h) {
+                    e2 = d;
+                }
+                if alike(h, f) {
+                    e3 = f;
+                }
+            }
+            let (ox, oy) = (x as usize * 2, y as usize * 2);
+            out[oy * out_side + ox] = e0;
+            out[oy * out_side + ox + 1] = e1;
+            out[(oy + 1) * out_side + ox] = e2;
+            out[(oy + 1) * out_side + ox + 1] = e3;
+        }
+    }
+    out
 }
 
 /// how long Home takes to fade out over a game starting, in seconds.
@@ -3093,34 +3220,27 @@ impl Menus {
         painter.rect_filled(done, CornerRadius::same(3), color::accent());
     }
 
-    /// a game's tile: its icon over its colors, the outline when selected,
+    /// a game's tile: its icon, the outline when selected,
     /// and a recompile's progress along its foot.
     fn paint_tile(&mut self, ui: &egui::Ui, rect: Rect, game: &Game, selected: bool, time: f64, view: &View) {
         let painter = ui.painter();
         let radius = CornerRadius::same(18);
         let icon = game.icon.as_ref().map(|pixels| {
             let texture = self.icons.entry(game.path.clone()).or_insert_with(|| {
-                let image = egui::ColorImage::from_rgba_unmultiplied([ICON_SIZE, ICON_SIZE], pixels);
-                ui.ctx().load_texture(game.path.display().to_string(), image, egui::TextureOptions::NEAREST)
+                let (side, smooth) = smooth_icon(pixels);
+                let image = egui::ColorImage::from_rgba_unmultiplied([side, side], &smooth);
+                ui.ctx().load_texture(game.path.display().to_string(), image, egui::TextureOptions::LINEAR)
             });
-            (texture.id(), average(pixels))
+            texture.id()
         });
-        let tint = icon.map_or(color::raised(), |(_, average)| average);
-        // the icon's own colour, toned toward the background
-        if color::is_light() {
-            painter.rect_filled(rect, radius, tint.lerp_to_gamma(Color32::WHITE, 0.72));
-        } else {
-            painter.rect_filled(rect, radius, tint.gamma_multiply(0.55));
-            painter.rect_filled(rect, radius, Color32::from_black_alpha(70));
-        }
         match icon {
-            Some((texture, _)) => {
-                // the icon at a whole number of times its size, sharp
-                let scale = ((rect.width() * 0.62) / ICON_SIZE as f32).floor().max(1.0);
-                let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(ICON_SIZE as f32 * scale));
-                painter.image(texture, icon_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+            Some(texture) => {
+                // the icon is the tile, its pixel edges smoothed, its corners rounded
+                let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                painter.add(egui::epaint::RectShape::filled(rect, radius, Color32::WHITE).with_texture(texture, uv));
             }
             None => {
+                painter.rect_filled(rect, radius, color::raised());
                 let name = painter.layout(game.name.clone(), FontId::proportional(16.0), color::text(), rect.width() - 28.0);
                 painter.galley(rect.center() - galley_half(&name), name, color::text());
             }
@@ -3505,7 +3625,7 @@ mod tests {
     fn back_closes_what_is_on_top_first() {
         let mut menus = Menus::default();
         menus.open_settings();
-        menus.select_popup = Some(SelectPopup { item: Item::Filter, scope: Scope::System, title: "Filter".into(), options: vec!["a".into()], selected: 0, current: None });
+        menus.select_popup = Some(SelectPopup { detail: None, item: Item::Filter, scope: Scope::System, title: "Filter".into(), options: vec!["a".into()], selected: 0, current: None });
         menus.close_modals();
         assert!(menus.settings_open, "the list goes before the settings");
         menus.close_modals();
@@ -3601,8 +3721,27 @@ mod tests {
         let mut menus = Menus { game_settings: Some((7, "Game 7".into())), ..Menus::default() };
         assert!(menus.handle(Item::Recompile, Op::Activate, &mut settings, &busy).is_empty());
         let popup = menus.select_popup.clone().expect("it explains");
-        assert!(popup.title.contains("ten minutes") && popup.title.contains("It starts once"));
+        assert!(popup.detail.as_deref().is_some_and(|detail| detail.contains("10 minutes") && detail.contains("Starts after")));
         assert_eq!(popup.options[0], "Recompile after that");
+    }
+
+    /// a popup is a small box: its question is short, with what more there
+    /// is to say on one line under it, whatever is waiting.
+    #[test]
+    fn recompile_questions_stay_short() {
+        let game = Wanted { program_id: 1, path: PathBuf::from("a.3ds") };
+        let asks = [
+            Ask::Play { game: game.clone(), name: String::new() },
+            Ask::Added(vec![(game.clone(), String::new()), (game.clone(), String::new())]),
+            Ask::Explain { game, name: String::new() },
+        ];
+        for ask in asks {
+            for waiting in [None, Some("")] {
+                let (title, detail, _) = ask.popup(waiting);
+                assert!(title.len() <= POPUP_TITLE_MAX, "{title}");
+                assert!(detail.len() <= POPUP_DETAIL_MAX, "{detail}");
+            }
+        }
     }
 
     #[test]

@@ -708,6 +708,9 @@ pub struct Settings {
     pub background: Option<PathBuf>,
     /// how much of it shows, 0 to 1.
     pub background_opacity: f32,
+    /// the interface's own sounds, as it is moved about, and how loud, 0 to 1.
+    pub ui_sounds: bool,
+    pub ui_volume: f32,
     pub keys: Keys,
     pub pad: PadButtons,
     /// the enhancements turned on, by name, for each game by its title id.
@@ -761,6 +764,8 @@ impl Default for Settings {
             theme: Theme::System,
             background: None,
             background_opacity: 0.35,
+            ui_sounds: true,
+            ui_volume: 0.5,
             keys: Keys::default(),
             pad: PadButtons::default(),
             enhancements: std::collections::BTreeMap::new(),

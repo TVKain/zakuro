@@ -125,6 +125,7 @@ fn test_menus_over_game_input_isolation() {
         item: Item::Resolution,
         scope: Scope::System,
         title: "Resolution".to_string(),
+        detail: None,
         options: vec!["1x".to_string(), "2x".to_string()],
         selected: 0,
         current: Some(0),

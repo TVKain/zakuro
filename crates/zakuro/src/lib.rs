@@ -19,6 +19,7 @@ pub mod report;
 pub mod nav;
 pub mod settings;
 pub mod store;
+pub mod ui_sound;
 pub mod zig;
 
 use std::path::{Path, PathBuf};
@@ -129,6 +130,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
             menus.slot = 1;
             menus
         },
+        ui_sound: ui_sound::UiSound::default(),
         jobs: Vec::new(),
         waiting: Vec::new(),
         gui: None,
@@ -428,6 +430,8 @@ struct App {
     game: Option<Running>,
     library: Library,
     menus: Menus,
+    /// the interface's own sounds, while no game runs.
+    ui_sound: ui_sound::UiSound,
     jobs: Vec<Job>,
     /// the games waiting for their turn to recompile, the next one first.
     waiting: Vec<Wanted>,
@@ -567,9 +571,7 @@ fn skips_showing(playing: bool, behind: bool, waits: bool, skipped: u32) -> bool
 }
 
 /// what the player is told when the 3D can't be drawn on the GPU.
-const GPU_FALLBACK: &str = "The 3D can't be drawn on the GPU, as Vulkan isn't working on this computer, so it's drawn in software. \
-Games run much slower that way, and texture packs are left out. Updating the graphics driver usually fixes it; the log says \
-what went wrong. To draw in software without this message, set \"3D rendering\" to CPU in System Settings, Graphics.";
+const GPU_FALLBACK: &str = "Vulkan isn't working, so the 3D is drawn on the CPU and games run slower. Updating the graphics driver usually fixes it. To hide this, set 3D rendering to CPU in Settings, Graphics.";
 
 impl App {
     /// opens the window with the presenter the settings ask for, or OpenGL
@@ -998,7 +1000,7 @@ impl App {
             in_software.then(|| GPU_FALLBACK.to_owned()),
             outdated.then(|| {
                 format!(
-                    "{} was recompiled by an older version of Zakuro. Recompile it again from the library to get the newest improvements.",
+                    "{} was recompiled by an older Zakuro. Recompile it from its options to run its best.",
                     game.name
                 )
             }),
@@ -1009,6 +1011,8 @@ impl App {
         if !notes.is_empty() {
             self.menus.message = Some(notes.join("\n\n"));
         }
+        // the game has the sound output to itself
+        self.ui_sound.close();
         self.game = Some(game);
         // the new game's cameras see what the settings say, and it plays
         // in the room the player is in
@@ -1522,7 +1526,7 @@ impl App {
     fn act(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         match action {
             Action::Play(_) if let Some(name) = recompile::blocking_play(&self.jobs, &self.waiting) => {
-                self.menus.message = Some(format!("Games can be started once {name} finishes recompiling, which takes the whole processor."));
+                self.menus.message = Some(format!("Games can be started once {name} finishes recompiling."));
             }
             Action::Play(path) => {
                 if let Err(error) = self.play(&path) {
@@ -1987,7 +1991,7 @@ impl App {
             Some(zakuro_core::download_play::Phase::Begun { .. }) if let Some(name) = recompile::blocking_play(&self.jobs, &self.waiting) => {
                 // like any other start, this one waits for the recompile
                 self.dlp_own = None;
-                self.menus.message = Some(format!("Download Play can start once {name} finishes recompiling, which takes the whole processor."));
+                self.menus.message = Some(format!("Download Play can start once {name} finishes recompiling."));
             }
             Some(zakuro_core::download_play::Phase::Begun { child, reboot }) => {
                 let own = self.dlp_own.take();
@@ -2016,7 +2020,7 @@ impl App {
     /// copy of the child when the folder has one.
     fn join_download_play(&mut self, index: usize) {
         if let Some(name) = recompile::blocking_play(&self.jobs, &self.waiting) {
-            self.menus.message = Some(format!("Download Play can start once {name} finishes recompiling, which takes the whole processor."));
+            self.menus.message = Some(format!("Download Play can start once {name} finishes recompiling."));
             return;
         }
         let node = zakuro_core::download_play::node(self.settings.console_id, &self.nickname());
@@ -2180,6 +2184,9 @@ impl App {
         let mut actions = Vec::new();
         let overlay = gui.frame(window, |ui| actions.extend(menus.show(ui, settings, &view)));
         drop(view);
+        if let Some(cue) = self.menus.cue.take().filter(|_| self.game.is_none() && self.settings.ui_sounds) {
+            self.ui_sound.play(cue, self.settings.ui_volume);
+        }
         // a window closed over a game lets go of what was held to close it
         if modal_open && !self.menus.modal_open() {
             self.release_input();
