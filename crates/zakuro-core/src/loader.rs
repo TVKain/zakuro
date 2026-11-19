@@ -26,7 +26,7 @@ fn same_game(title_id: u64, program_id: u64) -> bool {
 pub fn attach_update(title: &mut Title, path: &std::path::Path) -> bool {
     match zakuro_fs::Update::load(path) {
         Ok(update) if same_game(update.title_id, title.program_id()) => {
-            log::info!("the update to v{} from {}", zakuro_fs::version_name(update.version), path.display());
+            log::info!("the update to {} from {}", zakuro_fs::versions::label(update.title_id, update.version), path.display());
             title.attach_update(update);
             true
         }
@@ -48,7 +48,7 @@ fn load_dlc(title: &Title, paths: &[std::path::PathBuf]) -> Vec<zakuro_fs::Dlc> 
         match zakuro_fs::Dlc::load(path) {
             Ok(dlc) if same_game(dlc.title_id, title.program_id()) => {
                 let held = dlc.contents.iter().filter(|content| content.offset.is_some()).count();
-                log::info!("DLC v{} from {}, {held} of its {} contents", zakuro_fs::version_name(dlc.version), path.display(), dlc.contents.len());
+                log::info!("DLC v{} from {}, {held} of its {} contents", dlc.version, path.display(), dlc.contents.len());
                 found.push(dlc);
             }
             Ok(dlc) => log::warn!("{} is DLC of {:016X}, not this game, it is left out", path.display(), dlc.title_id),

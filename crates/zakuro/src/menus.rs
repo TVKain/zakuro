@@ -3306,7 +3306,7 @@ fn game_details(game: &Game, settings: &Settings, view: &View) -> String {
         parts.push(game.publisher.clone());
     }
     if let Some(update) = &game.update {
-        parts.push(format!("Update {}", zakuro_fs::version_name(update.version)));
+        parts.push(format!("Update {}", zakuro_fs::versions::label(update.title_id, update.version)));
     }
     if !game.dlc.is_empty() {
         parts.push("DLC".to_owned());
