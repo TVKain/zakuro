@@ -14,6 +14,8 @@ pub struct Keyboard {
     circle: [bool; 4],
     /// the C-stick's, the same way.
     c_stick: [bool; 4],
+    /// the gentle tilt key is held.
+    gentle: bool,
     touch: Option<(u16, u16)>,
     /// how the mouse tilts the console, see InputState::tilt.
     tilt: [f32; 2],
@@ -34,6 +36,7 @@ impl Keyboard {
         self.buttons = PadState::default();
         self.circle = [false; 4];
         self.c_stick = [false; 4];
+        self.gentle = false;
         self.touch = None;
         self.tilt = [0.0; 2];
     }
@@ -68,6 +71,9 @@ impl Keyboard {
         if let Some(button) = self.button_for(code) {
             self.buttons.set(button, pressed);
         }
+        if code == self.keys.circle_gentle {
+            self.gentle = pressed;
+        }
         let circle = [self.keys.circle_up, self.keys.circle_down, self.keys.circle_left, self.keys.circle_right];
         let c_stick = [self.keys.c_up, self.keys.c_down, self.keys.c_left, self.keys.c_right];
         for (held, bound) in self.circle.iter_mut().zip(circle).chain(self.c_stick.iter_mut().zip(c_stick)) {
@@ -75,6 +81,11 @@ impl Keyboard {
                 *held = pressed;
             }
         }
+    }
+
+    /// whether the gentle tilt key is held.
+    pub fn gentle(&self) -> bool {
+        self.gentle
     }
 
     /// records a click on the bottom screen, in screen pixels, or its release.
@@ -105,6 +116,15 @@ impl Keyboard {
     }
 }
 
+/// leans the circle pad only amount of the way, 0 to 1, as a thumb resting
+/// on it does: a diagonal as far as a straight push, a gentle lean gentler.
+pub fn tilt_gently(state: &mut InputState, amount: f32) {
+    let length = state.circle_x.hypot(state.circle_y);
+    let scale = amount.clamp(0.0, 1.0) / length.max(1.0);
+    state.circle_x *= scale;
+    state.circle_y *= scale;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +148,28 @@ mod tests {
         assert_eq!((state.c_stick_x, state.c_stick_y), (-1.0, 1.0));
         assert_eq!((state.circle_x, state.circle_y), (0.0, 0.0));
         assert!(state.buttons.contains(PadState::ZR));
+    }
+
+    #[test]
+    fn the_gentle_tilt_leans_the_circle_pad_partway() {
+        let mut keyboard = Keyboard::new(Keys::default());
+        keyboard.key(PhysicalKey::Code(KeyCode::KeyI), true);
+        keyboard.key(PhysicalKey::Code(KeyCode::ShiftLeft), true);
+        assert!(keyboard.gentle());
+        let mut state = keyboard.state();
+        tilt_gently(&mut state, 0.35);
+        assert_eq!((state.circle_x, state.circle_y), (0.0, 0.35));
+        // a diagonal leans as far as a straight push, not further
+        keyboard.key(PhysicalKey::Code(KeyCode::KeyL), true);
+        let mut state = keyboard.state();
+        tilt_gently(&mut state, 0.35);
+        assert!((state.circle_x.hypot(state.circle_y) - 0.35).abs() < 1e-6);
+        // a stick already leaning a little leans less still
+        let mut state = InputState { circle_x: 0.5, ..InputState::default() };
+        tilt_gently(&mut state, 0.4);
+        assert!((state.circle_x - 0.2).abs() < 1e-6);
+        keyboard.release();
+        assert!(!keyboard.gentle());
     }
 
     #[test]
