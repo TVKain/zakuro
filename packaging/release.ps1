@@ -51,7 +51,7 @@ Run "cargo" @("update", "-w", "--manifest-path", $Manifest)
 try {
     Step "Lint and tests"
     Run "cargo" @("clippy", "--workspace", "--tests", "--manifest-path", $Manifest, "--", "-D", "warnings")
-    Run "powershell" @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $Workspace "tools\test_regressions.ps1"), "-Quick")
+    Run "cargo" @("test", "--workspace", "--manifest-path", $Manifest)
 
     Step "Package"
     $out = if ($DryRun) { Join-Path $Root "target\release-dry" } else { $ReleaseDir }
