@@ -29,11 +29,6 @@ pub enum TitleKind {
     DlpChild,
 }
 
-/// a title version as the console shows it, major.minor.micro.
-pub fn version_name(version: u16) -> String {
-    format!("{}.{}.{}", version >> 10, version >> 4 & 0x3F, version & 0xF)
-}
-
 impl TitleKind {
     pub fn of(title_id: u64) -> TitleKind {
         match title_id >> 32 {

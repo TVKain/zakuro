@@ -119,7 +119,7 @@ fn title(path: &Path) -> Found {
                 return unusable("Encrypted, Zakuro needs a decrypted dump");
             }
             let name = match cia.kind() {
-                TitleKind::Update => format!("Update {}", zakuro_fs::version_name(cia.version)),
+                TitleKind::Update => format!("Update {}", zakuro_fs::versions::label(cia.title_id, cia.version)),
                 TitleKind::Dlc => "DLC".to_owned(),
                 _ => "Download Play program".to_owned(),
             };

@@ -13,6 +13,7 @@ pub mod patch;
 mod reader;
 pub mod romfs;
 pub mod romfs_build;
+pub mod versions;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
@@ -21,7 +22,7 @@ use std::sync::Arc;
 
 use memmap2::Mmap;
 
-pub use cia::{version_name, Cia, Content, TitleKind};
+pub use cia::{Cia, Content, TitleKind};
 pub use exefs::ExeFs;
 pub use ncch::{CodeSetInfo, ExHeader, MemoryType, NcchHeader, SystemMode};
 pub use ncsd::Ncsd;
