@@ -210,5 +210,29 @@ void main() {
     vec4 top = blend(tap(c.x, c.y), tap(c.x + 1, c.y), f.x);
     vec4 bottom = blend(tap(c.x, c.y + 1), tap(c.x + 1, c.y + 1), f.x);
     vec4 linear = blend(top, bottom, f.y);
-    imageStore(target, pixel, blend(res, linear, 0.35));
+    vec4 smoothed = blend(res, linear, 0.35);
+    // what is transparent at the texture's own size is made opaque only by
+    // xBRZ rounding a corner, not the bilinear third. a title draws a part
+    // of an atlas, a strip of grass, up to its edge, where the next part's
+    // texels would otherwise blend in, enough for the alpha test to keep a
+    // line of them all along the edge of what it draws
+    if (E.a < 0.01) {
+        smoothed.a = res.a;
+    }
+    // a transparent pixel takes the colour of the opaque ones about it, so
+    // that filtering between them doesn't bring in whatever colour the
+    // transparent ones hold
+    if (smoothed.a < 0.01) {
+        vec4 sum = vec4(0.0);
+        for (int y = -1; y <= 1; y++) {
+            for (int x = -1; x <= 1; x++) {
+                vec4 t = tap(x, y);
+                sum += vec4(t.rgb * t.a, t.a);
+            }
+        }
+        if (sum.a > 0.0) {
+            smoothed.rgb = sum.rgb / sum.a;
+        }
+    }
+    imageStore(target, pixel, smoothed);
 }

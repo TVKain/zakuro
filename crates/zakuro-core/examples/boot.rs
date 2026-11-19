@@ -86,6 +86,11 @@ fn main() {
     if std::env::var("ZAKURO_PROFILE").is_ok() {
         system.enable_profiler();
     }
+    // ZAKURO_SMOOTH=1 smooths textures with xBRZ when drawing scaled, as the
+    // frontend's Smooth textures setting does
+    if std::env::var("ZAKURO_SMOOTH").is_ok_and(|v| v == "1") {
+        system.gpu.set_smooth_textures(true);
+    }
 
     // ZAKURO_ENHANCE="60 FPS" turns on the game's enhancements of those
     // names, separated by commas, and ZAKURO_ENHANCE_OFF_AT=frame turns them

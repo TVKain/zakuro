@@ -140,6 +140,23 @@ vec4 unpack_color(uint value) {
     return unpackUnorm4x8(value);
 }
 
+// the alpha of the texel nearest st in the size of its texture the
+// sampler draws with there
+float nearest_texel_alpha(sampler2D tex, vec2 st) {
+    float level = floor(textureQueryLod(tex, st).x + 0.5);
+    vec2 size = vec2(textureSize(tex, int(level)));
+    return textureLod(tex, (floor(st * size) + 0.5) / size, level).a;
+}
+
+float nearest_alpha(uint unit, vec2 st) {
+    if (unit == 0u) {
+        return nearest_texel_alpha(texture0, st);
+    } else if (unit == 1u) {
+        return nearest_texel_alpha(texture1, st);
+    }
+    return nearest_texel_alpha(texture2, st);
+}
+
 // a texture unit's sample, with v = 0 at the bottom row as the PICA has it
 // and the border color outside the texture where the unit clamps to it
 vec4 sample_unit(uint unit, vec2 uv) {
@@ -159,6 +176,19 @@ vec4 sample_unit(uint unit, vec2 uv) {
         sampled = texture(texture1, st);
     } else {
         sampled = texture(texture2, st);
+    }
+    // smoothed, a texture the title samples point by point and alpha
+    // tests, where its nearest texel is wholly opaque or transparent, is
+    // cut out halfway between texels the way the PICA cuts it out at texel
+    // edges, only smoothly. a low reference would otherwise keep all the
+    // filtering spread past the edges, the leaves fattened, and the texels
+    // beside the part of an atlas drawn, a strip of grass, as a line along
+    // its edge
+    if (units[unit].z != 0u) {
+        float nearest = nearest_alpha(unit, st);
+        if (nearest < 0.01 || nearest > 0.99) {
+            sampled.a = sampled.a >= 0.5 ? 1.0 : 0.0;
+        }
     }
     bool border_s = (wrap_s & 3u) == 1u && (st.x < 0.0 || st.x >= 1.0);
     bool border_t = (wrap_t & 3u) == 1u && (st.y < 0.0 || st.y >= 1.0);

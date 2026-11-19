@@ -3905,6 +3905,11 @@ impl Hardware {
         let mut twin_views = [self.blank.view; 3];
         let mut samplers = [vk::Sampler::null(); 3];
         let mut enabled = 0;
+        // the units whose textures smoothing filters bilinear where the
+        // title samples them point by point and alpha tests what they give,
+        // which the fragment shader cuts out halfway between texels
+        let alpha_tested = draw.registers[REG_ALPHA_TEST] & 1 != 0;
+        let mut cut_nearest = [false; 3];
         for (unit, bound) in draw.textures.iter().enumerate() {
             match bound {
                 Some(bound) => {
@@ -3925,6 +3930,7 @@ impl Hardware {
                                 Some(smallest) => Filtering::picture(bound, smallest),
                                 None => Filtering::of(bound).scaled(times),
                             };
+                            cut_nearest[unit] = self.smooth_textures && alpha_tested && !bound.linear;
                             // only pictures: what a title drew it reads back
                             // as data, depth among it, which blending spoils
                             match self.smooth_textures {
@@ -3968,8 +3974,8 @@ impl Hardware {
         }
         let texture_config = (r[REG_TEXTURE_CONFIG] & !7) | enabled;
         words.extend([r[REG_UPDATE_BUFFER], r[REG_BUFFER_COLOR], r[REG_ALPHA_TEST], texture_config]);
-        for base in TEXTURE_UNIT_BASES {
-            words.extend([r[base + 2], r[base], 0, 0]);
+        for (base, cut) in TEXTURE_UNIT_BASES.into_iter().zip(cut_nearest) {
+            words.extend([r[base + 2], r[base], cut as u32, 0]);
         }
         let depth_flags = depth_map.w_buffer as u32 | (shaded.is_some() as u32) << 1;
         // the depth map goes through the viewport where it fits, and what
