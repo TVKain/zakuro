@@ -148,8 +148,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         shown_fps: 60.0,
         spent: Spent::default(),
         paused: false,
-        fast_forward_key: false,
-        fast_forwarding: false,
+        speed: 1,
         next_shown: Instant::now(),
         stop: false,
         camera: None,
@@ -477,11 +476,10 @@ struct App {
     spent: Spent,
     /// stopped with F1, without the menu.
     paused: bool,
-    /// Tab is held down, for fast forward.
-    fast_forward_key: bool,
-    /// the game runs as fast as it can, its sound left out.
-    fast_forwarding: bool,
-    /// when fast forward shows its next frame, on a grid at the console's
+    /// times the console's speed the game runs at now, the setting's once
+    /// a game plays.
+    speed: u32,
+    /// when a faster speed shows its next frame, on a grid at the console's
     /// frame rate.
     next_shown: Instant,
     stop: bool,
@@ -555,6 +553,11 @@ impl std::fmt::Display for Times {
 /// one 3DS frame, about 16.71 ms.
 const FRAME_TIME: Duration =
     Duration::from_nanos(zakuro_core::CYCLES_PER_FRAME * 1_000_000_000 / zakuro_core::kernel::thread::CPU_CLOCK_HZ);
+/// how long a frame takes at speed times the console's.
+fn frame_time(speed: u32) -> Duration {
+    FRAME_TIME / speed.max(1)
+}
+
 /// how far behind the schedule may fall before it starts over instead of
 /// running fast to catch up, after a pause say.
 const CATCH_UP_LIMIT: Duration = Duration::from_millis(200);
@@ -671,7 +674,7 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        // Tab is fast forward while a game runs, not a key for moving the
+        // Tab switches the game speed while a game runs, not a key for moving the
         // interface's focus around
         let (tab, repeat) = match &event {
             WindowEvent::KeyboardInput { event, .. } => (event.physical_key == PhysicalKey::Code(KeyCode::Tab), event.repeat),
@@ -689,7 +692,6 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             // keys let go while another window has the keyboard never come
             WindowEvent::Focused(false) => {
-                self.fast_forward_key = false;
                 self.blow(false);
                 self.keyboard.release();
             }
@@ -1109,9 +1111,8 @@ impl App {
         }
 
         // --- Active Gameplay Key Handling (when NOT in menu/settings) ---
-        if code == KeyCode::Tab && !event.repeat && !self.settings.keys.binds(KeyCode::Tab) {
-            // fast forward while it is held
-            self.fast_forward_key = pressed && self.game.is_some();
+        if code == KeyCode::Tab && pressed && !event.repeat && !self.settings.keys.binds(KeyCode::Tab) && self.game.is_some() {
+            self.next_speed();
         }
         if pressed && !event.repeat {
             match code {
@@ -1177,6 +1178,9 @@ impl App {
                 continue;
             }
             if self.game.is_some() && !self.menus.over_game() {
+                if Some(button) == self.speed_button() {
+                    self.next_speed();
+                }
                 continue;
             }
             // the multiplayer window and a cheat being typed are forms, which
@@ -1293,10 +1297,26 @@ impl App {
         }
     }
 
+    /// the sound plays as fast as the game runs, higher with it.
     fn apply_audio_speed(&self) {
         if let Some(audio) = &self.audio {
-            audio.set_speed(1.0);
+            audio.set_speed(f64::from(self.settings.speed.factor()));
         }
+    }
+
+    /// Tab or the controller's speed button: the next game speed, 4x going
+    /// round to 1x.
+    fn next_speed(&mut self) {
+        self.settings.speed = self.settings.speed.next();
+        self.apply_settings();
+        self.menus.toast(&format!("Game speed {}", self.settings.speed.name()));
+    }
+
+    /// the controller's button for the game speed, the right trigger or else
+    /// the right stick's click, whichever no button of the console's is on.
+    fn speed_button(&self) -> Option<gilrs::Button> {
+        let free = |button: gilrs::Button| self.settings.pad.map().iter().all(|&(_, bound)| bound != button);
+        [gilrs::Button::RightTrigger2, gilrs::Button::RightThumb].into_iter().find(|&button| free(button))
     }
 
     /// saves the settings and puts to use what can change right away.
@@ -1757,38 +1777,23 @@ impl App {
                 game.system.set_input(zakuro_core::services::hid::InputState::default());
             }
         }
-        // Tab or a controller's right trigger, or the right stick's click
-        // while ZR has the trigger, whichever no button of the console's is on
-        let free = |button: gilrs::Button| self.settings.pad.map().iter().all(|&(_, bound)| bound != button);
-        let trigger = [gilrs::Button::RightTrigger2, gilrs::Button::RightThumb].into_iter().find(|&button| free(button));
-        let fast = playing && (self.fast_forward_key || trigger.is_some_and(|trigger| self.gamepads.holding(trigger)));
-        if fast {
-            // the output waits out fast forward rather than run dry
+        let speed = self.settings.speed.factor();
+        if speed != self.speed {
+            // a new pace, with no sound piled up at the old one
+            self.speed = speed;
             if let Some(audio) = &self.audio {
-                audio.hold();
+                audio.clear();
             }
+            self.next_frame = Instant::now();
+            self.apply_audio_speed();
         }
-        if fast != self.fast_forwarding {
-            self.fast_forwarding = fast;
-            if !fast {
-                // back at the console's pace, with no sound piled up
-                if let Some(audio) = &self.audio {
-                    audio.clear();
-                }
-                self.next_frame = Instant::now();
-                self.apply_audio_speed();
-            }
-        }
-        let emulate_due = playing && (fast || now >= self.next_frame);
+        let fast = playing && speed > 1;
+        let emulate_due = playing && now >= self.next_frame;
         if emulate_due {
             let start = Instant::now();
             self.emulate();
             self.spent.emulating.add(start.elapsed());
-            if fast {
-                self.next_frame = Instant::now();
-            } else {
-                self.next_frame += FRAME_TIME;
-            }
+            self.next_frame += frame_time(speed);
         } else if !playing {
             self.next_frame = now;
             if let Some(audio) = &self.audio {
@@ -1905,8 +1910,8 @@ impl App {
         }
         game.count_frame();
         let sound = game.system.take_audio();
-        // fast forward plays no sound, there is too much of it too soon
-        if let (Some(audio), false) = (&self.audio, self.fast_forwarding) {
+        // faster speeds play their sound faster, see apply_audio_speed
+        if let Some(audio) = &self.audio {
             audio.push(&sound);
         }
         match outcome {
@@ -2173,7 +2178,7 @@ impl App {
             recompiled: game.system.recompiled.is_some(),
             saved: saved.as_deref(),
             fps: self.active.show_fps.then_some(self.shown_fps),
-            fast: self.fast_forwarding,
+            speed: self.speed,
             started: Some(&self.started),
         });
         let view = menus::View {
@@ -2313,6 +2318,18 @@ const _: RendererKind = RendererKind::Software;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// at 2x to 4x a frame is due that much sooner, so as many run in the
+    /// time one did.
+    #[test]
+    fn a_faster_speed_runs_frames_that_much_sooner() {
+        for speed in settings::Speed::ALL {
+            let factor = speed.factor();
+            let gap = frame_time(factor).as_nanos() as i128;
+            assert!((gap * i128::from(factor) - FRAME_TIME.as_nanos() as i128).abs() < i128::from(factor), "{speed:?}");
+        }
+        assert_eq!(frame_time(0), FRAME_TIME, "never a frame with no time");
+    }
 
     /// a frame goes unshown only while the game runs behind with a
     /// presenter that waits for the display, a few in a row at most.
