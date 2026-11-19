@@ -23,6 +23,7 @@ pub enum Icon {
     Folder,
     Chip,
     AddOns,
+    Trash,
 }
 
 impl Icon {
@@ -54,6 +55,7 @@ impl Icon {
                 "M8 6h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2zM10 3v3M14 3v3M10 18v3M14 18v3M3 10h3M3 14h3M18 10h3M18 14h3",
                 &[],
             ),
+            Icon::Trash => ("M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v6M14 11v6", &[]),
             Icon::AddOns => (
                 "M5 4h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM15 4h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zM5 14h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zM17 14v6M14 17h6",
                 &[],
@@ -144,6 +146,7 @@ mod tests {
             Icon::Folder,
             Icon::Chip,
             Icon::AddOns,
+            Icon::Trash,
         ];
         for icon in all {
             let image = render(icon, 48).unwrap_or_else(|| panic!("{icon:?} should draw"));

@@ -1689,6 +1689,17 @@ impl App {
                 }
                 self.save_cheats();
             }
+            Action::RemoveCheat(index) => {
+                let Some(game) = &mut self.game else { return };
+                // enhancements aren't the player's to remove, only to turn off
+                if game.system.cheats.get(index).is_none_or(|cheat| cheat.builtin) {
+                    return;
+                }
+                let cheat = game.system.cheats.remove(index);
+                log::info!("cheat {} removed", cheat.name);
+                self.save_cheats();
+                self.menus.toast(&format!("{} removed", cheat.name));
+            }
             Action::ReloadCheats => {
                 if let (Some(path), Some(game)) = (self.cheats_path(), &mut self.game) {
                     let enhancements: Vec<_> = game.system.cheats.drain(..).filter(|cheat| cheat.builtin).collect();

@@ -81,6 +81,8 @@ pub enum Action {
     Cheat(usize, bool),
     /// add a cheat, its name and its code, to the running game.
     AddCheat(String, String),
+    /// take the running game's cheat at this index out of it and its file.
+    RemoveCheat(usize),
     /// read the running game's cheats from their file again.
     ReloadCheats,
     /// show the cheats folder.
@@ -214,6 +216,8 @@ struct Row {
     changed: bool,
     /// the action is one that loses something.
     danger: bool,
+    /// a bin by the value removes it, as X does.
+    removable: bool,
     /// what the setting does, shown at the foot of the list while it is
     /// selected.
     help: Option<&'static str>,
@@ -221,7 +225,7 @@ struct Row {
 
 impl Row {
     fn new(item: Item, label: impl Into<String>, value: Value) -> Row {
-        Row { item, label: label.into(), value, note: None, enabled: true, changed: false, danger: false, help: None }
+        Row { item, label: label.into(), value, note: None, enabled: true, changed: false, danger: false, removable: false, help: None }
     }
 
     fn note(mut self, note: impl Into<String>) -> Row {
@@ -236,6 +240,11 @@ impl Row {
 
     fn danger(mut self) -> Row {
         self.danger = true;
+        self
+    }
+
+    fn removable(mut self) -> Row {
+        self.removable = true;
         self
     }
 }
@@ -1604,7 +1613,7 @@ impl Menus {
         }
         entries.push(Entry::Header("Your cheats".into()));
         for (index, cheat) in view.cheats.iter().enumerate().filter(|(_, cheat)| !cheat.builtin) {
-            let mut row = Row::new(Item::Cheat(index), cheat.name.clone(), Value::On(cheat.enabled));
+            let mut row = Row::new(Item::Cheat(index), cheat.name.clone(), Value::On(cheat.enabled)).removable();
             if !cheat.notes.is_empty() {
                 row = row.note(cheat.notes.lines().next().unwrap_or_default().to_owned());
             }
@@ -1682,6 +1691,15 @@ impl Menus {
     fn handle(&mut self, item: Item, op: Op, settings: &mut Settings, view: &View) -> Vec<Action> {
         let mut actions = Vec::new();
         let scope = self.scope();
+        if let (Item::Cheat(index), Op::Reset) = (item, op) {
+            // a player's cheat goes from their file for good, so it is asked first
+            if let Some(cheat) = view.cheats.get(index).filter(|cheat| !cheat.builtin) {
+                let title = format!("Remove {}?", cheat.name);
+                let detail = Some("It is deleted from this game's cheats file.".to_owned());
+                self.select_popup = Some(SelectPopup { detail, item, scope, title, options: vec!["Remove".to_owned(), "Keep".to_owned()], selected: 1, current: None });
+            }
+            return actions;
+        }
         if op == Op::Reset {
             if let Scope::Game(id) = scope {
                 if let Some(own) = settings.per_game.get_mut(&game_key(id)) {
@@ -1705,6 +1723,11 @@ impl Menus {
                 Some(SelectPopup { item: Item::RemoveGame, .. }) => {
                     if let Some(id) = self.game_settings.as_ref().map(|(id, _)| *id).filter(|_| index == 0) {
                         actions.push(Action::RemoveGame(id));
+                    }
+                }
+                Some(SelectPopup { item: Item::Cheat(cheat), .. }) => {
+                    if index == 0 {
+                        actions.push(Action::RemoveCheat(cheat));
                     }
                 }
                 Some(SelectPopup { item: Item::Pack(pack), .. }) => {
@@ -2100,10 +2123,12 @@ impl Menus {
                         }
                     }
                     let response = if row.enabled { response.on_hover_cursor(CursorIcon::PointingHand) } else { response };
-                    let arrows = paint_row(ui, rect, row, is_selected, mode);
+                    let (arrows, bin) = paint_row(ui, rect, row, is_selected, mode);
                     if response.clicked() && row.enabled {
-                        // a click on a value's arrows steps it
-                        let op = match (arrows, response.interact_pointer_pos()) {
+                        // a click on a value's arrows steps it, on the bin removes the row's
+                        let at = response.interact_pointer_pos();
+                        let op = match (arrows, at) {
+                            _ if bin.zip(at).is_some_and(|(bin, at)| bin.contains(at)) => Op::Reset,
                             (Some((less, _)), Some(at)) if less.contains(at) => Op::Step(-1),
                             (Some((_, more)), Some(at)) if more.contains(at) => Op::Step(1),
                             _ => Op::Activate,
@@ -2174,8 +2199,9 @@ impl Highlight {
 /// draws a row: its label, the dot of a game's own value, and its value.
 /// the selected row's highlight is drawn by its list, which glides it.
 /// a range's arrows are given back, (less, more), where a click steps it.
-fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMode) -> Option<(Rect, Rect)> {
+fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMode) -> (Option<(Rect, Rect)>, Option<Rect>) {
     let mut arrows = None;
+    let mut bin = None;
     let painter = ui.painter();
     let hovered = ui.rect_contains_pointer(rect) && mode == InputMode::Pointer && row.enabled && ui.is_enabled();
     if hovered && !selected {
@@ -2233,6 +2259,16 @@ fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMo
             at.left()
         }
     };
+    // the bin shows on the row the pointer or the selection is on
+    let value_left = if row.removable && row.enabled && (selected || hovered) {
+        let at = Rect::from_center_size(Pos2::new(value_left - 22.0, rect.center().y), Vec2::splat(18.0));
+        let near = ui.rect_contains_pointer(at.expand(6.0)) && mode == InputMode::Pointer;
+        crate::icons::paint(painter, at, Icon::Trash, if near { color::danger() } else { color::muted() });
+        bin = Some(at.expand(8.0));
+        at.left() - 6.0
+    } else {
+        value_left
+    };
     let room = (value_left - left - 16.0).max(40.0);
     let label = painter.layout(row.label.clone(), FontId::proportional(16.0), text_color, room);
     let label = if label.rows.len() > 1 { painter.layout_no_wrap(truncate(&row.label, room, 16.0), FontId::proportional(16.0), text_color) } else { label };
@@ -2241,7 +2277,7 @@ fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMo
         let note = painter.layout_no_wrap(truncate(note, room, 12.5), FontId::proportional(12.5), color::faint());
         painter.galley(Pos2::new(left, rect.center().y + 3.0), note, color::faint());
     }
-    arrows
+    (arrows, bin)
 }
 
 /// how long a window takes to grow in, in seconds.
@@ -2470,11 +2506,13 @@ impl Menus {
     fn cheats(&mut self, ctx: &egui::Context, view: &View, enabled: bool) {
         let entries = self.cheat_entries(view);
         let directional = self.mode == InputMode::Directional;
-        let footer = [(Nav::Accept, "Toggle"), (Nav::Back, "Back")];
+        // X removes the selected cheat, when it is the player's own
+        let removable = rows(&entries).nth(self.cheats_row).is_some_and(|row| row.removable);
+        let footer: &[(Nav, &str)] = if removable { &[(Nav::Accept, "Toggle"), (Nav::X, "Remove"), (Nav::Back, "Back")] } else { &[(Nav::Accept, "Toggle"), (Nav::Back, "Back")] };
         let mut add = None;
         let form = self.cheat_form;
         let mut cancel_form = false;
-        let closed = window(ctx, "cheats", Vec2::new(620.0, 640.0), ("Cheats", Some("Turn codes on and off while you play")), enabled, Some((directional && !form, self.pad_hints, &footer)), |ui| {
+        let closed = window(ctx, "cheats", Vec2::new(620.0, 640.0), ("Cheats", Some("Turn codes on and off while you play")), enabled, Some((directional && !form, self.pad_hints, footer)), |ui| {
             egui::ScrollArea::vertical().id_salt("cheats").auto_shrink(false).show(ui, |ui| {
                 if form {
                     ui.add_space(8.0);
@@ -3549,6 +3587,31 @@ mod tests {
         menus.navigate(Nav::Back, &mut settings, &v);
         assert!(!menus.cheats_open);
         assert_eq!(menus.navigate(Nav::Back, &mut settings, &v), [Action::Resume]);
+    }
+
+    /// X on a player's cheat asks, then removes it; an enhancement stays.
+    #[test]
+    fn a_cheat_is_removed_once_the_player_says_so() {
+        let library = Library::default();
+        let mut settings = Settings::default();
+        let mut menus = Menus { cheats_open: true, ..Menus::default() };
+        let cheats = [
+            CheatView { name: "No Outlines".into(), enabled: false, notes: String::new(), builtin: true },
+            CheatView { name: "Max Money".into(), enabled: true, notes: String::new(), builtin: false },
+        ];
+        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, fast: false, started: None };
+        let v = View { running: Some(running), cheats: &cheats, ..view(&library) };
+        // the enhancement can't be removed
+        assert!(menus.navigate(Nav::X, &mut settings, &v).is_empty());
+        assert!(menus.select_popup.is_none());
+        // the player's cheat is asked about, and Keep is the default
+        menus.navigate(Nav::Down, &mut settings, &v);
+        assert!(menus.navigate(Nav::X, &mut settings, &v).is_empty());
+        assert!(menus.navigate(Nav::Accept, &mut settings, &v).is_empty(), "Keep keeps it");
+        menus.navigate(Nav::X, &mut settings, &v);
+        menus.navigate(Nav::Up, &mut settings, &v);
+        assert_eq!(menus.navigate(Nav::Accept, &mut settings, &v), [Action::RemoveCheat(1)]);
+        assert!(menus.cheats_open, "the cheats stay open");
     }
 
     #[test]
