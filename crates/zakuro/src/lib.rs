@@ -8,6 +8,7 @@ pub mod cli;
 pub mod gamepad;
 pub mod gui;
 pub mod icons;
+pub mod cheat_db;
 pub mod input;
 pub mod library;
 pub mod menus;
@@ -163,6 +164,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         resize_after_full_screen: false,
         install: None,
         identifying: None,
+        fetching_cheats: None,
         dropped: Vec::new(),
         added: None,
         cursor_hidden: false,
@@ -512,6 +514,9 @@ struct App {
     /// what was dropped or picked, being looked at, and the game it was
     /// added from.
     identifying: Option<(std::sync::mpsc::Receiver<Vec<store::Found>>, Option<u64>)>,
+    /// the running game's cheats being fetched from the database, for this
+    /// title.
+    fetching_cheats: Option<(std::sync::mpsc::Receiver<Result<Option<String>, String>>, u64)>,
     /// files dropped on the window since the last frame.
     dropped: Vec<PathBuf>,
     /// the games, by the unique part of their ids, that what was just
@@ -767,8 +772,65 @@ impl App {
         self.identifying = Some((receive, for_game));
     }
 
+    /// starts fetching the running game's cheats from the database.
+    fn fetch_cheats(&mut self) {
+        let Some(program_id) = self.program_id() else { return };
+        if self.fetching_cheats.is_some() {
+            return;
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(cheat_db::fetch(program_id));
+        });
+        self.fetching_cheats = Some((receive, program_id));
+    }
+
+    /// adds the cheats fetched for the running game's version to its own.
+    fn take_fetched_cheats(&mut self) {
+        let Some((receive, program_id)) = &self.fetching_cheats else { return };
+        let program_id = *program_id;
+        let fetched = match receive.try_recv() {
+            Ok(fetched) => fetched,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("The cheat database couldn't be read".to_owned()),
+        };
+        self.fetching_cheats = None;
+        // the game it was fetched for may have stopped since
+        if self.program_id() != Some(program_id) {
+            return;
+        }
+        let Some(game) = self.game.as_mut() else { return };
+        let text = match fetched {
+            Ok(Some(text)) => text,
+            Ok(None) => {
+                self.menus.message = Some("The cheat database has no cheats for this game.".into());
+                return;
+            }
+            Err(error) => {
+                self.menus.message = Some(error);
+                return;
+            }
+        };
+        let Some(shown) = zakuro_core::cheats::shown_version(program_id, game.system.update_version) else {
+            let version = game.system.update_version.map_or_else(String::new, |version| format!(" (v{version})"));
+            self.menus.message = Some(format!("Zakuro doesn't know which version this game's update{version} is, so it can't tell which cheats fit it."));
+            return;
+        };
+        let (found, left_out) = zakuro_core::cheats::for_version(&text, shown);
+        let added = zakuro_core::cheats::merge(&mut game.system.cheats, found);
+        log::info!("{added} cheats added from the database for version {shown}, {left_out} for other versions left out");
+        self.save_cheats();
+        let other = if left_out > 0 { format!(" {left_out} for other versions or with no version were left out.") } else { String::new() };
+        self.menus.message = Some(match added {
+            0 => format!("No new cheats for version {shown}.{other}"),
+            1 => format!("1 cheat for version {shown} added, turned off.{other}"),
+            _ => format!("{added} cheats for version {shown} added, turned off.{other}"),
+        });
+    }
+
     /// takes in what was looked at, and an install once it is done.
     fn poll_store(&mut self) {
+        self.take_fetched_cheats();
         if !self.dropped.is_empty() {
             let dropped = std::mem::take(&mut self.dropped);
             let for_game = self.menus.game_settings.as_ref().map(|(id, _)| *id);
@@ -1719,6 +1781,7 @@ impl App {
                 self.save_cheats();
                 self.menus.toast(&format!("{} removed", cheat.name));
             }
+            Action::FetchCheats => self.fetch_cheats(),
             Action::ReloadCheats => {
                 if let (Some(path), Some(game)) = (self.cheats_path(), &mut self.game) {
                     let enhancements: Vec<_> = game.system.cheats.drain(..).filter(|cheat| cheat.builtin).collect();
@@ -2194,6 +2257,7 @@ impl App {
             cheats: &cheats,
             install: self.install.as_ref().map(store::Install::progress),
             identifying: self.identifying.is_some(),
+            fetching_cheats: self.fetching_cheats.is_some(),
             room: room.as_ref(),
             keyboard: keyboard.as_ref(),
             corner: self.overlay_corner.as_deref(),

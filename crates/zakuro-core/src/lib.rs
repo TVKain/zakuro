@@ -167,6 +167,9 @@ pub struct System {
     pub dlc: Vec<zakuro_fs::Dlc>,
     /// the title's cheats, from its file in the data folder.
     pub cheats: Vec<cheats::Cheat>,
+    /// the TMD version of the update the title runs with, none without one,
+    /// which cheats are made for.
+    pub update_version: Option<u16>,
     pub config: Config,
 
     pub exited: bool,
@@ -273,6 +276,7 @@ impl System {
             title: None,
             dlc: Vec::new(),
             cheats: Vec::new(),
+            update_version: None,
             config,
             exited: false,
             broke: false,
