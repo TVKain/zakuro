@@ -702,6 +702,10 @@ pub struct Settings {
     /// recompiling them before they play.
     #[serde(deserialize_with = "or_default")]
     pub dont_ask_recompile: Vec<String>,
+    /// the newest version of Zakuro the player was asked about updating to,
+    /// which is not asked about again.
+    #[serde(deserialize_with = "or_default")]
+    pub asked_update: Option<String>,
     /// the console's system language, which titles pick their localised
     /// text and files by.
     #[serde(deserialize_with = "or_default")]
@@ -798,6 +802,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             dont_ask_recompile: Vec::new(),
+            asked_update: None,
             language: Language::English,
             renderer: Renderer::Vulkan,
             hardware_rasterizer: true,

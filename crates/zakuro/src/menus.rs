@@ -87,6 +87,13 @@ pub enum Action {
     ReloadCheats,
     /// fetch the running game's cheats for its version from the database.
     FetchCheats,
+    /// ask GitHub whether a newer Zakuro is out.
+    CheckUpdate,
+    /// download the newer Zakuro and put it in place, or where it can't,
+    /// open its page.
+    InstallUpdate,
+    /// start the updated Zakuro in place of this one.
+    RestartForUpdate,
     /// show the cheats folder.
     CheatsFolder,
 }
@@ -115,6 +122,8 @@ pub enum Item {
     GentleTilt,
     /// a row of the Controls page, by its place in BINDINGS.
     Bind(usize),
+    /// Zakuro's own updates.
+    Update,
     // screens
     Layout,
     Orientation,
@@ -407,6 +416,11 @@ pub enum Ask {
     Added(Vec<(Wanted, String)>),
     /// recompiling picked in a game's options.
     Explain { game: Wanted, name: String },
+    /// a newer Zakuro is out; installing says whether it can put itself in
+    /// place, or only show where to download it.
+    Update { version: String, install: bool },
+    /// an update is in place and starts once Zakuro starts again.
+    Restart { version: String },
 }
 
 /// what recompiling does, short, under the question.
@@ -437,6 +451,12 @@ impl Ask {
                 (format!("Recompile {names}?"), format!("{RECOMPILE_EXPLAINED}{queued}"), vec![recompile.to_owned(), "Not now".to_owned()])
             }
             Ask::Explain { name, .. } => (format!("Recompile {name}?"), format!("{RECOMPILE_EXPLAINED}{queued}"), vec![recompile.to_owned(), "Not now".to_owned()]),
+            Ask::Update { version, install } => (
+                format!("Zakuro {version} is out"),
+                format!("You have {}. Your games, saves and settings stay as they are.", crate::update::CURRENT),
+                vec![if *install { "Update now" } else { "Open the download page" }.to_owned(), "Not now".to_owned()],
+            ),
+            Ask::Restart { version } => (format!("Zakuro {version} is ready"), "It starts once Zakuro restarts.".to_owned(), vec!["Restart now".to_owned(), "Later".to_owned()]),
         }
     }
 
@@ -445,6 +465,8 @@ impl Ask {
         match (self, index) {
             (Ask::Play { game, .. } | Ask::Explain { game, .. }, 0) => vec![Action::Recompile(vec![game])],
             (Ask::Added(games), 0) => vec![Action::Recompile(games.into_iter().map(|(game, _)| game).collect())],
+            (Ask::Update { .. }, 0) => vec![Action::InstallUpdate],
+            (Ask::Restart { .. }, 0) => vec![Action::RestartForUpdate],
             (Ask::Play { game, .. }, 1) => vec![Action::Play(game.path)],
             (Ask::Play { game, .. }, 2) => {
                 let key = game_key(game.program_id);
@@ -464,6 +486,20 @@ pub struct ImportView {
     /// each thing found, whether it is added, and the games it goes to.
     pub found: Vec<(Found, bool, Vec<u64>)>,
     pub place: PackPlace,
+}
+
+/// where Zakuro's own update is, as the interface shows it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum UpdateView {
+    #[default]
+    Unchecked,
+    Checking,
+    UpToDate,
+    /// this version is out.
+    Available(String),
+    Downloading,
+    /// it is in place, and starts once Zakuro restarts.
+    Ready,
 }
 
 /// a running game, as the interface shows it.
@@ -501,6 +537,8 @@ pub struct View<'a> {
     pub identifying: bool,
     /// the running game's cheats are being fetched.
     pub fetching_cheats: bool,
+    /// where Zakuro's own update is.
+    pub update: UpdateView,
     pub room: Option<&'a RoomView>,
     pub keyboard: Option<&'a Request>,
     /// a line a GameOverlay keeps over the game.
@@ -1594,6 +1632,8 @@ impl Menus {
                     add(Item::Speed);
                     add(Item::Camera);
                     add(Item::CameraPicture);
+                    entries.push(Entry::Header("Zakuro".into()));
+                    entries.push(Entry::Row(update_row(&view.update)));
                     if view.running.is_some() {
                         entries.push(Entry::Row(Row::new(Item::CopyReport, "Copy report info", Value::More).note("The game's details and the end of the log")));
                     }
@@ -2047,6 +2087,12 @@ impl Menus {
             }
             Item::CheatAdd => self.cheat_form = true,
             Item::CheatsFetch if !view.fetching_cheats => actions.push(Action::FetchCheats),
+            Item::Update => match &view.update {
+                UpdateView::Unchecked | UpdateView::UpToDate => actions.push(Action::CheckUpdate),
+                UpdateView::Available(_) => actions.push(Action::InstallUpdate),
+                UpdateView::Ready => actions.push(Action::RestartForUpdate),
+                UpdateView::Checking | UpdateView::Downloading => {}
+            },
             Item::CheatsReload => actions.push(Action::ReloadCheats),
             Item::CheatsFolder => actions.push(Action::CheatsFolder),
             _ => {}
@@ -2345,6 +2391,19 @@ impl Highlight {
 /// draws a row: its label, the dot of a game's own value, and its value.
 /// the selected row's highlight is drawn by its list, which glides it.
 /// a range's arrows are given back, (less, more), where a click steps it.
+/// the row for Zakuro's own updates, what it does saying where they are.
+fn update_row(update: &UpdateView) -> Row {
+    let (value, busy) = match update {
+        UpdateView::Unchecked => (Value::Text("Check now".into()), false),
+        UpdateView::Checking => (Value::Text("Checking…".into()), true),
+        UpdateView::UpToDate => (Value::Text("Up to date".into()), false),
+        UpdateView::Available(version) => (Value::Text(format!("Update to {version}")), false),
+        UpdateView::Downloading => (Value::Text("Downloading…".into()), true),
+        UpdateView::Ready => (Value::Text("Restart to finish".into()), false),
+    };
+    Row::new(Item::Update, "Zakuro updates", value).enabled(!busy).note(format!("Version {}. Checked each time Zakuro starts", crate::update::CURRENT))
+}
+
 fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMode) -> (Option<(Rect, Rect)>, Option<Rect>) {
     let mut arrows = None;
     let mut bin = None;
@@ -3652,6 +3711,7 @@ mod tests {
             install: None,
             identifying: false,
             fetching_cheats: false,
+            update: UpdateView::Unchecked,
             room: None,
             keyboard: None,
             corner: None,
@@ -3821,6 +3881,37 @@ mod tests {
         };
         assert_eq!(bound(BINDINGS.iter().map(|binding| binding.key).collect()), (0..keys).collect::<Vec<_>>());
         assert_eq!(bound(BINDINGS.iter().map(|binding| binding.pad).collect()), (0..pads).collect::<Vec<_>>());
+    }
+
+    /// the System page's update row checks, then updates, then restarts,
+    /// and the question about a newer Zakuro updates on its first answer.
+    #[test]
+    fn the_update_row_does_what_the_update_is_ready_for() {
+        let library = Library::default();
+        let mut settings = Settings::default();
+        let mut menus = Menus { settings_open: true, ..Menus::default() };
+        menus.page.section = Section::SYSTEM.iter().position(|&section| section == Section::System).unwrap();
+        menus.page.in_list = true;
+        for (update, wanted) in [
+            (UpdateView::Unchecked, vec![Action::CheckUpdate]),
+            (UpdateView::UpToDate, vec![Action::CheckUpdate]),
+            (UpdateView::Checking, vec![]),
+            (UpdateView::Available("9.9.9".into()), vec![Action::InstallUpdate]),
+            (UpdateView::Ready, vec![Action::RestartForUpdate]),
+        ] {
+            let v = View { update: update.clone(), ..view(&library) };
+            let entries = menus.page_entries(&settings, &v);
+            menus.page.row = rows(&entries).position(|row| row.item == Item::Update).expect("an update row");
+            assert_eq!(menus.navigate(Nav::Accept, &mut settings, &v), wanted, "{update:?}");
+        }
+        let v = view(&library);
+        menus.settings_open = false;
+        menus.open_ask(Ask::Update { version: "9.9.9".into(), install: true }, &[], &[]);
+        assert_eq!(menus.select_popup.as_ref().map(|popup| popup.options[0].as_str()), Some("Update now"));
+        assert_eq!(menus.navigate(Nav::Accept, &mut settings, &v), [Action::InstallUpdate]);
+        menus.open_ask(Ask::Update { version: "9.9.9".into(), install: false }, &[], &[]);
+        menus.navigate(Nav::Down, &mut settings, &v);
+        assert!(menus.navigate(Nav::Accept, &mut settings, &v).is_empty(), "Not now");
     }
 
     /// X on a player's cheat asks, then removes it; an enhancement stays.

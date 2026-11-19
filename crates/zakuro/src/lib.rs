@@ -10,6 +10,7 @@ pub mod gui;
 pub mod icons;
 pub mod cheat_db;
 pub mod input;
+pub mod update;
 pub mod library;
 pub mod menus;
 pub mod microphone;
@@ -165,6 +166,7 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
         install: None,
         identifying: None,
         fetching_cheats: None,
+        updater: Updater::default(),
         dropped: Vec::new(),
         added: None,
         cursor_hidden: false,
@@ -186,6 +188,11 @@ pub fn run_with(linked: Option<Linked>, overlay: Option<Box<dyn GameOverlay>>) {
     };
     app.apply_volume();
     app.apply_audio_speed();
+    update::clean_up();
+    // a build of one's own has no release to be behind
+    if !cfg!(debug_assertions) {
+        app.check_update(false);
+    }
 
     let event_loop = EventLoop::new().expect("create an event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -516,7 +523,9 @@ struct App {
     identifying: Option<(std::sync::mpsc::Receiver<Vec<store::Found>>, Option<u64>)>,
     /// the running game's cheats being fetched from the database, for this
     /// title.
-    fetching_cheats: Option<(std::sync::mpsc::Receiver<Result<Option<String>, String>>, u64)>,
+    fetching_cheats: Option<(std::sync::mpsc::Receiver<Fetched>, u64)>,
+    /// Zakuro's own update.
+    updater: Updater,
     /// files dropped on the window since the last frame.
     dropped: Vec<PathBuf>,
     /// the games, by the unique part of their ids, that what was just
@@ -761,6 +770,31 @@ impl ApplicationHandler for App {
     }
 }
 
+/// a game's cheat file from the database, none when it has none.
+type Fetched = Result<Option<String>, String>;
+
+/// what the update check or the download it started came to.
+enum UpdateDone {
+    Checked(Result<Option<update::Release>, String>),
+    Installed(Result<PathBuf, String>),
+}
+
+/// Zakuro's own update, where it is.
+#[derive(Default)]
+struct Updater {
+    view: menus::UpdateView,
+    /// the newer release found.
+    release: Option<update::Release>,
+    /// the check or download under way.
+    job: Option<std::sync::mpsc::Receiver<UpdateDone>>,
+    /// the player asked for the check, so its answer is said either way.
+    asked: bool,
+    /// the newer release is to be asked about.
+    ask: bool,
+    /// the updated program, put where this one was, to start.
+    installed: Option<PathBuf>,
+}
+
 impl App {
     /// starts looking at what was dropped or picked, away from the
     /// interface, to ask what to add.
@@ -828,9 +862,107 @@ impl App {
         });
     }
 
+    /// asks GitHub about a newer Zakuro, away from the interface. asked for
+    /// by the player, it says what it found; at launch it says nothing
+    /// unless there is one.
+    fn check_update(&mut self, asked: bool) {
+        if self.updater.job.is_some() {
+            return;
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(UpdateDone::Checked(update::check()));
+        });
+        self.updater.job = Some(receive);
+        self.updater.asked = asked;
+        self.updater.view = menus::UpdateView::Checking;
+    }
+
+    /// downloads the newer Zakuro and puts it in place, or opens its page
+    /// where this one can't update itself.
+    fn install_update(&mut self) {
+        let Some(release) = self.updater.release.clone() else { return };
+        if !update::can_install(&release) {
+            update::open_page(&release.page);
+            return;
+        }
+        if self.updater.job.is_some() {
+            return;
+        }
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(UpdateDone::Installed(update::install(&release)));
+        });
+        self.updater.job = Some(receive);
+        self.updater.view = menus::UpdateView::Downloading;
+    }
+
+    /// takes in what the update check or download found, and asks about a
+    /// newer Zakuro once Home shows with nothing over it.
+    fn poll_update(&mut self) {
+        let done = match self.updater.job.as_ref().map(std::sync::mpsc::Receiver::try_recv) {
+            Some(Ok(done)) => Some(done),
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => Some(UpdateDone::Checked(Err("The update check stopped".into()))),
+            _ => None,
+        };
+        if let Some(done) = done {
+            self.updater.job = None;
+            match done {
+                UpdateDone::Checked(Ok(Some(release))) => {
+                    log::info!("Zakuro {} is out, this is {}", release.version, update::CURRENT);
+                    self.updater.view = menus::UpdateView::Available(release.version.clone());
+                    // asked about once, at launch, unless the player asks
+                    let asked_before = self.settings.asked_update.as_deref() == Some(release.version.as_str());
+                    self.updater.ask = self.updater.asked || !asked_before;
+                    self.updater.release = Some(release);
+                }
+                UpdateDone::Checked(Ok(None)) => {
+                    self.updater.view = menus::UpdateView::UpToDate;
+                    if self.updater.asked {
+                        self.menus.toast("Zakuro is up to date");
+                    }
+                }
+                UpdateDone::Checked(Err(error)) => {
+                    log::info!("no update check: {error}");
+                    self.updater.view = menus::UpdateView::Unchecked;
+                    if self.updater.asked {
+                        self.menus.message = Some(format!("Zakuro couldn't check for updates. {error}"));
+                    }
+                }
+                UpdateDone::Installed(Ok(exe)) => {
+                    self.updater.view = menus::UpdateView::Ready;
+                    self.updater.installed = Some(exe);
+                    if let Some(release) = &self.updater.release {
+                        let restart = menus::Ask::Restart { version: release.version.clone() };
+                        self.menus.open_ask(restart, &self.jobs, &self.waiting);
+                    }
+                }
+                UpdateDone::Installed(Err(error)) => {
+                    log::warn!("updating: {error}");
+                    self.updater.view = self.updater.release.as_ref().map_or(menus::UpdateView::Unchecked, |release| menus::UpdateView::Available(release.version.clone()));
+                    let page = self.updater.release.as_ref().map_or(String::new(), |release| format!("\n\nIt can be downloaded from {}", release.page));
+                    self.menus.message = Some(format!("{error}{page}"));
+                }
+            }
+        }
+        // asked on Home, not over a game or another question
+        if self.updater.ask && self.game.is_none() && !self.menus.modal_open() && self.menus.message.is_none() {
+            if let Some(release) = &self.updater.release {
+                self.updater.ask = false;
+                let ask = menus::Ask::Update { version: release.version.clone(), install: update::can_install(release) };
+                if self.settings.asked_update.as_deref() != Some(release.version.as_str()) {
+                    self.settings.asked_update = Some(release.version.clone());
+                    self.settings.save();
+                }
+                self.menus.open_ask(ask, &self.jobs, &self.waiting);
+            }
+        }
+    }
+
     /// takes in what was looked at, and an install once it is done.
     fn poll_store(&mut self) {
         self.take_fetched_cheats();
+        self.poll_update();
         if !self.dropped.is_empty() {
             let dropped = std::mem::take(&mut self.dropped);
             let for_game = self.menus.game_settings.as_ref().map(|(id, _)| *id);
@@ -1782,6 +1914,19 @@ impl App {
                 self.menus.toast(&format!("{} removed", cheat.name));
             }
             Action::FetchCheats => self.fetch_cheats(),
+            Action::CheckUpdate => self.check_update(true),
+            Action::InstallUpdate => self.install_update(),
+            Action::RestartForUpdate => {
+                if self.game.is_some() {
+                    self.menus.message = Some("Return to Home first, so the game isn't stopped without saving.".into());
+                } else if let Some(exe) = self.updater.installed.clone() {
+                    self.settings.save();
+                    match std::process::Command::new(&exe).spawn() {
+                        Ok(_) => event_loop.exit(),
+                        Err(error) => self.menus.message = Some(format!("The new Zakuro can't be started: {error}. Start it again yourself.")),
+                    }
+                }
+            }
             Action::ReloadCheats => {
                 if let (Some(path), Some(game)) = (self.cheats_path(), &mut self.game) {
                     let enhancements: Vec<_> = game.system.cheats.drain(..).filter(|cheat| cheat.builtin).collect();
@@ -2258,6 +2403,7 @@ impl App {
             install: self.install.as_ref().map(store::Install::progress),
             identifying: self.identifying.is_some(),
             fetching_cheats: self.fetching_cheats.is_some(),
+            update: self.updater.view.clone(),
             room: room.as_ref(),
             keyboard: keyboard.as_ref(),
             corner: self.overlay_corner.as_deref(),
