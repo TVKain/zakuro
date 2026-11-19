@@ -152,6 +152,71 @@ pub fn to_text(cheats: &[Cheat]) -> String {
     text
 }
 
+/// the version a cheat's name says it is made for, "1.2" from
+/// "Max Money v1.2" or "Max Money (V1.2)", as the Sharkive database has them.
+pub fn version_tag(name: &str) -> Option<&str> {
+    name.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.')).rev().find_map(|word| {
+        let version = word.strip_prefix(['v', 'V'])?;
+        let (major, minor) = version.split_once('.')?;
+        let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        (digits(major) && digits(minor)).then_some(version)
+    })
+}
+
+/// the version a game shows while it runs with the update of TMD version
+/// update, "1.0" without one, none when the update is not one Zakuro knows.
+pub fn shown_version(title_id: u64, update: Option<u16>) -> Option<&'static str> {
+    match update {
+        None => Some("1.0"),
+        Some(version) => zakuro_fs::versions::shown(title_id, version),
+    }
+}
+
+/// the cheats of a database file made for the game's version shown, the
+/// version left out of their names, and how many were left out for being
+/// for another version or for not saying which. a code for another version
+/// writes where something else is, so only those that say they fit are kept.
+pub fn for_version(text: &str, shown: &str) -> (Vec<Cheat>, usize) {
+    let all = parse(text);
+    let total = all.len();
+    let kept: Vec<Cheat> = all
+        .into_iter()
+        .filter(|cheat| version_tag(&cheat.name) == Some(shown))
+        .map(|mut cheat| {
+            cheat.name = untagged(&cheat.name);
+            cheat.enabled = false;
+            cheat
+        })
+        .collect();
+    let left_out = total - kept.len();
+    (kept, left_out)
+}
+
+/// a cheat's name without the version in it.
+fn untagged(name: &str) -> String {
+    let Some(version) = version_tag(name) else { return name.to_owned() };
+    let mut out = name.to_owned();
+    for tag in [format!("(v{version})"), format!("(V{version})"), format!("v{version}"), format!("V{version}")] {
+        if let Some(at) = out.rfind(&tag) {
+            out.replace_range(at..at + tag.len(), "");
+            break;
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// adds the cheats not already there by name, off, and says how many.
+pub fn merge(cheats: &mut Vec<Cheat>, new: Vec<Cheat>) -> usize {
+    let mut added = 0;
+    for cheat in new {
+        if !cheats.iter().any(|have| have.name == cheat.name) {
+            cheats.push(cheat);
+            added += 1;
+        }
+    }
+    added
+}
+
 /// writes the cheats to their file, and the folder it is in.
 pub fn save(path: &Path, cheats: &[Cheat]) -> std::io::Result<()> {
     if let Some(folder) = path.parent() {
@@ -505,6 +570,39 @@ mod tests {
         system.memory.read_bytes(0x0800_0010, &mut memory);
         assert_eq!(memory, [1, 0x99, 3, 4, 5, 6, 7, 0x77]);
         assert!(system.cheats[0].overwrote.is_empty());
+    }
+
+    #[test]
+    fn database_cheats_are_kept_for_the_version_they_say() {
+        assert_eq!(version_tag("Max Money v1.2"), Some("1.2"));
+        assert_eq!(version_tag("Shiny (V1.0) wild"), Some("1.0"));
+        assert_eq!(version_tag("Ultra Wormhole Red & Type 4 v1.2"), Some("1.2"));
+        assert_eq!(version_tag("Max Money"), None);
+        assert_eq!(version_tag("Level 100 vs. trainers"), None);
+        let text = "[Max Money v1.2]
+00000000 00000001
+[Max Money v1.1]
+00000000 00000002
+[Max Pokemiles]
+00000000 00000003
+[Rare Candy (v1.2)]
+00000000 00000004
+";
+        let (kept, left_out) = for_version(text, "1.2");
+        let names: Vec<&str> = kept.iter().map(|cheat| cheat.name.as_str()).collect();
+        assert_eq!(names, ["Max Money", "Rare Candy"]);
+        assert_eq!(left_out, 2, "another version's, and one that says none");
+        assert!(kept.iter().all(|cheat| !cheat.enabled));
+        let mut have = vec![Cheat::new("Max Money", vec!["00000000 00000009".into()], Vec::new())];
+        assert_eq!(merge(&mut have, kept), 1, "the one already there stays as it was");
+        assert_eq!(have[0].lines(), ["00000000 00000009"]);
+    }
+
+    #[test]
+    fn a_build_shows_the_version_its_cheats_are_for() {
+        assert_eq!(shown_version(0x0004_0000_001B_5000, None), Some("1.0"));
+        assert_eq!(shown_version(0x0004_0000_001B_5000, Some(2080)), Some("1.2"));
+        assert_eq!(shown_version(0x0004_0000_001B_5000, Some(9999)), None);
     }
 
     #[test]

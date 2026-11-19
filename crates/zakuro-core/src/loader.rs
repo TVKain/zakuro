@@ -100,6 +100,7 @@ pub fn load(path: impl AsRef<std::path::Path>, mut config: Config) -> Result<Sys
             log::info!("{} cheats in {}, {on} of them on", system.cheats.len(), path.display());
         }
     }
+    system.update_version = title.update().map(|update| update.version);
     let build = crate::enhancements::build(&title);
     let on = system.config.enhancements.get(&title.program_id()).cloned().unwrap_or_default();
     let enhancements = crate::enhancements::cheats(title.program_id(), &build, &on);

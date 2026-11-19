@@ -38,6 +38,8 @@ zip = { version = "9.5.1", default-features = false, features = ["deflate"] }
 # the interface's icons, outlines drawn to the screen's pixels
 kurbo = "0.13.1"
 tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "simd"] }
+# cheats fetched from the Sharkive database
+ureq = "3.5.2"
 
 [dev-dependencies]
 zakuro-fs = { workspace = true, features = ["testing"] }

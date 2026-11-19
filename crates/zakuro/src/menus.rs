@@ -85,6 +85,8 @@ pub enum Action {
     RemoveCheat(usize),
     /// read the running game's cheats from their file again.
     ReloadCheats,
+    /// fetch the running game's cheats for its version from the database.
+    FetchCheats,
     /// show the cheats folder.
     CheatsFolder,
 }
@@ -175,6 +177,7 @@ pub enum Item {
     // the cheats window
     Cheat(usize),
     CheatAdd,
+    CheatsFetch,
     CheatsReload,
     CheatsFolder,
 }
@@ -496,6 +499,8 @@ pub struct View<'a> {
     pub install: Option<store::Progress>,
     /// what was dropped or picked is being looked at.
     pub identifying: bool,
+    /// the running game's cheats are being fetched.
+    pub fetching_cheats: bool,
     pub room: Option<&'a RoomView>,
     pub keyboard: Option<&'a Request>,
     /// a line a GameOverlay keeps over the game.
@@ -1729,6 +1734,8 @@ impl Menus {
             entries.push(Entry::Row(row));
         }
         entries.push(Entry::Row(Row::new(Item::CheatAdd, "Add a cheat", Value::More).note("Type a code, or add a Citra cheat file from Home")));
+        let fetch = Row::new(Item::CheatsFetch, "Get cheats for this game", if view.fetching_cheats { Value::Text("Downloading…".into()) } else { Value::More });
+        entries.push(Entry::Row(fetch.enabled(!view.fetching_cheats).note("From the Sharkive database, only those for the version you're playing")));
         entries.push(Entry::Row(Row::new(Item::CheatsReload, "Reload from file", Value::None)));
         entries.push(Entry::Row(Row::new(Item::CheatsFolder, "Open the cheats folder", Value::More)));
         entries
@@ -2039,6 +2046,7 @@ impl Menus {
                 }
             }
             Item::CheatAdd => self.cheat_form = true,
+            Item::CheatsFetch if !view.fetching_cheats => actions.push(Action::FetchCheats),
             Item::CheatsReload => actions.push(Action::ReloadCheats),
             Item::CheatsFolder => actions.push(Action::CheatsFolder),
             _ => {}
@@ -3643,6 +3651,7 @@ mod tests {
             cheats: &[],
             install: None,
             identifying: false,
+            fetching_cheats: false,
             room: None,
             keyboard: None,
             corner: None,
