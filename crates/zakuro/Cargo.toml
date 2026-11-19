@@ -40,6 +40,8 @@ kurbo = "0.13.1"
 tiny-skia = { version = "0.11.4", default-features = false, features = ["std", "simd"] }
 # cheats fetched from the Sharkive database
 ureq = "3.5.2"
+# the latest release's details, for updating
+serde_json = "1.0.151"
 
 [dev-dependencies]
 zakuro-fs = { workspace = true, features = ["testing"] }
