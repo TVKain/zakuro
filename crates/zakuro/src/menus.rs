@@ -110,6 +110,7 @@ pub enum Item {
     Interpolation,
     FpsLimit,
     Speed,
+    GentleTilt,
     // screens
     Layout,
     Orientation,
@@ -905,6 +906,7 @@ fn step(item: Item, delta: i32, settings: &mut Settings, scope: Scope) {
     match item {
         Item::Depth => put!(settings, scope, depth_3d, (shown.depth_3d as i32 + delta * 5).clamp(0, 100) as u32),
         Item::Volume => settings.volume = ((settings.volume * 20.0).round() + delta as f32).clamp(0.0, 20.0) / 20.0,
+        Item::GentleTilt => settings.gentle_tilt = (settings.gentle_tilt as i32 + delta * 5).clamp(10, 70) as u32,
         Item::BackgroundOpacity => settings.background_opacity = ((settings.background_opacity * 20.0).round() + delta as f32).clamp(0.0, 20.0) / 20.0,
         Item::UiVolume => settings.ui_volume = ((settings.ui_volume * 20.0).round() + delta as f32).clamp(0.0, 20.0) / 20.0,
         _ if matches!(value_kind(item), Kind::Switch) => toggle(item, settings, scope),
@@ -938,7 +940,7 @@ fn value_kind(item: Item) -> Kind {
         Item::TexturePacks | Item::SmoothTextures | Item::Interpolation | Item::IntegerScale | Item::Recompiled | Item::SwapEyes | Item::ShowFps | Item::Mute | Item::UiSounds => {
             Kind::Switch
         }
-        Item::Depth | Item::Volume | Item::BackgroundOpacity | Item::UiVolume | Item::Slot => Kind::Range,
+        Item::Depth | Item::Volume | Item::BackgroundOpacity | Item::UiVolume | Item::GentleTilt | Item::Slot => Kind::Range,
         _ => Kind::Other,
     }
 }
@@ -974,6 +976,11 @@ fn setting(item: Item, settings: &Settings, scope: Scope) -> Row {
         Item::Fullscreen => ("Fullscreen", Value::On(shown.fullscreen), "F11 switches it too."),
         Item::ShowFps => ("Show frame rate", Value::On(shown.show_fps), "Shows the frame rate in a corner while playing."),
         Item::Stereo => ("3D mode", Value::Text(shown.stereo.name().into()), "How the 3D effect is shown, for games that have one."),
+        Item::GentleTilt => (
+            "Gentle tilt amount",
+            Value::Range(format!("{}%", settings.gentle_tilt)),
+            "How far the circle pad leans while the gentle tilt key or button is held, for sneaking up on Pokémon.",
+        ),
         Item::Depth => ("3D depth", Value::Range(format!("{}%", shown.depth_3d)), "How strong the 3D effect is."),
         Item::SwapEyes => ("Swap eyes", Value::On(shown.swap_eyes), "Swaps the pictures for the left and right eye."),
         Item::Volume => ("Volume", Value::Range(format!("{:.0}%", shown.volume * 100.0)), ""),
@@ -1516,6 +1523,7 @@ impl Menus {
                 }
             }
             Section::Controls => {
+                entries.push(Entry::Row(setting(Item::GentleTilt, settings, scope)));
                 entries.push(Entry::Header("Controller".into()));
                 let mut pad = settings.pad.clone();
                 for (index, (name, button)) in pad.all_mut().into_iter().enumerate() {
@@ -1772,7 +1780,7 @@ impl Menus {
         }
         match item {
             Item::Fullscreen => actions.push(Action::Fullscreen),
-            Item::Volume | Item::Depth | Item::BackgroundOpacity | Item::UiVolume => {
+            Item::Volume | Item::Depth | Item::BackgroundOpacity | Item::UiVolume | Item::GentleTilt => {
                 if op == Op::Activate {
                     step(item, 1, settings, scope);
                 }

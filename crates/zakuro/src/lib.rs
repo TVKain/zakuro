@@ -1315,7 +1315,8 @@ impl App {
     /// the controller's button for the game speed, the right trigger or else
     /// the right stick's click, whichever no button of the console's is on.
     fn speed_button(&self) -> Option<gilrs::Button> {
-        let free = |button: gilrs::Button| self.settings.pad.map().iter().all(|&(_, bound)| bound != button);
+        let pad = &self.settings.pad;
+        let free = |button: gilrs::Button| button != pad.circle_gentle && pad.map().iter().all(|&(_, bound)| bound != button);
         [gilrs::Button::RightTrigger2, gilrs::Button::RightThumb].into_iter().find(|&button| free(button))
     }
 
@@ -1890,7 +1891,13 @@ impl App {
         let Some(game) = &mut self.game else { return };
         let input = match &mut game.replay {
             Some(replay) => replay.input(game.frame),
-            None => self.gamepads.apply(self.keyboard.state()),
+            None => {
+                let mut input = self.gamepads.apply(self.keyboard.state());
+                if self.keyboard.gentle() || self.gamepads.holding(self.settings.pad.circle_gentle) {
+                    input::tilt_gently(&mut input, self.settings.gentle_tilt as f32 / 100.0);
+                }
+                input
+            }
         };
         game.frame += 1;
         if let Some(recorder) = &mut game.recorder {

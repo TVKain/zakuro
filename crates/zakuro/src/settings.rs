@@ -494,6 +494,9 @@ pub struct Keys {
     pub c_down: KeyCode,
     pub c_left: KeyCode,
     pub c_right: KeyCode,
+    /// held, the circle pad only leans partway, gentle_tilt of the way, for
+    /// sneaking up on Pokémon and the like.
+    pub circle_gentle: KeyCode,
 }
 
 impl Default for Keys {
@@ -521,6 +524,7 @@ impl Default for Keys {
             c_down: KeyCode::KeyG,
             c_left: KeyCode::KeyF,
             c_right: KeyCode::KeyH,
+            circle_gentle: KeyCode::ShiftLeft,
         }
     }
 }
@@ -532,7 +536,7 @@ impl Keys {
     }
 
     /// every binding with the name it goes by, to show and change them.
-    pub fn all_mut(&mut self) -> [(&'static str, &mut KeyCode); 22] {
+    pub fn all_mut(&mut self) -> [(&'static str, &mut KeyCode); 23] {
         [
             ("A", &mut self.a),
             ("B", &mut self.b),
@@ -556,6 +560,7 @@ impl Keys {
             ("C-stick down", &mut self.c_down),
             ("C-stick left", &mut self.c_left),
             ("C-stick right", &mut self.c_right),
+            ("Circle pad gentle tilt", &mut self.circle_gentle),
         ]
     }
 }
@@ -581,6 +586,8 @@ pub struct PadButtons {
     pub zl: Button,
     pub zr: Button,
     pub menu: Button,
+    /// held, the left stick only leans partway, as Keys::circle_gentle.
+    pub circle_gentle: Button,
 }
 
 impl Default for PadButtons {
@@ -601,13 +608,14 @@ impl Default for PadButtons {
             zl: Button::LeftTrigger2,
             zr: Button::RightTrigger2,
             menu: Button::Mode,
+            circle_gentle: Button::LeftThumb,
         }
     }
 }
 
 impl PadButtons {
     /// every binding with the name it goes by, to show and change them.
-    pub fn all_mut(&mut self) -> [(&'static str, &mut Button); 15] {
+    pub fn all_mut(&mut self) -> [(&'static str, &mut Button); 16] {
         [
             ("A", &mut self.a),
             ("B", &mut self.b),
@@ -624,6 +632,7 @@ impl PadButtons {
             ("ZL", &mut self.zl),
             ("ZR", &mut self.zr),
             ("Menu / Pause", &mut self.menu),
+            ("Circle pad gentle tilt", &mut self.circle_gentle),
         ]
     }
 
@@ -735,6 +744,9 @@ pub struct Settings {
     pub stereo: Stereo3d,
     /// how deep games draw the 3D, the console's slider, 0 to 100.
     pub depth_3d: u32,
+    /// how far the circle pad leans while the gentle tilt is held, 10 to 70
+    /// percent of the way.
+    pub gentle_tilt: u32,
     /// each eye gets the other's picture.
     pub swap_eyes: bool,
     /// 0 to 1.
@@ -798,6 +810,7 @@ impl Default for Settings {
             top_shape: TopShape::Console,
             stereo: Stereo3d::Off,
             depth_3d: 50,
+            gentle_tilt: 35,
             swap_eyes: false,
             volume: 1.0,
             mute: false,
