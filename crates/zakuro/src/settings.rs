@@ -109,6 +109,43 @@ impl FpsLimit {
     }
 }
 
+/// how fast games run, times the console's speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Speed {
+    #[default]
+    #[serde(rename = "1x")]
+    X1,
+    #[serde(rename = "2x")]
+    X2,
+    #[serde(rename = "3x")]
+    X3,
+    #[serde(rename = "4x")]
+    X4,
+}
+
+impl Speed {
+    pub const ALL: [Speed; 4] = [Speed::X1, Speed::X2, Speed::X3, Speed::X4];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Speed::X1 => "1x (Normal)",
+            Speed::X2 => "2x",
+            Speed::X3 => "3x",
+            Speed::X4 => "4x",
+        }
+    }
+
+    /// times the console's speed.
+    pub fn factor(self) -> u32 {
+        Speed::ALL.iter().position(|&speed| speed == self).unwrap_or(0) as u32 + 1
+    }
+
+    /// the speed after this one, 4x going round to 1x.
+    pub fn next(self) -> Speed {
+        Speed::ALL[self.factor() as usize % Speed::ALL.len()]
+    }
+}
+
 /// how the screens are arranged in the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -678,6 +715,9 @@ pub struct Settings {
     /// target frame rate limit or uncapped mode.
     #[serde(deserialize_with = "or_default")]
     pub fps_limit: FpsLimit,
+    /// how fast games run, which Tab or a controller's switch steps through.
+    #[serde(deserialize_with = "or_default")]
+    pub speed: Speed,
     #[serde(deserialize_with = "or_default")]
     pub layout: Screens,
     #[serde(deserialize_with = "or_default")]
@@ -750,6 +790,7 @@ impl Default for Settings {
             scale: 2,
             fullscreen: false,
             fps_limit: FpsLimit::Fps60,
+            speed: Speed::X1,
             layout: Screens::Stacked,
             orientation: Orientation::North,
             filter: Filter::Sharp,
@@ -1037,6 +1078,16 @@ mod tests {
             layout = layout.next();
         }
         assert_eq!(layout, Screens::Stacked);
+    }
+
+    #[test]
+    fn speed_parses_defaults_and_goes_round() {
+        assert_eq!(Settings::default().speed, Speed::X1);
+        let fast: Settings = toml::from_str("speed = \"3x\"").unwrap();
+        assert_eq!((fast.speed, fast.speed.factor()), (Speed::X3, 3));
+        let unknown: Settings = toml::from_str("speed = \"9x\"").unwrap();
+        assert_eq!(unknown.speed, Speed::X1);
+        assert_eq!([Speed::X1.next(), Speed::X3.next(), Speed::X4.next()], [Speed::X2, Speed::X4, Speed::X1]);
     }
 
     #[test]

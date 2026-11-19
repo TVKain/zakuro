@@ -25,7 +25,7 @@ use crate::nav::{InputMode, Nav};
 use crate::recompile::{Job, Stage, Wanted};
 use crate::ui_sound::Cue;
 use crate::settings::{
-    game_key, CameraSource, Filter, FpsLimit, Keys, Language, MicrophoneSource, Orientation, PadButtons, Renderer, Screens, Settings, Stereo3d, Theme, TopShape,
+    game_key, CameraSource, Filter, FpsLimit, Keys, Speed, Language, MicrophoneSource, Orientation, PadButtons, Renderer, Screens, Settings, Stereo3d, Theme, TopShape,
 };
 use crate::store::{self, Found, InstalledPack, PackPlace};
 
@@ -109,6 +109,7 @@ pub enum Item {
     SmoothTextures,
     Interpolation,
     FpsLimit,
+    Speed,
     // screens
     Layout,
     Orientation,
@@ -398,7 +399,8 @@ pub struct RunningView<'a> {
     /// when the slot chosen was saved to.
     pub saved: Option<&'a str>,
     pub fps: Option<f32>,
-    pub fast: bool,
+    /// times the console's speed it runs at, 1 for its own.
+    pub speed: u32,
     /// the settings the game started with, for those it reads only then.
     pub started: Option<&'a Settings>,
 }
@@ -830,6 +832,7 @@ fn choices(item: Item, settings: &Settings) -> Option<(Vec<String>, usize)> {
     Some(match item {
         Item::Renderer => names(&Renderer::ALL, settings.renderer, Renderer::name),
         Item::Theme => names(&Theme::ALL, settings.theme, Theme::name),
+        Item::Speed => names(&Speed::ALL, settings.speed, Speed::name),
         Item::Rasterizer => (RASTERIZERS.iter().map(|&name| name.to_owned()).collect(), usize::from(!settings.hardware_rasterizer)),
         Item::Resolution => (RESOLUTION_SCALES.iter().map(|&scale| resolution_label(scale).to_owned()).collect(), settings.resolution.clamp(1, 8) as usize - 1),
         Item::Filter => names(&Filter::ALL, settings.filter, Filter::name),
@@ -850,6 +853,7 @@ fn choose(item: Item, index: usize, settings: &mut Settings, scope: Scope) {
     match item {
         Item::Renderer => settings.renderer = Renderer::ALL[index.min(Renderer::ALL.len() - 1)],
         Item::Theme => settings.theme = Theme::ALL[index.min(Theme::ALL.len() - 1)],
+        Item::Speed => settings.speed = Speed::ALL[index.min(Speed::ALL.len() - 1)],
         Item::Rasterizer => put!(settings, scope, hardware_rasterizer, index == 0),
         Item::Resolution => put!(settings, scope, resolution, index.min(7) as u32 + 1),
         Item::Filter => put!(settings, scope, filter, Filter::ALL[index.min(Filter::ALL.len() - 1)]),
@@ -919,6 +923,7 @@ fn value_kind(item: Item) -> Kind {
     match item {
         Item::Renderer
         | Item::Theme
+        | Item::Speed
         | Item::Rasterizer
         | Item::Resolution
         | Item::Filter
@@ -960,6 +965,7 @@ fn setting(item: Item, settings: &Settings, scope: Scope) -> Row {
         Item::SmoothTextures => ("Upscale textures", Value::On(shown.smooth_textures), "Redraws the game's low-resolution textures with clean, smooth edges."),
         Item::TexturePacks => ("Custom textures", Value::On(shown.texture_packs), "Swaps in textures from packs added to a game, often HD ones. Add them in its Options, under Add-ons."),
         Item::Interpolation => ("Frame interpolation", Value::On(shown.frame_interpolation), "Makes 30 FPS games as smooth as 60, with a frame more of delay."),
+        Item::Speed => ("Game speed", Value::Text(settings.speed.name().into()), "Runs games faster. Tab, or the right trigger or right stick click, switches it while playing."),
         Item::FpsLimit => ("Frame rate limit", Value::Text(shown.fps_limit.badge_name().into()), "How often the screen updates. Games always run at their normal speed."),
         Item::Layout => ("Screen layout", Value::Text(shown.layout.name().into()), "How the two screens are arranged. F9 switches it while playing."),
         Item::Orientation => ("Rotation", Value::Text(shown.orientation.name().into()), "Turns the screens, for games played with the console held sideways."),
@@ -1145,7 +1151,7 @@ impl Menus {
             ui.painter().rect_filled(ui.max_rect(), 0.0, color::bg());
         }
         ui.add_enabled_ui(!layered, |ui| match &view.running {
-            Some(running) => self.over(ui, running, view),
+            Some(running) => self.over(ui, running, settings, view),
             None => self.home(ui, settings, view),
         });
         self.fade_from_home(&ctx, view.running.is_some());
@@ -1259,7 +1265,7 @@ impl Menus {
         }
         match &view.running {
             Some(running) if self.menu_open => {
-                let entries = self.pause_entries(running);
+                let entries = self.pause_entries(running, settings);
                 if nav == Nav::Back {
                     return vec![Action::Resume];
                 }
@@ -1497,6 +1503,7 @@ impl Menus {
                 add(Item::Language);
                 add(Item::Recompiled);
                 if !game {
+                    add(Item::Speed);
                     add(Item::Camera);
                     add(Item::CameraPicture);
                     if view.running.is_some() {
@@ -1583,13 +1590,14 @@ impl Menus {
     }
 
     /// the rows of the menu over a running game.
-    fn pause_entries(&self, running: &RunningView) -> Vec<Entry> {
+    fn pause_entries(&self, running: &RunningView, settings: &Settings) -> Vec<Entry> {
         let slot = format!("Slot {} · {}", self.slot.max(1), running.saved.unwrap_or("empty"));
         let mut entries = vec![
             Entry::Row(Row::new(Item::Resume, "Resume", Value::None)),
             Entry::Row(Row::new(Item::Slot, "State slot", Value::Range(slot))),
             Entry::Row(Row::new(Item::SaveState, "Save state", Value::Text("F5".into()))),
             Entry::Row(Row::new(Item::LoadState, "Load state", Value::Text("F8".into())).enabled(running.saved.is_some())),
+            Entry::Row(Row::new(Item::Speed, "Game speed", Value::Range(settings.speed.name().into()))),
         ];
         if running.program_id.is_some() {
             entries.push(Entry::Row(Row::new(Item::Options, "Options for this game", Value::More)));
@@ -3372,10 +3380,10 @@ fn game_details(game: &Game, settings: &Settings, view: &View) -> String {
 impl Menus {
     /// what goes over a running game: the frame rate and fast forward, and
     /// the menu when it is open.
-    fn over(&mut self, ui: &mut egui::Ui, running: &RunningView, view: &View) {
+    fn over(&mut self, ui: &mut egui::Ui, running: &RunningView, settings: &Settings, view: &View) {
         let ctx = ui.ctx().clone();
-        if running.fast {
-            badge(&ctx, "fast forward", Align2::RIGHT_TOP, "» Fast forward");
+        if running.speed > 1 {
+            badge(&ctx, "fast forward", Align2::RIGHT_TOP, &format!("» {}x", running.speed));
         }
         if let Some(fps) = running.fps {
             badge(&ctx, "fps", Align2::LEFT_TOP, &format!("{fps:.0} fps"));
@@ -3383,7 +3391,7 @@ impl Menus {
         if !self.menu_open {
             return;
         }
-        let entries = self.pause_entries(running);
+        let entries = self.pause_entries(running, settings);
         let screen = ctx.content_rect();
         let directional = self.mode == InputMode::Directional;
         let height = (rows(&entries).count() as f32 * 46.0 + 104.0 + if directional { 48.0 } else { 0.0 }).min(screen.height() - 24.0);
@@ -3575,12 +3583,12 @@ mod tests {
         for open_cheats in [false, true] {
             menus.cheats_open = open_cheats;
             let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 480.0))), ..Default::default() };
-            let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: Some(60.0), fast: false, started: None };
+            let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: Some(60.0), speed: 1, started: None };
             let v = View { running: Some(running), cheats: &cheats, ..view(&library) };
             ctx.run_ui(input, |ui| drop(menus.show(ui, &mut settings, &v))).drop_without_applying_deltas();
         }
         // A on the enhancement turns it on
-        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, fast: false, started: None };
+        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, speed: 1, started: None };
         let v = View { running: Some(running), cheats: &cheats, ..view(&library) };
         assert_eq!(menus.navigate(Nav::Accept, &mut settings, &v), [Action::Cheat(0, true)]);
         // back closes the cheats, then resumes
@@ -3599,7 +3607,7 @@ mod tests {
             CheatView { name: "No Outlines".into(), enabled: false, notes: String::new(), builtin: true },
             CheatView { name: "Max Money".into(), enabled: true, notes: String::new(), builtin: false },
         ];
-        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, fast: false, started: None };
+        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, speed: 1, started: None };
         let v = View { running: Some(running), cheats: &cheats, ..view(&library) };
         // the enhancement can't be removed
         assert!(menus.navigate(Nav::X, &mut settings, &v).is_empty());
@@ -3624,7 +3632,7 @@ mod tests {
             menus.page_entries(&Settings::default(), v).iter().any(|entry| matches!(entry, Entry::Row(row) if row.item == Item::Recompile))
         };
         assert!(has_recompile(&menus, &view(&library)));
-        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, fast: false, started: None };
+        let running = RunningView { name: "A game", program_id: Some(7), recompiled: false, saved: None, fps: None, speed: 1, started: None };
         let v = View { running: Some(running), ..view(&library) };
         assert!(!has_recompile(&menus, &v));
         assert!(menus.handle(Item::Recompile, Op::Activate, &mut settings, &v).is_empty());
