@@ -1095,7 +1095,24 @@ impl App {
             self.game = Some(Running::new(system, PathBuf::new(), "test pattern".to_owned()));
             self.paused = true;
         } else if let Some(rom) = self.options.rom.clone() {
-            if let Err(error) = self.play(Path::new(&rom)) {
+            // not a file, the name of a game in the library. one it doesn't
+            // have opens the library saying so, a launcher showing no
+            // console to print it in
+            let path = match Path::new(&rom).exists() {
+                true => Some(PathBuf::from(&rom)),
+                false => {
+                    let games = library::games_now(&store::sources(self.data_dir.as_deref()), self.data_dir.as_deref());
+                    match library::named(&games, &rom) {
+                        Ok(game) => Some(game.path.clone()),
+                        Err(error) => {
+                            log::warn!("{error}");
+                            self.menus.message = Some(format!("Zakuro couldn't start a game: {error}."));
+                            None
+                        }
+                    }
+                }
+            };
+            if let Some(Err(error)) = path.map(|path| self.play(&path)) {
                 eprintln!("zakuro: {error}");
                 std::process::exit(1);
             }

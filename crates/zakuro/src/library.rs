@@ -393,6 +393,52 @@ pub fn order(games: &mut [Game], by: crate::settings::GameOrder, last_played: &s
     games.sort_by_cached_key(|game| (game.problem.is_some(), std::cmp::Reverse(played(game)), game.name.to_lowercase()));
 }
 
+/// a name to compare by: lower case, without accents, only its letters
+/// and digits, so that "Pokemon ultra-sun" names Pokémon Ultra Sun.
+fn plain(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            'à'..='å' | 'À'..='Å' => 'a',
+            'è'..='ë' | 'È'..='Ë' => 'e',
+            'ì'..='ï' | 'Ì'..='Ï' => 'i',
+            'ò'..='ö' | 'Ò'..='Ö' => 'o',
+            'ù'..='ü' | 'Ù'..='Ü' => 'u',
+            other => other,
+        })
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// the game of a name given on the command line: the one named so, or
+/// whose file is, or failing those the only one whose name has it in it.
+pub fn named<'a>(games: &'a [Game], name: &str) -> Result<&'a Game, String> {
+    let wanted = plain(name);
+    let playable = || games.iter().filter(|game| game.problem.is_none());
+    let stem = |game: &Game| game.path.file_stem().map(|stem| plain(&stem.to_string_lossy())).unwrap_or_default();
+    if let Some(game) = playable().find(|game| plain(&game.name) == wanted).or_else(|| playable().find(|game| stem(game) == wanted)) {
+        return Ok(game);
+    }
+    let close: Vec<&Game> = playable().filter(|game| !wanted.is_empty() && plain(&game.name).contains(&wanted)).collect();
+    match close.as_slice() {
+        [game] => Ok(game),
+        [] => {
+            let names: Vec<&str> = playable().map(|game| game.name.as_str()).collect();
+            Err(format!("no game named \"{name}\" in the library, it has {}", names.join(", ")))
+        }
+        many => {
+            let names: Vec<&str> = many.iter().map(|game| game.name.as_str()).collect();
+            Err(format!("\"{name}\" could be {}", names.join(", ")))
+        }
+    }
+}
+
+/// the games in the folders, read now rather than in the background, for
+/// finding one by name before the window opens.
+pub fn games_now(sources: &[Source], data_dir: Option<&Path>) -> Vec<Game> {
+    scan(sources, data_dir).0
+}
+
 /// what the library says about a file it can't play.
 pub(crate) fn problem(error: &zakuro_fs::FsError) -> String {
     use zakuro_fs::FsError;
@@ -503,6 +549,25 @@ mod tests {
         assert_eq!(names(&games), ["Ultra Sun", "Pokémon Y", "Alpha Sapphire", "Moon", "broken"]);
         order(&mut games, GameOrder::Name, &played);
         assert_eq!(names(&games), ["Alpha Sapphire", "Moon", "Pokémon Y", "Ultra Sun", "broken"]);
+    }
+
+    #[test]
+    fn games_are_found_by_name() {
+        let game = |name: &str, file: &str| Game { name: name.into(), problem: None, ..unplayable(Path::new(file), String::new()) };
+        let games = vec![
+            game("Pokémon Ultra Sun", "us.3ds"),
+            game("Pokémon Y", "Pokemon Y (Europe).3ds"),
+            game("Pokémon Omega Ruby", "or.3ds"),
+            unplayable(Path::new("Ultra.3ds"), "Encrypted".into()),
+        ];
+        let found = |name| named(&games, name).map(|game| game.name.clone());
+        assert_eq!(found("Pokemon Ultra Sun").unwrap(), "Pokémon Ultra Sun");
+        assert_eq!(found("pokemon-y").unwrap(), "Pokémon Y");
+        assert_eq!(found("Pokemon Y (Europe)").unwrap(), "Pokémon Y");
+        assert_eq!(found("omega").unwrap(), "Pokémon Omega Ruby");
+        assert_eq!(found("ultra").unwrap(), "Pokémon Ultra Sun");
+        assert!(found("Pokemon").unwrap_err().contains("could be"));
+        assert!(found("Zelda").unwrap_err().contains("no game named"));
     }
 
     #[test]

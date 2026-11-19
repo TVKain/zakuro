@@ -30,6 +30,10 @@ Cargo puts it in ~/.cargo/bin, which has to be on your PATH. Then `zakuro` in a 
 
     zakuro path/to/rom.3ds
 
+or the name of a game already in the library, which is handy for adding it to a game launcher:
+
+    zakuro "Pokemon Y"
+
 Without a ROM it opens a library with the games in a folder you pick, where you can also recompile them. Esc brings up a menu over the game, and the settings (controls, sound, graphics, a background for the library) are in there too. A game can also have settings of its own, like its resolution, screen layout or language: use the Settings button next to it in the library, or Settings for this game in the menu. Anything you don't set there follows the general settings.
 
 Games run faster with their code recompiled ahead of time by [3dsrecomp](https://github.com/fearkov/3dsrecomp), which comes with Zakuro: press Recompile next to a game in the library, once per game. It needs a C compiler. If your computer has gcc or clang, Zakuro uses it, and if it has neither, Zakuro offers to download Zig, which comes with one and needs no installing, into its own folder. From then on Zakuro runs the recompiled code on its own, and anything it doesn't cover still goes through the interpreter. When a new version of Zakuro improves the recompiled code, the library shows a Recompile outdated button, which recompiles those games one after the other while you keep playing.

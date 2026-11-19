@@ -35,9 +35,10 @@ pub struct Options {
 const USAGE: &str = "\
 zakuro - a high-level-emulation Nintendo 3DS emulator
 
-usage: zakuro [rom.3ds|.cxi] [options]
+usage: zakuro [rom.3ds|.cxi|\"game name\"] [options]
 
-Without a game it opens the library, the games in a folder you pick. The
+Without a game it opens the library, the games in a folder you pick. A game
+is a file, or the name of one in the library, zakuro \"Pokemon Y\". The
 options below override the settings for this run.
 
 options:
