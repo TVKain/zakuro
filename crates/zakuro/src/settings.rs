@@ -636,6 +636,13 @@ impl PadButtons {
         ]
     }
 
+    /// the controller's game speed button, the right trigger or else the
+    /// right stick's click, whichever no other binding has.
+    pub fn speed_button(&self) -> Option<Button> {
+        let taken = |button: Button| button == self.circle_gentle || button == self.menu || self.map().iter().any(|&(_, bound)| bound == button);
+        [Button::RightTrigger2, Button::RightThumb].into_iter().find(|&button| !taken(button))
+    }
+
     /// each of the console's buttons and the controller button it is on.
     pub fn map(&self) -> [(PadState, Button); 14] {
         [

@@ -111,6 +111,8 @@ pub enum Item {
     FpsLimit,
     Speed,
     GentleTilt,
+    /// a row of the Controls page, by its place in BINDINGS.
+    Bind(usize),
     // screens
     Layout,
     Orientation,
@@ -123,9 +125,7 @@ pub enum Item {
     Depth,
     SwapEyes,
     // controls
-    Pad(usize),
     PadDefaults,
-    Key(usize),
     KeyDefaults,
     // audio
     Volume,
@@ -204,6 +204,75 @@ enum Value {
     More,
     /// the choice in force, in a list to pick from.
     Check,
+    /// a console input's keyboard key and controller button, side by side,
+    /// and the column that is chosen.
+    Pair([Cell; 2], usize),
+}
+
+/// one of a Pair's values.
+#[derive(Debug, Clone, PartialEq)]
+struct Cell {
+    text: String,
+    /// shown, but not one to change.
+    fixed: bool,
+}
+
+/// where a console input is on the keyboard or a controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    /// the binding at this place in Keys::all_mut or PadButtons::all_mut.
+    Bound(usize),
+    /// always this, and not one to change.
+    Fixed(&'static str),
+    /// the controller's game speed button, which goes where nothing is.
+    SpeedButton,
+}
+
+/// a console input, its keyboard key and its controller button.
+struct Binding {
+    /// the heading it goes under.
+    group: &'static str,
+    label: &'static str,
+    key: Slot,
+    pad: Slot,
+}
+
+/// the Controls page's rows, one per console input.
+const BINDINGS: &[Binding] = &[
+    Binding { group: "Face buttons", label: "A", key: Slot::Bound(0), pad: Slot::Bound(0) },
+    Binding { group: "Face buttons", label: "B", key: Slot::Bound(1), pad: Slot::Bound(1) },
+    Binding { group: "Face buttons", label: "X", key: Slot::Bound(2), pad: Slot::Bound(2) },
+    Binding { group: "Face buttons", label: "Y", key: Slot::Bound(3), pad: Slot::Bound(3) },
+    Binding { group: "D-pad", label: "Up", key: Slot::Bound(8), pad: Slot::Bound(8) },
+    Binding { group: "D-pad", label: "Down", key: Slot::Bound(9), pad: Slot::Bound(9) },
+    Binding { group: "D-pad", label: "Left", key: Slot::Bound(10), pad: Slot::Bound(10) },
+    Binding { group: "D-pad", label: "Right", key: Slot::Bound(11), pad: Slot::Bound(11) },
+    Binding { group: "Circle pad", label: "Up", key: Slot::Bound(12), pad: Slot::Fixed("Left stick") },
+    Binding { group: "Circle pad", label: "Down", key: Slot::Bound(13), pad: Slot::Fixed("Left stick") },
+    Binding { group: "Circle pad", label: "Left", key: Slot::Bound(14), pad: Slot::Fixed("Left stick") },
+    Binding { group: "Circle pad", label: "Right", key: Slot::Bound(15), pad: Slot::Fixed("Left stick") },
+    Binding { group: "Circle pad", label: "Gentle tilt (hold)", key: Slot::Bound(22), pad: Slot::Bound(15) },
+    Binding { group: "C-stick", label: "Up", key: Slot::Bound(18), pad: Slot::Fixed("Right stick") },
+    Binding { group: "C-stick", label: "Down", key: Slot::Bound(19), pad: Slot::Fixed("Right stick") },
+    Binding { group: "C-stick", label: "Left", key: Slot::Bound(20), pad: Slot::Fixed("Right stick") },
+    Binding { group: "C-stick", label: "Right", key: Slot::Bound(21), pad: Slot::Fixed("Right stick") },
+    Binding { group: "Shoulders", label: "L", key: Slot::Bound(4), pad: Slot::Bound(4) },
+    Binding { group: "Shoulders", label: "R", key: Slot::Bound(5), pad: Slot::Bound(5) },
+    Binding { group: "Shoulders", label: "ZL", key: Slot::Bound(16), pad: Slot::Bound(12) },
+    Binding { group: "Shoulders", label: "ZR", key: Slot::Bound(17), pad: Slot::Bound(13) },
+    Binding { group: "System", label: "Start", key: Slot::Bound(6), pad: Slot::Bound(6) },
+    Binding { group: "System", label: "Select", key: Slot::Bound(7), pad: Slot::Bound(7) },
+    Binding { group: "Zakuro", label: "Menu / Pause", key: Slot::Fixed("Esc"), pad: Slot::Bound(14) },
+    Binding { group: "Zakuro", label: "Game speed", key: Slot::Fixed("Tab"), pad: Slot::SpeedButton },
+];
+
+/// where a Pair's two values go in a row: the keyboard's, then the
+/// controller's.
+fn pair_columns(rect: Rect) -> [Rect; 2] {
+    const WIDTH: f32 = 168.0;
+    let pad = Rect::from_x_y_ranges(rect.right() - 14.0 - WIDTH..=rect.right() - 14.0, rect.y_range());
+    let key = Rect::from_x_y_ranges(pad.left() - 8.0 - WIDTH..=pad.left() - 8.0, rect.y_range());
+    [key, pad]
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -254,6 +323,8 @@ impl Row {
 #[derive(Debug, Clone, PartialEq)]
 enum Entry {
     Header(String),
+    /// a heading over a list's Pairs, naming their two columns.
+    Columns(&'static str, &'static str),
     Row(Row),
 }
 
@@ -261,7 +332,7 @@ enum Entry {
 fn rows(entries: &[Entry]) -> impl Iterator<Item = &Row> {
     entries.iter().filter_map(|entry| match entry {
         Entry::Row(row) => Some(row),
-        Entry::Header(_) => None,
+        Entry::Header(_) | Entry::Columns(..) => None,
     })
 }
 
@@ -546,6 +617,8 @@ pub struct Menus {
     /// button, by its place in PadButtons::all_mut.
     pub rebinding: Option<usize>,
     pub rebinding_pad: Option<usize>,
+    /// the Controls page's column chosen, 0 the keyboard's, 1 the controller's.
+    pub column: usize,
 
     pub cheats_open: bool,
     cheats_row: usize,
@@ -1303,6 +1376,9 @@ impl Menus {
                 *row = (*row + 1).min(count.saturating_sub(1));
                 self.page.scroll = true;
             }
+            Nav::Left | Nav::Right if current.as_ref().is_some_and(|row| matches!(row.item, Item::Bind(_))) && (nav == Nav::Right || self.column > 0) => {
+                self.column = usize::from(nav == Nav::Right);
+            }
             Nav::Left | Nav::Right => {
                 let delta = if nav == Nav::Left { -1 } else { 1 };
                 if let Some(current) = current.filter(|row| row.enabled) {
@@ -1524,20 +1600,37 @@ impl Menus {
             }
             Section::Controls => {
                 entries.push(Entry::Row(setting(Item::GentleTilt, settings, scope)));
-                entries.push(Entry::Header("Controller".into()));
-                let mut pad = settings.pad.clone();
-                for (index, (name, button)) in pad.all_mut().into_iter().enumerate() {
-                    let value = if self.rebinding_pad == Some(index) { "Press a button…".to_owned() } else { button_name(*button).to_owned() };
-                    entries.push(Entry::Row(Row::new(Item::Pad(index), name, Value::Text(value))));
-                }
-                entries.push(Entry::Row(Row::new(Item::PadDefaults, "Reset controller buttons", Value::More)));
-                entries.push(Entry::Header("Keyboard".into()));
                 let mut keys = settings.keys.clone();
-                for (index, (name, key)) in keys.all_mut().into_iter().enumerate() {
-                    let value = if self.rebinding == Some(index) { "Press a key…".to_owned() } else { key_name(*key) };
-                    entries.push(Entry::Row(Row::new(Item::Key(index), name, Value::Text(value))));
+                let keys = keys.all_mut();
+                let mut pad = settings.pad.clone();
+                let speed_button = pad.speed_button();
+                let pad = pad.all_mut();
+                let mut group = "";
+                for (index, binding) in BINDINGS.iter().enumerate() {
+                    if binding.group != group {
+                        group = binding.group;
+                        entries.push(Entry::Header(group.into()));
+                        if index == 0 {
+                            entries.push(Entry::Columns("Keyboard", "Controller"));
+                        }
+                    }
+                    let key = match binding.key {
+                        Slot::Bound(at) if self.rebinding == Some(at) => Cell { text: "Press a key…".into(), fixed: false },
+                        Slot::Bound(at) => Cell { text: key_name(*keys[at].1), fixed: false },
+                        Slot::Fixed(text) => Cell { text: text.into(), fixed: true },
+                        Slot::SpeedButton => Cell { text: String::new(), fixed: true },
+                    };
+                    let pad = match binding.pad {
+                        Slot::Bound(at) if self.rebinding_pad == Some(at) => Cell { text: "Press a button…".into(), fixed: false },
+                        Slot::Bound(at) => Cell { text: button_name(*pad[at].1).into(), fixed: false },
+                        Slot::Fixed(text) => Cell { text: text.into(), fixed: true },
+                        Slot::SpeedButton => Cell { text: speed_button.map_or("None free", button_name).into(), fixed: true },
+                    };
+                    entries.push(Entry::Row(Row::new(Item::Bind(index), binding.label, Value::Pair([key, pad], self.column.min(1)))));
                 }
+                entries.push(Entry::Header(String::new()));
                 entries.push(Entry::Row(Row::new(Item::KeyDefaults, "Reset keyboard keys", Value::More)));
+                entries.push(Entry::Row(Row::new(Item::PadDefaults, "Reset controller buttons", Value::More)));
             }
             Section::Library => {
                 entries.push(Entry::Row(Row::new(Item::AddContent, "Add games and content", Value::More).note("Games, updates, DLC, texture packs and cheat files")));
@@ -1707,6 +1800,15 @@ impl Menus {
     fn handle(&mut self, item: Item, op: Op, settings: &mut Settings, view: &View) -> Vec<Action> {
         let mut actions = Vec::new();
         let scope = self.scope();
+        if let (Item::Bind(index), Op::Reset) = (item, op) {
+            // X puts the one binding chosen back as it came
+            match BINDINGS.get(index).map(|binding| if self.column == 0 { binding.key } else { binding.pad }) {
+                Some(Slot::Bound(at)) if self.column == 0 => *settings.keys.all_mut()[at].1 = *Keys::default().all_mut()[at].1,
+                Some(Slot::Bound(at)) => *settings.pad.all_mut()[at].1 = *PadButtons::default().all_mut()[at].1,
+                _ => {}
+            }
+            return actions;
+        }
         if let (Item::Cheat(index), Op::Reset) = (item, op) {
             // a player's cheat goes from their file for good, so it is asked first
             if let Some(cheat) = view.cheats.get(index).filter(|cheat| !cheat.builtin) {
@@ -1785,13 +1887,22 @@ impl Menus {
                     step(item, 1, settings, scope);
                 }
             }
-            Item::Pad(index) => {
-                self.rebinding_pad = Some(index);
-                self.rebinding = None;
-            }
-            Item::Key(index) => {
-                self.rebinding = Some(index);
-                self.rebinding_pad = None;
+            Item::Bind(index) => {
+                let Some(binding) = BINDINGS.get(index) else { return actions };
+                let keyboard = self.column == 0;
+                match (if keyboard { binding.key } else { binding.pad }, op) {
+                    (Slot::Bound(at), Op::Activate) if keyboard => {
+                        self.rebinding = Some(at);
+                        self.rebinding_pad = None;
+                    }
+                    (Slot::Bound(at), Op::Activate) => {
+                        self.rebinding_pad = Some(at);
+                        self.rebinding = None;
+                    }
+                    (Slot::Fixed(_), Op::Activate) if !keyboard => self.toast("The sticks are always the circle pad and C-stick"),
+                    (Slot::SpeedButton, Op::Activate) => self.toast("The right trigger, or the right stick's click when ZR has it"),
+                    _ => {}
+                }
             }
             Item::PadDefaults => {
                 settings.pad = PadButtons::default();
@@ -2117,6 +2228,13 @@ impl Menus {
         let mut target = None;
         for entry in entries {
             match entry {
+                Entry::Columns(key, pad) => {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 20.0), Sense::hover());
+                    for (index, (column, text)) in pair_columns(rect).into_iter().zip([key, pad]).enumerate() {
+                        let chosen = index == self.column.min(1);
+                        ui.painter().text(column.left_center() + Vec2::new(12.0, 0.0), Align2::LEFT_CENTER, *text, strong(13.0), if chosen { color::accent() } else { color::muted() });
+                    }
+                }
                 Entry::Header(text) => {
                     ui.add_space(if text.is_empty() { 6.0 } else { 14.0 });
                     if !text.is_empty() {
@@ -2140,6 +2258,10 @@ impl Menus {
                     }
                     let response = if row.enabled { response.on_hover_cursor(CursorIcon::PointingHand) } else { response };
                     let (arrows, bin) = paint_row(ui, rect, row, is_selected, mode);
+                    if let (Value::Pair(..), Some(at)) = (&row.value, response.interact_pointer_pos().filter(|_| response.clicked())) {
+                        // a click picks the column it is in
+                        self.column = usize::from(at.x >= pair_columns(rect)[1].left());
+                    }
                     if response.clicked() && row.enabled {
                         // a click on a value's arrows steps it, on the bin removes the row's
                         let at = response.interact_pointer_pos();
@@ -2273,6 +2395,30 @@ fn paint_row(ui: &egui::Ui, rect: Rect, row: &Row, selected: bool, mode: InputMo
             let at = Rect::from_center_size(Pos2::new(right - 10.0, rect.center().y), Vec2::splat(20.0));
             crate::icons::paint(painter, at, Icon::Check, color::accent());
             at.left()
+        }
+        Value::Pair(cells, column) => {
+            let columns = pair_columns(rect);
+            // the pointer's column while it is over the row, else the one chosen
+            let pointer = ui.ctx().pointer_hover_pos().filter(|_| hovered);
+            let lit = pointer.map_or(*column, |at| usize::from(at.x >= columns[1].left()));
+            for (index, (cell, at)) in cells.iter().zip(columns).enumerate() {
+                let chosen = (selected || hovered) && index == lit;
+                let chip = at.shrink2(Vec2::new(0.0, (at.height() - 30.0) / 2.0));
+                if chosen && !cell.fixed {
+                    painter.rect_filled(chip, CornerRadius::same(8), color::accent().gamma_multiply(0.16));
+                    painter.rect_stroke(chip, CornerRadius::same(8), Stroke::new(1.0, color::accent()), StrokeKind::Inside);
+                } else if !cell.fixed {
+                    painter.rect_stroke(chip, CornerRadius::same(8), Stroke::new(1.0, color::line()), StrokeKind::Inside);
+                }
+                let text_color = match (cell.fixed, chosen) {
+                    (true, _) => color::faint(),
+                    (false, true) => color::accent(),
+                    (false, false) => color::text(),
+                };
+                let text = truncate(&cell.text, chip.width() - 20.0, 14.5);
+                painter.text(chip.left_center() + Vec2::new(12.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(14.5), text_color);
+            }
+            columns[0].left()
         }
     };
     // the bin shows on the row the pointer or the selection is on
@@ -3603,6 +3749,69 @@ mod tests {
         menus.navigate(Nav::Back, &mut settings, &v);
         assert!(!menus.cheats_open);
         assert_eq!(menus.navigate(Nav::Back, &mut settings, &v), [Action::Resume]);
+    }
+
+    /// the Controls page has a row per console input with the keyboard's
+    /// key and the controller's button side by side, left and right moving
+    /// between them.
+    #[test]
+    fn controls_show_keys_and_buttons_side_by_side() {
+        let library = Library::default();
+        let mut settings = Settings::default();
+        let mut menus = Menus { settings_open: true, ..Menus::default() };
+        menus.page.section = Section::SYSTEM.iter().position(|&section| section == Section::Controls).unwrap();
+        menus.page.in_list = true;
+        let v = view(&library);
+        let ctx = crate::gui::test_context();
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0))), ..Default::default() };
+        ctx.run_ui(input, |ui| drop(menus.show(ui, &mut settings, &v))).drop_without_applying_deltas();
+
+        // the gentle tilt amount, then A
+        menus.navigate(Nav::Down, &mut settings, &v);
+        menus.navigate(Nav::Accept, &mut settings, &v);
+        assert_eq!((menus.rebinding, menus.rebinding_pad), (Some(0), None), "A's key listens");
+        menus.navigate(Nav::Back, &mut settings, &v);
+        menus.navigate(Nav::Right, &mut settings, &v);
+        assert_eq!(menus.column, 1);
+        menus.navigate(Nav::Right, &mut settings, &v);
+        assert_eq!(menus.column, 1, "the controller's is the last column");
+        menus.navigate(Nav::Accept, &mut settings, &v);
+        assert_eq!((menus.rebinding, menus.rebinding_pad), (None, Some(0)), "A's button listens");
+        menus.navigate(Nav::Back, &mut settings, &v);
+        // X puts the one binding back
+        settings.pad.a = gilrs::Button::North;
+        settings.keys.a = KeyCode::KeyP;
+        menus.navigate(Nav::X, &mut settings, &v);
+        assert_eq!((settings.pad.a, settings.keys.a), (PadButtons::default().a, KeyCode::KeyP));
+        // the circle pad is the left stick, not one to rebind
+        let circle = BINDINGS.iter().position(|binding| binding.group == "Circle pad").unwrap();
+        for _ in 0..circle {
+            menus.navigate(Nav::Down, &mut settings, &v);
+        }
+        menus.navigate(Nav::Accept, &mut settings, &v);
+        assert_eq!(menus.rebinding_pad, None);
+        // left goes to the keyboard's column, then out to the sections
+        menus.navigate(Nav::Left, &mut settings, &v);
+        assert_eq!((menus.column, menus.page.in_list), (0, true));
+        menus.navigate(Nav::Left, &mut settings, &v);
+        assert!(!menus.page.in_list);
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0))), ..Default::default() };
+        ctx.run_ui(input, |ui| drop(menus.show(ui, &mut settings, &v))).drop_without_applying_deltas();
+    }
+
+    /// every binding the Controls page shows is one Keys and PadButtons have,
+    /// and each of theirs is shown once.
+    #[test]
+    fn every_binding_is_on_the_controls_page_once() {
+        let keys = Keys::default().all_mut().len();
+        let pads = PadButtons::default().all_mut().len();
+        let bound = |slots: Vec<Slot>| {
+            let mut at: Vec<usize> = slots.into_iter().filter_map(|slot| if let Slot::Bound(at) = slot { Some(at) } else { None }).collect();
+            at.sort();
+            at
+        };
+        assert_eq!(bound(BINDINGS.iter().map(|binding| binding.key).collect()), (0..keys).collect::<Vec<_>>());
+        assert_eq!(bound(BINDINGS.iter().map(|binding| binding.pad).collect()), (0..pads).collect::<Vec<_>>());
     }
 
     /// X on a player's cheat asks, then removes it; an enhancement stays.

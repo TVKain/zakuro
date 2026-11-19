@@ -1315,9 +1315,7 @@ impl App {
     /// the controller's button for the game speed, the right trigger or else
     /// the right stick's click, whichever no button of the console's is on.
     fn speed_button(&self) -> Option<gilrs::Button> {
-        let pad = &self.settings.pad;
-        let free = |button: gilrs::Button| button != pad.circle_gentle && pad.map().iter().all(|&(_, bound)| bound != button);
-        [gilrs::Button::RightTrigger2, gilrs::Button::RightThumb].into_iter().find(|&button| free(button))
+        self.settings.pad.speed_button()
     }
 
     /// saves the settings and puts to use what can change right away.
