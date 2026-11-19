@@ -64,13 +64,23 @@ pub fn library_dir() -> Option<PathBuf> {
     Some(named.unwrap_or_else(|| data.join("library")))
 }
 
+/// a text value of Zakuro's entry in Installed apps.
+fn reg_value(name: &str) -> Option<String> {
+    let output = hidden("reg").args(["query", UNINSTALL_KEY, "/v", name]).output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().find(|line| line.trim_start().starts_with(name))?;
+    let value = line.split("REG_SZ").nth(1)?.trim();
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
 /// where Zakuro is installed now, as Installed apps has it.
 pub fn installed_at() -> Option<PathBuf> {
-    let output = hidden("reg").args(["query", UNINSTALL_KEY, "/v", "InstallLocation"]).output().ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let line = text.lines().find(|line| line.trim_start().starts_with("InstallLocation"))?;
-    let value = line.split("REG_SZ").nth(1)?.trim();
-    (!value.is_empty()).then(|| PathBuf::from(value))
+    reg_value("InstallLocation").map(PathBuf::from)
+}
+
+/// the version of Zakuro installed now, as Installed apps has it.
+pub fn installed_version() -> Option<String> {
+    reg_value("DisplayVersion")
 }
 
 fn reg_set(name: &str, kind: &str, value: &str) -> Result<(), String> {
