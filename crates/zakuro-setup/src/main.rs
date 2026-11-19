@@ -182,6 +182,8 @@ struct Setup {
     dir: String,
     /// install: Zakuro is there already, which this updates.
     updating: bool,
+    /// install: where Installed apps says Zakuro is, and its version there.
+    installed: Option<(PathBuf, Option<String>)>,
     desktop: bool,
     zig: bool,
     /// uninstall: the install's folder.
@@ -203,8 +205,11 @@ struct Setup {
 
 impl Setup {
     fn new(mode: Mode, install_dir: Option<PathBuf>) -> Setup {
-        let existing = system::installed_at();
-        let dir = existing.clone().unwrap_or_else(system::default_install_dir);
+        // Installed apps says where it is, else it may be where setup puts it
+        let registered = system::installed_at().map(|dir| (dir, system::installed_version()));
+        let default = system::default_install_dir();
+        let existing = registered.as_ref().map(|(dir, _)| dir.clone()).or_else(|| default.join("zakuro.exe").is_file().then_some(default.clone()));
+        let dir = existing.clone().unwrap_or(default);
         let measuring = (mode == Mode::Uninstall).then(|| {
             let (send, receive) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
@@ -216,6 +221,7 @@ impl Setup {
             mode,
             page: Page::Choose,
             updating: existing.as_ref().is_some_and(|dir| dir.join("zakuro.exe").is_file()),
+            installed: registered,
             dir: dir.display().to_string(),
             desktop: existing.is_none(),
             zig: true,
@@ -470,11 +476,10 @@ impl Setup {
                     self.pick_folder();
                 }
             });
-            if self.updating {
-                note(ui, "Zakuro is installed here already, and this updates it. Your games, saves and settings stay.");
-            } else {
-                note(ui, "Games, saves and settings are kept apart from the program, in your user folder.");
-            }
+            // the folder typed decides, each time it changes
+            let dir = PathBuf::from(self.dir.trim());
+            self.updating = !self.dir.trim().is_empty() && dir.join("zakuro.exe").is_file();
+            note(ui, self.over().note());
         });
         ui.add_space(8.0);
         card(ui, |ui| {
@@ -501,12 +506,23 @@ impl Setup {
         if !work::carries_zakuro() {
             ui.label(RichText::new("This setup was built without Zakuro in it.").color(color::DANGER));
         }
-        match buttons(ui, &[(if self.updating { "Update" } else { "Install" }, ready), ("Cancel", true)]) {
+        match buttons(ui, &[(self.over().button(), ready), ("Cancel", true)]) {
             Some(0) => self.start(),
             Some(_) => return true,
             None => {}
         }
         false
+    }
+
+    /// what installing to the folder typed does to the Zakuro there.
+    fn over(&self) -> Over {
+        if !self.updating {
+            return Over::Nothing;
+        }
+        let dir = PathBuf::from(self.dir.trim());
+        // the version Installed apps has is the one in its folder only
+        let version = self.installed.as_ref().filter(|(at, _)| same_dir(at, &dir)).and_then(|(_, version)| version.clone());
+        Over::of(version.as_deref(), VERSION)
     }
 
     fn uninstall_choices(&mut self, ui: &mut egui::Ui) -> bool {
@@ -601,6 +617,61 @@ impl Setup {
     }
 }
 
+/// what is in the folder setup installs to.
+#[derive(Debug, Clone, PartialEq)]
+enum Over {
+    /// no Zakuro.
+    Nothing,
+    /// a Zakuro of a version not known.
+    Unknown,
+    /// an older one, this version.
+    Older(String),
+    /// this version itself.
+    Same,
+    /// a newer one, this version.
+    Newer(String),
+}
+
+impl Over {
+    /// what is there, by the installed version against this setup's.
+    fn of(installed: Option<&str>, this: &str) -> Over {
+        let numbers = |version: &str| -> Option<Vec<u32>> { version.trim().trim_start_matches('v').split('.').map(|part| part.parse().ok()).collect() };
+        let Some(installed) = installed else { return Over::Unknown };
+        match (numbers(installed), numbers(this)) {
+            (Some(old), Some(new)) if old < new => Over::Older(installed.to_owned()),
+            (Some(old), Some(new)) if old == new => Over::Same,
+            (Some(_), Some(_)) => Over::Newer(installed.to_owned()),
+            _ => Over::Unknown,
+        }
+    }
+
+    fn button(&self) -> &'static str {
+        match self {
+            Over::Nothing => "Install",
+            Over::Unknown | Over::Older(_) => "Update",
+            Over::Same => "Reinstall",
+            Over::Newer(_) => "Install anyway",
+        }
+    }
+
+    fn note(&self) -> String {
+        const KEPT: &str = "Your games, saves and settings stay.";
+        match self {
+            Over::Nothing => "Games, saves and settings are kept apart from the program, in your user folder.".to_owned(),
+            Over::Unknown => format!("Zakuro is installed here already, and this updates it to {VERSION}. {KEPT}"),
+            Over::Older(old) => format!("Zakuro {old} is installed here, and this updates it to {VERSION}. {KEPT}"),
+            Over::Same => format!("Zakuro {VERSION} is installed here already, and this installs it again. {KEPT}"),
+            Over::Newer(new) => format!("Zakuro {new}, newer than this setup's {VERSION}, is installed here. This puts {VERSION} in its place. {KEPT}"),
+        }
+    }
+}
+
+/// whether two folders are the same, as Windows compares names.
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let name = |path: &std::path::Path| path.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
+    name(a) == name(b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,6 +720,39 @@ mod tests {
         frame(&ctx, &mut setup, &[Press::Up, Press::Up]);
         frame(&ctx, &mut setup, &[Press::Accept]);
         assert!(setup.saves && !setup.settings && !setup.games);
+    }
+
+    #[test]
+    fn setup_says_what_it_does_to_the_zakuro_there() {
+        assert_eq!(Over::of(Some("0.3.6"), "0.3.7"), Over::Older("0.3.6".into()));
+        assert_eq!(Over::of(Some("0.3.7"), "0.3.7"), Over::Same);
+        assert_eq!(Over::of(Some("0.3.10"), "0.3.9"), Over::Newer("0.3.10".into()));
+        assert_eq!(Over::of(None, "0.3.7"), Over::Unknown);
+        assert_eq!(Over::of(Some("odd"), "0.3.7"), Over::Unknown);
+        assert_eq!(Over::of(Some("0.3.6"), "0.3.7").button(), "Update");
+        assert_eq!(Over::Same.button(), "Reinstall");
+        assert!(Over::Older("0.3.6".into()).note().contains("0.3.6"));
+        assert!(same_dir(std::path::Path::new(r"C:\Users\A\Zakuro\"), std::path::Path::new(r"c:\users\a\zakuro")));
+    }
+
+    /// a folder with zakuro.exe in it is updated, one without installed to,
+    /// as the folder typed changes.
+    #[test]
+    fn the_folder_typed_decides_install_or_update() {
+        let dir = std::env::temp_dir().join(format!("zakuro-setup-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = egui::Context::default();
+        let mut setup = Setup::new(Mode::Install, None);
+        setup.installed = None;
+        setup.dir = dir.display().to_string();
+        frame(&ctx, &mut setup, &[]);
+        assert_eq!(setup.over(), Over::Nothing);
+        std::fs::write(dir.join("zakuro.exe"), b"MZ").unwrap();
+        frame(&ctx, &mut setup, &[]);
+        assert_eq!(setup.over(), Over::Unknown);
+        setup.installed = Some((dir.clone(), Some("0.0.1".into())));
+        assert_eq!(setup.over(), Over::Older("0.0.1".into()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

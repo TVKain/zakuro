@@ -93,8 +93,41 @@ pub fn install(release: &Release) -> Result<PathBuf, String> {
     let program = exe_in_zip(&zip)?;
     replace_running(&exe, &program)?;
     log::info!("updated to {} at {}", release.version, exe.display());
+    record_version(&exe, &release.version);
     Ok(exe)
 }
+
+/// the key Installed apps lists Zakuro under, which setup makes.
+#[cfg(windows)]
+const UNINSTALL_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Zakuro";
+
+/// a reg.exe run, with no window of its own.
+#[cfg(windows)]
+fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("reg").args(args).creation_flags(0x0800_0000).output()
+}
+
+/// has Installed apps show the version just put in place, when the Zakuro
+/// updated is the one setup installed there.
+#[cfg(windows)]
+fn record_version(exe: &Path, version: &str) {
+    let Ok(output) = reg(&["query", UNINSTALL_KEY, "/v", "InstallLocation"]) else { return };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let registered = text.lines().find_map(|line| line.trim_start().strip_prefix("InstallLocation")?.split("REG_SZ").nth(1).map(str::trim).map(str::to_owned));
+    let folder = |path: &Path| path.to_string_lossy().trim_end_matches(['\\', '/']).to_lowercase();
+    let here = exe.parent().map(folder);
+    if registered.as_deref().map(|dir| folder(Path::new(dir))) != here || here.is_none() {
+        return;
+    }
+    match reg(&["add", UNINSTALL_KEY, "/v", "DisplayVersion", "/t", "REG_SZ", "/d", version, "/f"]) {
+        Ok(output) if output.status.success() => log::info!("Installed apps shows {version} now"),
+        _ => log::warn!("Installed apps still shows the version before {version}"),
+    }
+}
+
+#[cfg(not(windows))]
+fn record_version(_exe: &Path, _version: &str) {}
 
 /// zakuro.exe, out of a release's zip.
 fn exe_in_zip(zip: &[u8]) -> Result<Vec<u8>, String> {
