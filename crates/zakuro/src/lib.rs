@@ -605,8 +605,10 @@ impl App {
                 attributes = attributes.with_window_icon(Some(icon));
             }
         }
-        // it always opens maximized, full screen is a toggle away
-        attributes = attributes.with_maximized(true);
+        // it opens as it was last: windowed, maximized or full screen, and
+        // goes back from full screen to which of the first two it was
+        attributes = attributes.with_maximized(self.settings.maximized);
+        self.maximized_before_full_screen = self.settings.maximized;
         if self.settings.fullscreen {
             attributes = attributes.with_fullscreen(Some(Fullscreen::Borderless(None)));
         }
@@ -715,6 +717,7 @@ impl ApplicationHandler for App {
                 if let Some(backend) = &mut self.backend {
                     backend.resize(size.width, size.height);
                 }
+                self.remember_maximized();
             }
             WindowEvent::KeyboardInput { event, .. } => self.key(event, event_loop, consumed),
             WindowEvent::DroppedFile(path) => self.dropped.push(path),
@@ -1482,6 +1485,22 @@ impl App {
             }
             self.settings.fullscreen = !full;
             self.active.fullscreen = !full;
+            self.settings.save();
+        }
+    }
+
+    /// remembers whether the window is maximized, for the next time it
+    /// opens, once that changes; full screen leaves it as it was.
+    fn remember_maximized(&mut self) {
+        let Some(window) = &self.window else { return };
+        if window.fullscreen().is_some() || window.is_minimized() == Some(true) {
+            return;
+        }
+        let maximized = window.is_maximized();
+        if maximized != self.settings.maximized {
+            self.settings.maximized = maximized;
+            self.active.maximized = maximized;
+            self.settings.save();
         }
     }
 

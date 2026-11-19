@@ -728,10 +728,12 @@ pub struct Settings {
     pub recompiled: bool,
     /// window size, times the console's.
     pub scale: u32,
-    /// whether the window fills the screen. it always opens maximized, so
-    /// this follows the window and is not saved.
-    #[serde(skip)]
+    /// whether the window fills the screen, as it was last, which it opens
+    /// as again.
     pub fullscreen: bool,
+    /// whether the window was maximized, out of full screen, as it was
+    /// last, which it opens as again.
+    pub maximized: bool,
     /// target frame rate limit or uncapped mode.
     #[serde(deserialize_with = "or_default")]
     pub fps_limit: FpsLimit,
@@ -813,6 +815,7 @@ impl Default for Settings {
             recompiled: true,
             scale: 2,
             fullscreen: false,
+            maximized: true,
             fps_limit: FpsLimit::Fps60,
             speed: Speed::X1,
             layout: Screens::Stacked,

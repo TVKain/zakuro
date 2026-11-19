@@ -117,17 +117,27 @@ fn test_theme_follows_the_system_by_default_and_round_trips() {
 #[test]
 fn test_window_and_old_game_folders_are_not_kept() {
     // older files kept a window mode, a games folder and a library folder:
-    // the window always opens maximized now, and games live in Zakuro's own
-    // library folder alone
+    // the window opens maximized until it is changed, and games live in
+    // Zakuro's own library folder alone
     let old = r#"
         window_mode = "windowed"
         games = 'C:\Games'
         library = 'D:\Zakuro'
     "#;
     let settings: Settings = toml::from_str(old).expect("older settings should still load");
-    assert!(!settings.fullscreen);
-    let saved = toml::to_string(&Settings { fullscreen: true, ..settings }).expect("failed to serialize settings");
-    assert!(!saved.contains("window_mode") && !saved.contains("fullscreen") && !saved.contains("games =") && !saved.contains("library ="));
+    assert!(!settings.fullscreen && settings.maximized);
+    let saved = toml::to_string(&settings).expect("failed to serialize settings");
+    assert!(!saved.contains("window_mode") && !saved.contains("games =") && !saved.contains("library ="));
+}
+
+#[test]
+fn test_the_window_opens_as_it_was_last() {
+    // windowed, maximized or full screen, saved and read back
+    for (fullscreen, maximized) in [(false, false), (false, true), (true, false), (true, true)] {
+        let saved = toml::to_string(&Settings { fullscreen, maximized, ..Settings::default() }).expect("failed to serialize settings");
+        let read: Settings = toml::from_str(&saved).expect("saved settings should load");
+        assert_eq!((read.fullscreen, read.maximized), (fullscreen, maximized));
+    }
 }
 
 #[test]
