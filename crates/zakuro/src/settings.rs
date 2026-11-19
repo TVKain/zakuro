@@ -146,6 +146,33 @@ impl Speed {
     }
 }
 
+/// the order Home shows the games in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GameOrder {
+    /// the one played last first, then the rest by name.
+    #[default]
+    LastPlayed,
+    Name,
+}
+
+impl GameOrder {
+    pub const ALL: [GameOrder; 2] = [GameOrder::LastPlayed, GameOrder::Name];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            GameOrder::LastPlayed => "Last played",
+            GameOrder::Name => "Name",
+        }
+    }
+
+    /// the order after this one, going round.
+    pub fn next(self) -> GameOrder {
+        let at = GameOrder::ALL.iter().position(|&order| order == self).unwrap_or(0);
+        GameOrder::ALL[(at + 1) % GameOrder::ALL.len()]
+    }
+}
+
 /// how the screens are arranged in the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -769,6 +796,12 @@ pub struct Settings {
     /// how the interface looks.
     #[serde(deserialize_with = "or_default")]
     pub theme: Theme,
+    /// the order Home shows the games in.
+    #[serde(deserialize_with = "or_default")]
+    pub game_order: GameOrder,
+    /// when each game was last started, by its title id, in seconds since
+    /// 1970.
+    pub last_played: std::collections::BTreeMap<String, u64>,
     /// a picture behind the library.
     pub background: Option<PathBuf>,
     /// how much of it shows, 0 to 1.
@@ -831,6 +864,8 @@ impl Default for Settings {
             mute: false,
             show_fps: false,
             theme: Theme::System,
+            game_order: GameOrder::LastPlayed,
+            last_played: std::collections::BTreeMap::new(),
             background: None,
             background_opacity: 0.35,
             ui_sounds: true,

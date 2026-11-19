@@ -1129,6 +1129,11 @@ impl App {
             self.active = self.settings.clone();
         } else {
             self.started = self.active.clone();
+            if let Some(program_id) = program_id {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
+                self.settings.last_played.insert(settings::game_key(program_id), now);
+                self.settings.save();
+            }
         }
         self.apply_layout();
         self.apply_audio_speed();
@@ -1491,6 +1496,16 @@ impl App {
 
     /// remembers whether the window is maximized, for the next time it
     /// opens, once that changes; full screen leaves it as it was.
+    /// keeps the games in the order chosen, the selection on the game it
+    /// was on as they move, as the one just played does to the front.
+    fn order_games(&mut self) {
+        let selected = self.library.games.get(self.menus.selected_game).map(|game| game.path.clone());
+        library::order(&mut self.library.games, self.settings.game_order, &self.settings.last_played);
+        if let Some(at) = selected.and_then(|path| self.library.games.iter().position(|game| game.path == path)) {
+            self.menus.selected_game = at;
+        }
+    }
+
     fn remember_maximized(&mut self) {
         let Some(window) = &self.window else { return };
         if window.fullscreen().is_some() || window.is_minimized() == Some(true) {
@@ -1986,6 +2001,7 @@ impl App {
             self.next_frame = now;
         }
         self.library.poll();
+        self.order_games();
         self.poll_jobs();
         self.poll_gamepads(event_loop);
         // a room that went away takes the game's local wireless with it

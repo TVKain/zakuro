@@ -381,12 +381,29 @@ fn read_game(path: &Path, data_dir: Option<&Path>) -> Game {
     }
 }
 
+/// puts the games in the order Home shows them: the last played first, or
+/// by name, those never played by name after the played, and the files
+/// that can't be played last.
+pub fn order(games: &mut [Game], by: crate::settings::GameOrder, last_played: &std::collections::BTreeMap<String, u64>) {
+    use crate::settings::{game_key, GameOrder};
+    let played = |game: &Game| match by {
+        GameOrder::LastPlayed if game.problem.is_none() => last_played.get(&game_key(game.program_id)).copied().unwrap_or(0),
+        _ => 0,
+    };
+    games.sort_by_cached_key(|game| (game.problem.is_some(), std::cmp::Reverse(played(game)), game.name.to_lowercase()));
+}
+
 /// what the library says about a file it can't play.
-fn problem(error: &zakuro_fs::FsError) -> String {
+pub(crate) fn problem(error: &zakuro_fs::FsError) -> String {
     use zakuro_fs::FsError;
     match error {
         FsError::Encrypted(_) | FsError::EncryptedCia => "Encrypted, Zakuro needs a decrypted dump".to_owned(),
         FsError::UnreadableRomFs(_) => "Partly encrypted or damaged, it needs dumping again".to_owned(),
+        FsError::CutOff { have, need } => format!(
+            "Cut off, {} of its {}; it may have been copied before it finished downloading or unpacking",
+            crate::store::size_name(*have),
+            crate::store::size_name(*need)
+        ),
         FsError::NotAGame(what) => {
             let mut what = what.to_string();
             if let Some(first) = what.get_mut(..1) {
@@ -475,8 +492,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn games_go_in_the_order_chosen() {
+        use crate::settings::GameOrder;
+        let game = |name: &str, program_id| Game { name: name.into(), program_id, problem: None, ..unplayable(Path::new(name), String::new()) };
+        let broken = unplayable(Path::new("broken.3ds"), "Cut off".into());
+        let mut games = vec![broken, game("Pokémon Y", 1), game("Alpha Sapphire", 2), game("Ultra Sun", 3), game("Moon", 4)];
+        let played = [(crate::settings::game_key(3), 200), (crate::settings::game_key(1), 100)].into_iter().collect();
+        let names = |games: &[Game]| games.iter().map(|game| game.name.clone()).collect::<Vec<_>>();
+        order(&mut games, GameOrder::LastPlayed, &played);
+        assert_eq!(names(&games), ["Ultra Sun", "Pokémon Y", "Alpha Sapphire", "Moon", "broken"]);
+        order(&mut games, GameOrder::Name, &played);
+        assert_eq!(names(&games), ["Alpha Sapphire", "Moon", "Pokémon Y", "Ultra Sun", "broken"]);
+    }
+
+    #[test]
     fn files_that_cant_be_played_say_why() {
         assert_eq!(problem(&zakuro_fs::FsError::EncryptedCia), "Encrypted, Zakuro needs a decrypted dump");
+        assert_eq!(
+            problem(&zakuro_fs::FsError::CutOff { have: 1_316_618_240, need: 1_890_316_288 }),
+            "Cut off, 1.2 GB of its 1.8 GB; it may have been copied before it finished downloading or unpacking"
+        );
         assert_eq!(
             problem(&zakuro_fs::FsError::NotAGame("an update")),
             "An update Zakuro couldn't read, it goes in the folder next to its game"

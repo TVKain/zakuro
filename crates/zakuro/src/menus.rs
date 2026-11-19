@@ -25,7 +25,7 @@ use crate::nav::{InputMode, Nav};
 use crate::recompile::{Job, Stage, Wanted};
 use crate::ui_sound::Cue;
 use crate::settings::{
-    game_key, CameraSource, Filter, FpsLimit, Keys, Speed, Language, MicrophoneSource, Orientation, PadButtons, Renderer, Screens, Settings, Stereo3d, Theme, TopShape,
+    game_key, CameraSource, Filter, FpsLimit, GameOrder, Keys, Speed, Language, MicrophoneSource, Orientation, PadButtons, Renderer, Screens, Settings, Stereo3d, Theme, TopShape,
 };
 use crate::store::{self, Found, InstalledPack, PackPlace};
 
@@ -111,6 +111,7 @@ pub enum Item {
     // graphics
     Renderer,
     Theme,
+    GameOrder,
     Rasterizer,
     Resolution,
     Filter,
@@ -424,7 +425,7 @@ pub enum Ask {
 }
 
 /// what recompiling does, short, under the question.
-const RECOMPILE_EXPLAINED: &str = "Makes it run faster. Takes about 10 minutes, once.";
+const RECOMPILE_EXPLAINED: &str = "Makes it run faster. Done once per game.";
 
 /// the longest a popup's title and its detail line are let be, so a small
 /// box never fills with text. a game's name may add to the title.
@@ -631,6 +632,8 @@ pub struct Menus {
     clicked: Vec<(Item, Op)>,
     clicked_tile: Option<usize>,
     clicked_dock: Option<Dock>,
+    /// the order of the games was clicked on Home, to switch.
+    clicked_sort: bool,
     /// when the running game first showed, Home fading out over it.
     game_shown_at: Option<f64>,
     pending_cheat: Option<(String, String)>,
@@ -949,6 +952,7 @@ fn choices(item: Item, settings: &Settings) -> Option<(Vec<String>, usize)> {
     Some(match item {
         Item::Renderer => names(&Renderer::ALL, settings.renderer, Renderer::name),
         Item::Theme => names(&Theme::ALL, settings.theme, Theme::name),
+        Item::GameOrder => names(&GameOrder::ALL, settings.game_order, GameOrder::name),
         Item::Speed => names(&Speed::ALL, settings.speed, Speed::name),
         Item::Rasterizer => (RASTERIZERS.iter().map(|&name| name.to_owned()).collect(), usize::from(!settings.hardware_rasterizer)),
         Item::Resolution => (RESOLUTION_SCALES.iter().map(|&scale| resolution_label(scale).to_owned()).collect(), settings.resolution.clamp(1, 8) as usize - 1),
@@ -970,6 +974,7 @@ fn choose(item: Item, index: usize, settings: &mut Settings, scope: Scope) {
     match item {
         Item::Renderer => settings.renderer = Renderer::ALL[index.min(Renderer::ALL.len() - 1)],
         Item::Theme => settings.theme = Theme::ALL[index.min(Theme::ALL.len() - 1)],
+        Item::GameOrder => settings.game_order = GameOrder::ALL[index.min(GameOrder::ALL.len() - 1)],
         Item::Speed => settings.speed = Speed::ALL[index.min(Speed::ALL.len() - 1)],
         Item::Rasterizer => put!(settings, scope, hardware_rasterizer, index == 0),
         Item::Resolution => put!(settings, scope, resolution, index.min(7) as u32 + 1),
@@ -1041,6 +1046,7 @@ fn value_kind(item: Item) -> Kind {
     match item {
         Item::Renderer
         | Item::Theme
+        | Item::GameOrder
         | Item::Speed
         | Item::Rasterizer
         | Item::Resolution
@@ -1072,6 +1078,7 @@ fn setting(item: Item, settings: &Settings, scope: Scope) -> Row {
     let file = |path: &Option<PathBuf>| path.as_ref().and_then(|path| path.file_name()).map_or("None".into(), |name| name.to_string_lossy().into_owned());
     let (label, value, help): (&str, Value, &str) = match item {
         Item::Theme => ("Theme", Value::Text(settings.theme.name().into()), "Light or dark. Same as system follows Windows."),
+        Item::GameOrder => ("Sort games", Value::Text(settings.game_order.name().into()), "The order of the games on Home. Last played puts the game you played last first."),
         Item::Renderer => ("Graphics API", Value::Text(shown.renderer.name().into()), "Vulkan is the fastest. Switch to OpenGL only if a game shows glitches."),
         Item::Rasterizer => (
             "3D rendering",
@@ -1308,6 +1315,9 @@ impl Menus {
         if let Some(index) = self.clicked_tile.take() {
             actions.extend(self.tile(index, settings, view));
         }
+        if std::mem::take(&mut self.clicked_sort) {
+            settings.game_order = settings.game_order.next();
+        }
         if let Some(dock) = self.clicked_dock.take() {
             actions.extend(self.dock_action(dock, settings));
         }
@@ -1501,6 +1511,7 @@ impl Menus {
             (HomeFocus::Games, Nav::PrevTab) => self.selected_game = self.selected_game.saturating_sub(5),
             (HomeFocus::Games, Nav::NextTab) => self.selected_game = (self.selected_game + 5).min(tiles - 1),
             (HomeFocus::Games, Nav::Down) => self.home_focus = HomeFocus::Dock,
+            (HomeFocus::Games, Nav::X) if !view.library.games.is_empty() => settings.game_order = settings.game_order.next(),
             (HomeFocus::Games, Nav::Accept) => return self.tile(self.selected_game, settings, view),
             (HomeFocus::Games, Nav::Y) => {
                 if let Some(game) = view.library.games.get(self.selected_game).filter(|game| game.problem.is_none()) {
@@ -1681,9 +1692,10 @@ impl Menus {
                 entries.push(Entry::Row(Row::new(Item::AddContent, "Add games and content", Value::More).note("Games, updates, DLC, texture packs and cheat files")));
                 let outdated = idle(view.library.games.iter().filter(|game| game.outdated).map(Game::wanted), view.jobs, view.waiting).len();
                 if outdated > 0 && view.running.is_none() {
-                    entries.push(Entry::Row(Row::new(Item::RecompileOutdated, format!("Recompile {outdated} outdated games"), Value::More).note("About 10 minutes each, one after another")));
+                    entries.push(Entry::Row(Row::new(Item::RecompileOutdated, format!("Recompile {outdated} outdated games"), Value::More).note("One after another")));
                 }
                 entries.push(Entry::Header("Home".into()));
+                entries.push(Entry::Row(setting(Item::GameOrder, settings, scope)));
                 entries.push(Entry::Row(setting(Item::Background, settings, scope)));
                 entries.push(Entry::Row(setting(Item::BackgroundOpacity, settings, scope)));
             }
@@ -2176,7 +2188,7 @@ fn recompile_row(id: u64, view: &View) -> Row {
         _ => None,
     });
     let row = Row::new(Item::Recompile, label, Value::Text(value)).enabled(game.is_some());
-    row.note(failed.unwrap_or_else(|| "Turns the game's code into native code. About ten minutes, using the compiler that comes with Zakuro".into()))
+    row.note(failed.unwrap_or_else(|| "Turns the game's code into native code, using the compiler that comes with Zakuro".into()))
 }
 
 /// how a game's recompile is going, when it is recompiling or waiting to,
@@ -3322,7 +3334,20 @@ impl Menus {
             let count = library.games.iter().filter(|game| game.problem.is_none()).count();
             if count == 1 { "1 game".to_owned() } else { format!("{count} games") }
         };
-        painter.text(screen.right_top() + Vec2::new(-36.0, 30.0), Align2::RIGHT_CENTER, status, FontId::proportional(15.0), color::faint());
+        let status_rect = painter.text(screen.right_top() + Vec2::new(-36.0, 30.0), Align2::RIGHT_CENTER, status, FontId::proportional(15.0), color::faint());
+        // the order the games are in, which a click switches
+        if !library.games.is_empty() {
+            let order = format!("{} ·", settings.game_order.name());
+            let at = Pos2::new(status_rect.left() - 8.0, status_rect.center().y);
+            let size = painter.layout_no_wrap(order.clone(), FontId::proportional(15.0), color::faint()).size();
+            let rect = Align2::RIGHT_CENTER.anchor_size(at, size);
+            let response = ui.interact(rect.expand(4.0), egui::Id::new("game order"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Sort games");
+            let shade = if response.hovered() { color::text() } else { color::faint() };
+            painter.text(at, Align2::RIGHT_CENTER, order, FontId::proportional(15.0), shade);
+            if response.clicked() {
+                self.clicked_sort = true;
+            }
+        }
         self.paint_recompile_card(&painter, screen, view);
 
         // the tiles
@@ -3388,7 +3413,7 @@ impl Menus {
         // the selected game's name and what it has, above and below
         let selected_x = screen.left() + left_margin + (self.selected_game as f32 - scroll) * (side + gap);
         let (title, details, problem) = match library.games.get(self.selected_game) {
-            Some(game) => (game.name.clone(), game_details(game, settings, view), game.problem.clone()),
+            Some(game) => (game.name.clone(), game_details(game, view), game.problem.clone()),
             None if library.games.is_empty() => (
                 "Add your games".to_owned(),
                 "Choose .3ds and .cia files, or drag them onto this window. Updates, DLC, texture packs and cheats are recognized too.".to_owned(),
@@ -3449,7 +3474,7 @@ impl Menus {
                 (HomeFocus::Games, Some(_)) if crate::recompile::blocking_play(view.jobs, view.waiting).is_some() => {
                     vec![(Nav::Y, "Options"), (Nav::Start, "Settings")]
                 }
-                (HomeFocus::Games, Some(game)) if game.problem.is_none() => vec![(Nav::Accept, "Start"), (Nav::Y, "Options"), (Nav::Start, "Settings")],
+                (HomeFocus::Games, Some(game)) if game.problem.is_none() => vec![(Nav::Accept, "Start"), (Nav::Y, "Options"), (Nav::X, "Sort"), (Nav::Start, "Settings")],
                 (HomeFocus::Games, _) | (HomeFocus::Dock, _) => vec![(Nav::Accept, "OK"), (Nav::Start, "Settings")],
             };
             hints(ui, foot, self.pad_hints, &list);
@@ -3566,36 +3591,28 @@ fn paint_dock_icon(painter: &egui::Painter, center: Pos2, button: Dock) {
     crate::icons::paint(painter, Rect::from_center_size(center, Vec2::splat(26.0)), icon, color::text());
 }
 
-/// what a game has, in a line: its update, DLC, textures, recompiled code.
-fn game_details(game: &Game, settings: &Settings, view: &View) -> String {
-    let mut parts = Vec::new();
-    if !game.publisher.is_empty() {
-        parts.push(game.publisher.clone());
+/// what matters of a game, in a short line: the version it runs, and
+/// whether its code is recompiled.
+fn game_details(game: &Game, view: &View) -> String {
+    if game.problem.is_some() {
+        return String::new();
     }
-    if let Some(update) = &game.update {
-        parts.push(format!("Update {}", zakuro_fs::versions::label(update.title_id, update.version)));
-    }
-    if !game.dlc.is_empty() {
-        parts.push("DLC".to_owned());
-    }
-    if game.textured {
-        parts.push("Custom textures".to_owned());
-    }
-    if game.outdated {
-        parts.push("Recompiled (outdated)".to_owned());
-    } else if game.recompiled {
-        parts.push("Recompiled".to_owned());
-    }
-    if settings.has_own(game.program_id) {
-        parts.push("Custom options".to_owned());
-    }
-    if let Some(busy) = Busy::of(game.program_id, view.jobs, view.waiting) {
-        parts.push(match busy {
-            Busy::Waiting => "Waiting to recompile".to_owned(),
-            Busy::Recompiling { .. } => format!("Recompiling {:.0}%, playable once it finishes", busy.fraction() * 100.0),
-        });
-    }
-    parts.join("  ·  ")
+    // a game without its update is the version it shipped as
+    let version = match &game.update {
+        Some(update) => match zakuro_fs::versions::shown(update.title_id, update.version) {
+            Some(shown) => format!("Version {shown}"),
+            None => format!("Update v{}", update.version),
+        },
+        None => "Version 1.0".to_owned(),
+    };
+    let code = match Busy::of(game.program_id, view.jobs, view.waiting) {
+        Some(Busy::Waiting) => "Waiting to recompile".to_owned(),
+        Some(busy @ Busy::Recompiling { .. }) => format!("Recompiling {:.0}%", busy.fraction() * 100.0),
+        None if game.outdated => "Recompiled, outdated".to_owned(),
+        None if game.recompiled => "Recompiled".to_owned(),
+        None => "Not recompiled".to_owned(),
+    };
+    format!("{version}  ·  {code}")
 }
 
 impl Menus {
@@ -4054,6 +4071,23 @@ mod tests {
 
     /// a game is removed only once the player says so, and never while it
     /// runs; while any game recompiles, none starts.
+    /// a game shows its version, 1.0 until it has an update, and X on Home
+    /// switches the order the games are in.
+    #[test]
+    fn home_shows_versions_and_sorts() {
+        let mut settings = Settings::default();
+        let mut library = Library::default();
+        library.games.push(Game { program_id: 0x0004_0000_0011_C400, path: PathBuf::from("or.3ds"), name: "Omega Ruby".into(), ..Game::default() });
+        let v = view(&library);
+        assert_eq!(game_details(&library.games[0], &v), "Version 1.0  ·  Not recompiled");
+        let mut menus = Menus::default();
+        assert_eq!(settings.game_order, GameOrder::LastPlayed);
+        menus.navigate(Nav::X, &mut settings, &v);
+        assert_eq!(settings.game_order, GameOrder::Name);
+        menus.navigate(Nav::X, &mut settings, &v);
+        assert_eq!(settings.game_order, GameOrder::LastPlayed);
+    }
+
     #[test]
     fn removing_a_game_is_asked_and_no_game_starts_during_a_recompile() {
         let mut settings = Settings::default();
@@ -4109,7 +4143,7 @@ mod tests {
         let mut menus = Menus { game_settings: Some((7, "Game 7".into())), ..Menus::default() };
         assert!(menus.handle(Item::Recompile, Op::Activate, &mut settings, &busy).is_empty());
         let popup = menus.select_popup.clone().expect("it explains");
-        assert!(popup.detail.as_deref().is_some_and(|detail| detail.contains("10 minutes") && detail.contains("Starts after")));
+        assert!(popup.detail.as_deref().is_some_and(|detail| detail.contains("once per game") && detail.contains("Starts after")));
         assert_eq!(popup.options[0], "Recompile after that");
     }
 

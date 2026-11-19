@@ -81,6 +81,9 @@ pub enum FsError {
 
     #[error("the patch is for another version of the file")]
     PatchMismatch,
+
+    #[error("the file is cut off, {have} of the game's {need} bytes")]
+    CutOff { have: u64, need: u64 },
 }
 
 /// a memory-mapped ROM file. Games are up to 4 GiB, so nothing is read eagerly.
@@ -223,6 +226,10 @@ impl Title {
                 ncsd.media_id,
                 ncsd.image_size / (1024 * 1024)
             );
+            let (have, need) = (data.len() as u64, ncsd.needed_size());
+            if have < need {
+                return Err(FsError::CutOff { have, need });
+            }
             ncsd.executable_partition()?.offset
         } else if Cia::detect(data) {
             let cia = Cia::parse(data)?;
@@ -378,11 +385,26 @@ impl Title {
 #[cfg(test)]
 mod addon_tests {
     use super::*;
-    use crate::testing::{cia, ncch, write};
+    use crate::testing::{cia, ncch, ncsd, write};
 
     const GAME: u64 = 0x0004_0000_00AB_CD00;
     const UPDATE: u64 = 0x0004_000E_00AB_CD00;
     const DLC: u64 = 0x0004_008C_00AB_CD00;
+
+    /// a cartridge whole or trimmed loads, one cut off before its game ends
+    /// says so rather than running to a black screen.
+    #[test]
+    fn a_cut_off_cartridge_says_so() {
+        let mut image = ncsd(&ncch(GAME, Some(&[1; 8]), &[("a.bin", b"game")]));
+        let whole = image.len() as u64;
+        assert!(Title::load(write("cut", "whole.3ds", &image)).is_ok());
+        image.truncate(image.len() - 0x200);
+        match Title::load(write("cut", "cut.3ds", &image)) {
+            Err(FsError::CutOff { have, need }) => assert_eq!((have, need), (whole - 0x200, whole)),
+            Err(other) => panic!("expected CutOff, got {other}"),
+            Ok(_) => panic!("a cut off cartridge loaded"),
+        }
+    }
 
     /// a game runs its update's code and exheader, and has the update's
     /// RomFS besides its own.

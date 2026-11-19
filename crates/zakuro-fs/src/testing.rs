@@ -68,6 +68,20 @@ pub fn cia(title_id: u64, version: u16, contents: &[(u16, Option<&[u8]>)]) -> Ve
     out
 }
 
+/// a cartridge image holding game as its executable partition, the way a
+/// trimmed dump ends right after it, though its header says 2 GiB.
+pub fn ncsd(game: &[u8]) -> Vec<u8> {
+    let mut out = vec![0; 0x4000];
+    put(&mut out, 0x100, b"NCSD");
+    put(&mut out, 0x104, &((2u64 << 30) / 0x200).to_le_bytes()[..4]);
+    let size = game.len().div_ceil(0x200);
+    put(&mut out, 0x120, &(0x4000u32 / 0x200).to_le_bytes());
+    put(&mut out, 0x124, &(size as u32).to_le_bytes());
+    out.extend_from_slice(game);
+    out.resize(0x4000 + size * 0x200, 0);
+    out
+}
+
 /// writes data to a file in the temporary folder named for test.
 pub fn write(test: &str, name: &str, data: &[u8]) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("zakuro-{}-{test}-{name}", std::process::id()));

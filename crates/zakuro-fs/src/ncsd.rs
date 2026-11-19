@@ -75,4 +75,13 @@ impl Ncsd {
         }
         Ok(p)
     }
+
+    /// how long the file must be to hold the whole game: its executable
+    /// partition's end. a trimmed dump stops at its last partition, so it
+    /// is never shorter than this; a file that is was cut off, copied while
+    /// it was still being downloaded or unpacked.
+    pub fn needed_size(&self) -> u64 {
+        let game = self.partitions[0];
+        game.offset + game.size
+    }
 }

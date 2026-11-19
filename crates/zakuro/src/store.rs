@@ -137,6 +137,7 @@ fn title(path: &Path) -> Found {
             Found::Title { path: path.to_owned(), title_id: title.program_id(), kind: TitleKind::Game, version: 0, name, size }
         }
         Err(zakuro_fs::FsError::Encrypted(_) | zakuro_fs::FsError::EncryptedCia) => unusable("Encrypted, Zakuro needs a decrypted dump"),
+        Err(error @ zakuro_fs::FsError::CutOff { .. }) => unusable(&library::problem(&error)),
         Err(_) => unusable("Not a game Zakuro can read"),
     }
 }
